@@ -52,7 +52,7 @@ Rule: platform apps contain only platform glue; anything testable without a devi
 ## Networking & protocol (ADR-0004)
 
 - **Discovery**: Bonjour/mDNS service `_penbridge._tcp`, advertised by the Mac. The TXT record has the protocol version, device name and cert fingerprint.
-- **Control channel**: TCP + TLS 1.3 (`SslStream`), `NoDelay`. The Mac generates a self-signed identity on first run and stores it in the Keychain.
+- **Control channel**: TCP + TLS 1.2+ (`SslStream`, highest negotiated; ADR-0013), `NoDelay`. The Mac generates a self-signed identity on first run and stores it in the Keychain.
   - Carries hello/version negotiation, pairing, settings, heartbeats, and the session key for the input channel.
   - Messages are length-prefixed, with a type byte and a compact binary body. They are low-frequency.
 - **Pairing**:

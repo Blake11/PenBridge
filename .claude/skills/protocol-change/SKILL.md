@@ -26,6 +26,13 @@ Protocol lives in `src/PenBridge.Core` (ADR-0004). Mac server and phone clients 
 - Fuzz-ish: truncated/oversized/garbage input never throws unhandled or over-reads.
 - Allocation check for the hot path (`GC.GetAllocatedBytesForCurrentThread` delta == 0) where applicable.
 
+## Pairing security (must hold for any change to pairing, auth or the input channel)
+- **Pairing window:** `PinIssuer` accepts PIN/QR attempts only between `OpenPairingWindow()` (Mac "Pair new device…") and its close (success, `ClosePairingWindow()`, or 2 min expiry). Outside it → `WindowClosed`, no strike; send `PairResult(expired)`.
+- **Lockout backoff:** 3 failures → new PIN + refusal for 30 s, doubling per lockout to a 10 min cap; resets only on success (`LockedOut` → `PairResult(failed(0))`). Abandoned/aborted attempts count as failures.
+- **Complete-before-Confirm:** the server must get `Ok` from `PinAttempt.Complete` before sending its PairConfirm. Use `PairingSession.ForServer(attempt, …)`; it completes the attempt inside `TryVerifyPeerConfirm`, so an expired/invalidated attempt never yields a server confirm. Send `session.AttemptResult` as PairResult. Time out pairing so the single attempt slot can't be held.
+- **Nonce uniqueness:** AES-GCM nonce = `sessionId ‖ sequence` under `K_in` (per session: HKDF over fresh client+server nonces). Net must generate a fresh random `serverNonce` and a `sessionId` never reused on that server run, create one `InputCipher` per session/direction, and never reset its sequence. `InputCipher.Seal` throws on a non-increasing sequence. Never reuse `K_in` across sessions.
+- **Tampered datagrams:** `TryOpen` returns false (an exception is caught internally); the Net layer pins the peer endpoint and rate-limits/counts failures.
+
 ## 4. Both sides
 - Mac server (`src/PenBridge.Mac`): handle new messages, version refusal UI.
 - Android (`src/PenBridge.Android`): send/handle, refusal UI.
