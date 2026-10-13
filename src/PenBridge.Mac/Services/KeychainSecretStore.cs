@@ -16,9 +16,21 @@ namespace PenBridge.Mac.Services;
 /// The login keychain is never synced to iCloud, so items stay on this Mac. <c>kSecAttrAccessible</c> has no effect
 /// in the file-based keychain (the login keychain's lock state governs access); it is set to "after first unlock,
 /// this device only" so the intent carries over if the items ever move to the data-protection keychain.</para>
-/// <para>The item ACL trusts the creating app by its designated requirement. Builds signed with the stable
-/// "PenBridge Dev" certificate (or a Developer ID) read their items without prompts; an ad-hoc build gets a new
-/// requirement on every build and macOS asks the user to allow access.</para>
+/// <para>Access control (issue #55) has two layers, and a read needs both without a prompt:</para>
+/// <list type="bullet">
+/// <item><description>The ACL's trusted-application list stores the creating app's designated requirement.
+/// Builds signed with the stable "PenBridge Dev" certificate share one requirement
+/// (<c>identifier "com.blake11.penbridge" and certificate root = H"…"</c>); an ad-hoc build's requirement is its
+/// cdhash, so every rebuild adds a new entry after the user allows it.</description></item>
+/// <item><description>The partition list (<c>partition_id</c> ACL entry). securityd stamps it from the caller:
+/// <c>teamid:&lt;TEAMID&gt;</c> for Apple-issued certificates, but <c>cdhash:&lt;cdhash&gt;</c> for code without a
+/// Team ID, which includes the self-signed dev certificate. So even a "PenBridge Dev" build that recompiled anything
+/// is outside the partition and macOS asks again; "Always Allow" appends the new cdhash. An incremental build
+/// that rebuilt nothing keeps its cdhash and does not ask. An explicit <c>SecAccess</c> at creation still gets the
+/// cdhash partition, and changing the partition list needs the keychain password, so the app cannot widen it.
+/// <see cref="Set"/> on an existing item resets its partition list to the writing build. A Team ID (an Apple Development
+/// or Developer ID certificate) should give a stable <c>teamid:</c> partition (not tested).</description></item>
+/// </list>
 /// <para>Thread-safe: the Security framework is, and <see cref="Set"/> serializes its add-or-update.</para>
 /// </remarks>
 public sealed class KeychainSecretStore : ISecretStore
