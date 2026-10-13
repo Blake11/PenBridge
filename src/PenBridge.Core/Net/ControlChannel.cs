@@ -23,12 +23,17 @@ internal sealed class ControlChannel : IAsyncDisposable
 
     private static readonly TimerCallback DeadlineCallback = static state => ((ControlChannel)state!).OnDeadline();
 
+    // A stuck write may not observe cancellation (the bytes are already in the socket layer): close the socket too.
+    private static readonly TimerCallback WriteDeadlineCallback = static state => ((ControlChannel)state!).OnWriteDeadline();
+
     private readonly Socket _socket;
     private readonly SslStream _ssl;
     private readonly TimeProvider _time;
     private readonly ControlFrameReader _reader;
     private readonly CancellationTokenSource _cts = new();
     private readonly ITimer _readDeadline;
+    private readonly ITimer _writeDeadline;
+    private long _writeStarted;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private int _timedOut;
     private int _disposed;
@@ -40,7 +45,14 @@ internal sealed class ControlChannel : IAsyncDisposable
         _ssl = new SslStream(new NetworkStream(socket, ownsSocket: true), leaveInnerStreamOpen: false);
         _reader = new ControlFrameReader(_ssl);
         _readDeadline = time.CreateTimer(DeadlineCallback, this, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        _writeDeadline = time.CreateTimer(WriteDeadlineCallback, this, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
     }
+
+    /// <summary>
+    /// Deadline for each control write (writes are serialized, so one timer covers them). A peer that stops reading
+    /// but keeps pinging can't wedge a writer: the deadline kills the connection, which the owner reports as a timeout.
+    /// </summary>
+    public static TimeSpan WriteTimeout { get; } = TimeSpan.FromSeconds(2);
 
     public SslStream Ssl => _ssl;
 
@@ -53,6 +65,16 @@ internal sealed class ControlChannel : IAsyncDisposable
     public bool TimedOut => Volatile.Read(ref _timedOut) != 0;
 
     public bool IsAborted => _cts.IsCancellationRequested;
+
+    /// <summary>Wall-clock age of the write in progress, or null (tests: detect a really stalled write).</summary>
+    internal TimeSpan? WriteInFlightFor
+    {
+        get
+        {
+            long started = Volatile.Read(ref _writeStarted);
+            return started == 0 ? null : System.Diagnostics.Stopwatch.GetElapsedTime(started);
+        }
+    }
 
     /// <summary>Starts a one-shot deadline; dispose the returned timer to cancel it.</summary>
     public ITimer StartDeadline(TimeSpan due) => _time.CreateTimer(DeadlineCallback, this, due, Timeout.InfiniteTimeSpan);
@@ -80,12 +102,16 @@ internal sealed class ControlChannel : IAsyncDisposable
         where T : IControlMessage<T>
     {
         await _writeLock.WaitAsync(_cts.Token).ConfigureAwait(false);
+        _writeDeadline.Change(WriteTimeout, Timeout.InfiniteTimeSpan);
         try
         {
+            Volatile.Write(ref _writeStarted, System.Diagnostics.Stopwatch.GetTimestamp());
             await ControlFrameWriter.WriteAsync(_ssl, message, _cts.Token).ConfigureAwait(false);
         }
         finally
         {
+            Volatile.Write(ref _writeStarted, 0);
+            _writeDeadline.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             _writeLock.Release();
         }
     }
@@ -94,12 +120,16 @@ internal sealed class ControlChannel : IAsyncDisposable
     public async ValueTask WriteFrameAsync(ReadOnlyMemory<byte> frame)
     {
         await _writeLock.WaitAsync(_cts.Token).ConfigureAwait(false);
+        _writeDeadline.Change(WriteTimeout, Timeout.InfiniteTimeSpan);
         try
         {
+            Volatile.Write(ref _writeStarted, System.Diagnostics.Stopwatch.GetTimestamp());
             await _ssl.WriteAsync(frame, _cts.Token).ConfigureAwait(false);
         }
         finally
         {
+            Volatile.Write(ref _writeStarted, 0);
+            _writeDeadline.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             _writeLock.Release();
         }
     }
@@ -173,6 +203,7 @@ internal sealed class ControlChannel : IAsyncDisposable
 
         Abort();
         await _readDeadline.DisposeAsync().ConfigureAwait(false);
+        await _writeDeadline.DisposeAsync().ConfigureAwait(false);
         try
         {
             await _ssl.DisposeAsync().ConfigureAwait(false);
@@ -192,6 +223,12 @@ internal sealed class ControlChannel : IAsyncDisposable
         }
 
         _cts.Dispose();
+    }
+
+    private void OnWriteDeadline()
+    {
+        Volatile.Write(ref _timedOut, 1);
+        AbortHard();
     }
 
     private void OnDeadline()

@@ -29,6 +29,7 @@ namespace PenBridge.Core.Net;
 internal sealed class SessionInput : IDisposable
 {
     private static readonly TimerCallback WatchdogCallback = static state => ((SessionInput)state!).OnWatchdog();
+    private static readonly TimerCallback TrailingAckCallback = static state => ((SessionInput)state!).OnTrailingAck();
 
     /// <summary>Re-arm delay when the tracker reports "due now" but did not fire (clock granularity).</summary>
     private static readonly TimeSpan MinWatchdogDelay = TimeSpan.FromMilliseconds(1);
@@ -54,8 +55,11 @@ internal sealed class SessionInput : IDisposable
     private bool _disposed;
     private bool _faulted;
     private InputTransport _transport;
+    private readonly ITimer _ackTimer;
     private bool _acked;
+    private bool _trailingAckArmed;
     private long _lastAckTimestamp;
+    private ulong _lastAckedSequence;
     private bool _hasTime;
     private uint _lastTimeUs;
     private DisplayRect _display;
@@ -97,6 +101,7 @@ internal sealed class SessionInput : IDisposable
         _budget = _budgetCapacity;
         _budgetTimestamp = time.GetTimestamp();
         _watchdog = time.CreateTimer(WatchdogCallback, this, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        _ackTimer = time.CreateTimer(TrailingAckCallback, this, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
     }
 
     /// <summary>Raised (under the input lock) the first time the forged-datagram budget runs out.</summary>
@@ -235,13 +240,19 @@ internal sealed class SessionInput : IDisposable
                 _pinned = Copy(source);
             }
 
+            // UdpAck at most once per second; datagrams accepted in between are covered by one trailing ack at the
+            // end of that second, so the final highest sequence of a burst is always acknowledged.
             long now = _time.GetTimestamp();
-            if (!_acked || _time.GetElapsedTime(_lastAckTimestamp, now) >= AckInterval)
+            TimeSpan sinceAck = _time.GetElapsedTime(_lastAckTimestamp, now);
+            if (!_acked || sinceAck >= AckInterval)
             {
-                _acked = true;
-                _lastAckTimestamp = now;
                 ack = true;
-                highest = _cipher.HighestSequence;
+                highest = MarkAckedLocked(now);
+            }
+            else if (!_trailingAckArmed)
+            {
+                _trailingAckArmed = true;
+                _ackTimer.Change(AckInterval - sinceAck, Timeout.InfiniteTimeSpan);
             }
 
             fault = HandlePayloadLocked(datagram.Slice(InputDatagramHeader.Size, payloadLength), InputTransport.Udp);
@@ -287,6 +298,7 @@ internal sealed class SessionInput : IDisposable
             bool release = !_closed && _tracker.IsMapperConfigured;
             _closed = true;
             _watchdog.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            _ackTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             if (release)
             {
                 try
@@ -305,6 +317,7 @@ internal sealed class SessionInput : IDisposable
         }
 
         _watchdog.Dispose();
+        _ackTimer.Dispose();
         Report(fault);
     }
 
@@ -344,6 +357,33 @@ internal sealed class SessionInput : IDisposable
     private static bool IsInRange(in PenSample s) => (s.State & (PenState.InRange | PenState.Contact)) != 0;
 
     private static bool IsKnownTool(PenTool tool) => tool is PenTool.Pen or PenTool.Eraser or PenTool.FingerFallback;
+
+    private ulong MarkAckedLocked(long now)
+    {
+        _acked = true;
+        _lastAckTimestamp = now;
+        _lastAckedSequence = _cipher.HighestSequence;
+        _trailingAckArmed = false;
+        _ackTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        return _lastAckedSequence;
+    }
+
+    private void OnTrailingAck()
+    {
+        ulong highest;
+        lock (_lock)
+        {
+            _trailingAckArmed = false;
+            if (_closed || _cipher.HighestSequence <= _lastAckedSequence)
+            {
+                return;
+            }
+
+            highest = MarkAckedLocked(_time.GetTimestamp());
+        }
+
+        _onAck?.Invoke(highest);
+    }
 
     private Exception? HandlePayloadLocked(ReadOnlySpan<byte> payload, InputTransport transport)
     {

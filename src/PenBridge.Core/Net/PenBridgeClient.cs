@@ -117,6 +117,12 @@ public sealed class PenBridgeClient : IAsyncDisposable
         }
     }
 
+    /// <summary>Wall-clock age of the control write in progress, or null (tests).</summary>
+    internal TimeSpan? ControlWriteInFlightFor => Volatile.Read(ref _connection)?.Channel.WriteInFlightFor;
+
+    /// <summary>UdpAcks received on this connection (tests, diagnostics).</summary>
+    internal long AcksReceived => Volatile.Read(ref _connection) is { } c ? Interlocked.Read(ref c.AcksReceived) : 0;
+
     /// <summary>Datagrams sealed so far on this connection (tests, diagnostics).</summary>
     internal long DatagramsSealed => Volatile.Read(ref _connection)?.DatagramsSealed ?? 0;
 
@@ -306,9 +312,11 @@ public sealed class PenBridgeClient : IAsyncDisposable
         SendDatagramLocked(c, timeUs, pen, touches, history);
         if (!c.AckArmed)
         {
-            // Fall back when UDP has been sent this long without any UdpAck (the server acks at most 1/s while
-            // datagrams arrive, so a working path re-acks well within the timeout).
+            // Fallback rule: the highest sequence sent when the timer is armed must be acked within the timeout.
+            // The server acks at most 1/s but always sends a trailing ack for the last datagram of a burst, so a
+            // working path answers within about 1 s plus the RTT, also when the stream stops.
             c.AckArmed = true;
+            c.AwaitedSequence = c.Sequence;
             c.AckTimer.Change(_options.UdpAckTimeout, Timeout.InfiniteTimeSpan);
         }
 
@@ -375,7 +383,7 @@ public sealed class PenBridgeClient : IAsyncDisposable
     {
         lock (_sendLock)
         {
-            if (c.Closed || !c.AckArmed || c.Transport == InputTransport.Tls)
+            if (c.Closed || !c.AckArmed || c.Transport == InputTransport.Tls || c.AckedSequence >= c.AwaitedSequence)
             {
                 return;
             }
@@ -411,6 +419,7 @@ public sealed class PenBridgeClient : IAsyncDisposable
 
     private void OnUdpAck(Connection c, ulong highestSequence)
     {
+        Interlocked.Increment(ref c.AcksReceived);
         lock (_sendLock)
         {
             if (c.Closed)
@@ -432,8 +441,20 @@ public sealed class PenBridgeClient : IAsyncDisposable
             }
 
             c.UdpAcked = true;
-            c.AckArmed = false;
-            c.AckTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            c.AckedSequence = Math.Max(c.AckedSequence, highestSequence);
+            if (c.AckedSequence >= c.Sequence)
+            {
+                // Everything sent so far is acknowledged: nothing to wait for until the next send.
+                c.AckArmed = false;
+                c.AckTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            }
+            else
+            {
+                // Newer datagrams are in flight: wait for them (the server's trailing ack covers the last one).
+                c.AckArmed = true;
+                c.AwaitedSequence = c.Sequence;
+                c.AckTimer.Change(_options.UdpAckTimeout, Timeout.InfiniteTimeSpan);
+            }
         }
     }
 
@@ -617,6 +638,10 @@ public sealed class PenBridgeClient : IAsyncDisposable
             NoDelay = true,
             SendTimeout = (int)ControlChannel.SyncSendTimeout.TotalMilliseconds,
         };
+        if (_options.TcpSendBufferSize is { } size)
+        {
+            socket.SendBufferSize = size;
+        }
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using ITimer deadline = _time.CreateTimer(
             static s =>
@@ -974,6 +999,9 @@ public sealed class PenBridgeClient : IAsyncDisposable
         public int RepeatsLeft;
         public ulong Sequence;
         public ulong ProbeSequence;
+        public ulong AwaitedSequence;
+        public ulong AckedSequence;
+        public long AcksReceived;
         public long DatagramsSealed;
         public InputTransport Transport = InputTransport.Udp;
         public bool UdpAcked;

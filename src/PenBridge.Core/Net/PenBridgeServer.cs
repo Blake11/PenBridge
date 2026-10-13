@@ -444,6 +444,7 @@ public sealed class PenBridgeServer : IAsyncDisposable
     /// <summary>Releases the pre-auth slot taken by <see cref="TryAdmit"/> (exactly once per admitted connection).</summary>
     internal void ReleasePending(IPAddress address)
     {
+        address = PendingKey(address);
         lock (_gate)
         {
             _pending--;
@@ -461,9 +462,10 @@ public sealed class PenBridgeServer : IAsyncDisposable
         }
     }
 
-    /// <summary>Takes a pre-auth slot for <paramref name="address"/>: false when the global or per-IP cap is reached.</summary>
+    /// <summary>Takes a pre-auth slot for <paramref name="address"/>'s key (IPv4 or IPv6 /64): false when the global or per-key cap is reached.</summary>
     internal bool TryAdmit(IPAddress address)
     {
+        address = PendingKey(address);
         lock (_gate)
         {
             _pendingByAddress.TryGetValue(address, out int count);
@@ -480,6 +482,24 @@ public sealed class PenBridgeServer : IAsyncDisposable
 
     internal static IPAddress Normalize(IPAddress address) =>
         address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
+
+    /// <summary>
+    /// The key a peer's pending connections are counted under: the IPv4 address, or the IPv6 /64 prefix (one host
+    /// usually owns a whole /64, so per-address counting would be trivial to evade).
+    /// </summary>
+    internal static IPAddress PendingKey(IPAddress address)
+    {
+        address = Normalize(address);
+        if (address.AddressFamily != AddressFamily.InterNetworkV6)
+        {
+            return address;
+        }
+
+        Span<byte> bytes = stackalloc byte[16];
+        address.TryWriteBytes(bytes, out _);
+        bytes[8..].Clear();
+        return new IPAddress(bytes);
+    }
 
     internal void RaiseDevicePaired(PairedDevice device) => Raise(DevicePaired, new DevicePairedEventArgs(device));
 
@@ -610,7 +630,7 @@ public sealed class PenBridgeServer : IAsyncDisposable
             return;
         }
 
-        IPAddress address = Normalize(remote.Address);
+        IPAddress address = PendingKey(remote.Address);
         if (!TryAdmit(address))
         {
             NetLog.TooManyPending(_log, remote);

@@ -165,7 +165,7 @@ public class NetUnitTests
     }
 
     [Fact]
-    public void UdpAck_is_resent_at_most_once_per_second_while_datagrams_arrive()
+    public void UdpAck_is_rate_limited_to_1_per_s_with_a_trailing_ack_for_the_last_datagram()
     {
         var time = new FakeTime();
         var acks = new List<ulong>();
@@ -180,7 +180,10 @@ public class NetUnitTests
             time.Advance(TimeSpan.FromMilliseconds(100));
         }
 
-        Assert.Equal([1UL, 11UL, 21UL], acks);
+        // Immediate ack for the first, then one trailing ack per second covering the newest sequence (incl. the last).
+        Assert.Equal([1UL, 10UL, 20UL, 30UL], acks);
+        time.Advance(TimeSpan.FromSeconds(5));
+        Assert.Equal(4, acks.Count); // nothing new to ack
     }
 
     [Fact]
@@ -347,5 +350,27 @@ public class NetUnitTests
         }
 
         Assert.DoesNotContain(0u, ids);
+    }
+
+    [Fact]
+    public void Ipv6_peers_share_a_pending_limit_per_64_prefix()
+    {
+        var server = new PenBridgeServer(new PenBridgeServerOptions
+        {
+            Identity = NetHarness.SharedServerIdentity,
+            Registry = new PairedDeviceRegistry(new InMemorySecretStore()),
+            InputSink = new ConcurrentSink(),
+        });
+
+        Assert.True(server.TryAdmit(IPAddress.Parse("2001:db8:1:2::1")));
+        Assert.True(server.TryAdmit(IPAddress.Parse("2001:db8:1:2:aaaa:bbbb:cccc:dddd")));
+        Assert.False(server.TryAdmit(IPAddress.Parse("2001:db8:1:2::ffff"))); // same /64, other address
+        Assert.True(server.TryAdmit(IPAddress.Parse("2001:db8:1:3::1"))); // another /64
+        Assert.True(server.TryAdmit(IPAddress.Parse("192.0.2.1")));
+        Assert.True(server.TryAdmit(IPAddress.Parse("192.0.2.2"))); // IPv4 stays per address
+
+        server.ReleasePending(IPAddress.Parse("2001:db8:1:2::9")); // releases the /64's slot
+        Assert.True(server.TryAdmit(IPAddress.Parse("2001:db8:1:2::ffff")));
+        Assert.Equal(IPAddress.Parse("192.0.2.1"), PenBridgeServer.PendingKey(IPAddress.Parse("::ffff:192.0.2.1")));
     }
 }

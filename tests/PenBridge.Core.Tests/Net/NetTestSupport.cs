@@ -496,6 +496,7 @@ internal sealed class PausableProxy : IAsyncDisposable
     public PausableProxy(int targetPort)
     {
         _targetPort = targetPort;
+        _listener.Server.ReceiveBufferSize = 4096; // inherited by accepted sockets: a pause stalls the sender fast
         _listener.Start();
         _loop = AcceptAsync();
     }

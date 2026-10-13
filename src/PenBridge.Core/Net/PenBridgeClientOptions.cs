@@ -61,6 +61,9 @@ public sealed class PenBridgeClientOptions
     /// <summary>Optional fault injection: return false to drop a sealed datagram instead of sending it.</summary>
     public DatagramFilter? DatagramFilter { get; init; }
 
+    /// <summary>Tests only: a small TCP send buffer so a stalled peer blocks writes quickly.</summary>
+    internal int? TcpSendBufferSize { get; init; }
+
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 
     public ILoggerFactory? LoggerFactory { get; init; }

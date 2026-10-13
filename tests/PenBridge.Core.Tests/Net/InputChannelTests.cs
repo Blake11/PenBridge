@@ -237,23 +237,105 @@ public class InputChannelTests
         await Wait.Until(() => h.Server.GetStats().Transport == InputTransport.Udp, "server on UDP");
     }
 
+    /// <summary>Advances in 100 ms steps with a real pause, so acks cross the loopback before the next client deadline.</summary>
+    private static async Task StepAsync(FakeTime time, TimeSpan total)
+    {
+        for (TimeSpan done = TimeSpan.Zero; done < total; done += TimeSpan.FromMilliseconds(100))
+        {
+            time.Advance(TimeSpan.FromMilliseconds(100));
+            await Task.Delay(10);
+        }
+    }
+
     [Fact]
-    public async Task Continuous_streaming_is_re_acked_and_never_falls_back()
+    public async Task Stopping_right_after_an_ack_does_not_fall_back()
     {
         await using var h = new NetHarness();
         PenBridgeClient client = await h.PairAsync();
         client.SendState(Pens.Contact(3000, 3000), []);
-        await Wait.Until(() => client.Transport == InputTransport.Udp, "first ack");
+        await Wait.Until(() => client.AcksReceived == 1, "first ack");
 
-        for (int i = 0; i < 125; i++) // 5 s of contact keepalives
+        // Right after that ack: a short burst (no immediate ack: rate limit), then the pen leaves and goes quiet.
+        for (ushort i = 1; i <= 5; i++)
+        {
+            client.SendState(Pens.Contact((ushort)(3000 + (i * 100)), 3000), []);
+        }
+
+        client.SendState(null, []);
+        await Wait.Until(() => h.Server.GetStats().Counters.Accepted >= 7, "burst received");
+
+        await StepAsync(h.Time, TimeSpan.FromSeconds(6));
+
+        Assert.Equal(InputTransport.Udp, client.Transport);
+        Assert.Equal(2, client.AcksReceived); // the trailing ack covered the burst and the release repeats
+    }
+
+    [Fact]
+    public async Task Thirty_seconds_of_streaming_stays_on_udp_with_at_most_one_ack_per_second()
+    {
+        await using var h = new NetHarness();
+        PenBridgeClient client = await h.PairAsync();
+        client.SendState(Pens.Contact(3000, 3000), []);
+        await Wait.Until(() => client.AcksReceived == 1, "first ack");
+
+        for (int i = 0; i < 750; i++) // 30 s of 40 ms contact keepalives
         {
             long accepted = h.Server.GetStats().Counters.Accepted;
             h.Time.Advance(TimeSpan.FromMilliseconds(40));
             await Wait.Until(() => h.Server.GetStats().Counters.Accepted > accepted, "keepalive " + i);
         }
 
+        await Task.Delay(50);
         Assert.Equal(InputTransport.Udp, client.Transport);
         Assert.Equal(InputTransport.Udp, h.Server.GetStats().Transport);
+        Assert.InRange(client.AcksReceived, 25, 31); // ≤ 1/s over 30 s (+ the first)
+    }
+
+    [Fact]
+    public async Task A_peer_that_stops_reading_but_keeps_pinging_hits_the_write_deadline()
+    {
+        await using var h = new NetHarness();
+        await using var proxy = new PausableProxy(h.Port);
+        PenBridgeClient client = h.CreateClient(filter: _ => false, configure: o => new PenBridgeClientOptions
+        {
+            SecretStore = o.SecretStore,
+            Surface = o.Surface,
+            TimeProvider = o.TimeProvider,
+            DatagramFilter = o.DatagramFilter,
+            TcpSendBufferSize = 4096,
+        });
+        var gone = new TaskCompletionSource<ClientDisconnectedEventArgs>();
+        client.Disconnected += (_, e) => gone.TrySetResult(e);
+        h.Server.OpenPairingWindow();
+        await client.PairWithPinAsync("127.0.0.1", proxy.Port, h.Server.CurrentPin!).Bounded();
+        await h.WaitForSurfaceAsync();
+        client.SendState(Pens.Contact(1000, 1000), []);
+        h.Time.Advance(TimeSpan.FromSeconds(2));
+        Assert.Equal(InputTransport.Tls, client.Transport);
+
+        // Client → server stalls (server → client still flows). Flood until a write is really stuck.
+        proxy.Paused = true;
+        var deadline = DateTime.UtcNow + Wait.Limit;
+        for (int i = 0; client.ControlWriteInFlightFor is not { } age || age < TimeSpan.FromMilliseconds(300); i++)
+        {
+            Assert.True(DateTime.UtcNow < deadline, "the writer never stalled");
+            client.SendState(Pens.Contact((ushort)(i % 60000), 1000, 30000), []);
+            if (i % 100 == 99)
+            {
+                await Task.Delay(1);
+            }
+        }
+
+        Assert.True(client.IsConnected);
+        h.Time.Advance(ControlChannel.WriteTimeout - TimeSpan.FromMilliseconds(1));
+        await Task.Delay(50);
+        Assert.True(client.IsConnected);
+
+        h.Time.Advance(TimeSpan.FromMilliseconds(1));
+
+        ClientDisconnectedEventArgs e = await gone.Task.Bounded();
+        Assert.Equal(SessionEndReason.Timeout, e.Reason);
+        Assert.False(client.IsConnected);
     }
 
     [Fact]
@@ -301,7 +383,14 @@ public class InputChannelTests
     {
         await using var h = new NetHarness();
         await using var proxy = new PausableProxy(h.Port);
-        PenBridgeClient client = h.CreateClient(filter: _ => false); // UDP blocked: input goes over TLS
+        PenBridgeClient client = h.CreateClient(filter: _ => false, configure: o => new PenBridgeClientOptions
+        {
+            SecretStore = o.SecretStore,
+            Surface = o.Surface,
+            TimeProvider = o.TimeProvider,
+            DatagramFilter = o.DatagramFilter, // UDP blocked: input goes over TLS
+            TcpSendBufferSize = 4096,
+        });
         h.Server.OpenPairingWindow();
         await client.PairWithPinAsync("127.0.0.1", proxy.Port, h.Server.CurrentPin!).Bounded();
         await h.WaitForSurfaceAsync();
@@ -320,7 +409,26 @@ public class InputChannelTests
         }
 
         Assert.True(worst < TimeSpan.FromMilliseconds(500), "SendState blocked for " + worst);
-        Assert.True(client.FallbackFramesDropped > 0, "the fallback writer never stalled, so the test proved nothing");
+        var stallDeadline = DateTime.UtcNow + Wait.Limit;
+        for (int i = 0; client.ControlWriteInFlightFor is not { } age || age < TimeSpan.FromMilliseconds(300); i++)
+        {
+            Assert.True(DateTime.UtcNow < stallDeadline, "the writer never stalled, so the test would prove nothing");
+            long t0 = watch.ElapsedTicks;
+            Assert.True(client.SendState(Pens.Contact((ushort)(i % 60000), 1000, 30000), []));
+            worst = TimeSpan.FromTicks(Math.Max(worst.Ticks, (long)((watch.ElapsedTicks - t0) * (TimeSpan.TicksPerSecond / (double)System.Diagnostics.Stopwatch.Frequency))));
+            if (i % 100 == 99)
+            {
+                await Task.Delay(1);
+            }
+        }
+
+        Assert.True(worst < TimeSpan.FromMilliseconds(500), "SendState blocked for " + worst);
+        for (int i = 0; i < 1000; i++)
+        {
+            Assert.True(client.SendState(Pens.Contact((ushort)i, 1000, 30000), [])); // still never blocks
+        }
+
+        Assert.True(client.FallbackFramesDropped > 0);
 
         var dispose = System.Diagnostics.Stopwatch.StartNew();
         await client.DisposeAsync().AsTask().Bounded();
