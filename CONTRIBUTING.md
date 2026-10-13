@@ -53,13 +53,28 @@ gh pr create --fill          # then edit the title and body to match the templat
 
 ## CI jobs
 
-| Job | Runner | Blocking |
+`ci.yml` starts with a `Detect changes` job (`dorny/paths-filter`) and runs only the jobs a PR's changed paths can affect. Skipped jobs still report their check name as "skipped", which branch protection accepts, so docs-only PRs stay mergeable. Pushes to `main` and manual runs (`workflow_dispatch`) always run every job. If `Detect changes` itself fails, every job runs.
+
+| Job (required check) | Runner | Covers |
 |---|---|---|
-| Core tests (`dotnet test --project tests/PenBridge.Core.Tests`) | ubuntu | yes |
-| macOS build (Release) | macos | yes |
-| Android build (Release APK, unsigned) | ubuntu | yes |
-| iOS build (simulator, unsigned) | macos | **yes**: required, even while iOS is a placeholder, so head build/trim regressions can't merge. |
-| PR title | ubuntu | yes |
+| Core tests | ubuntu | `dotnet test --project tests/PenBridge.Core.Tests`, SimClient build, trimmed pairing smoke test |
+| macOS build | macos (`xcode-27`) | Release and Debug builds, `check-bundle.sh --mac` |
+| Android build | ubuntu | Release APK (unsigned), `check-bundle.sh --android` |
+| iOS build (placeholder) | macos (`xcode-27`) | Simulator build (unsigned), `check-bundle.sh --ios`. Required even while iOS is a placeholder, so head build/trim regressions can't merge. |
+| Conventional Commit title | ubuntu | PR title check (`pr-title.yml`), runs on every PR |
+
+All five are required checks. Which paths trigger which jobs:
+
+| Changed paths | Core tests | macOS | Android | iOS |
+|---|---|---|---|---|
+| infra: `.github/workflows/**`, `.github/actions/**`, `scripts/**`, `.githooks/**` | yes | yes | yes | yes |
+| core: `src/PenBridge.Core/**`, `tests/**`, `tools/**`, `build/**`, `**/Directory.Build.*`, `**/Directory.Packages.props`, `global.json`, `PenBridge.slnx`, `.editorconfig` | yes | yes | yes | yes |
+| `src/PenBridge.Mac/**` | | yes | | |
+| `src/PenBridge.Android/**` | | | yes | |
+| `src/PenBridge.iOS/**` | | | | yes |
+| anything else (`docs/**`, root `*.md`, `.claude/**`, `LICENSE`, issue/PR templates, `dependabot.yml`) | | | | |
+
+Markdown files under a matched path (for example `src/PenBridge.Mac/README.md`) still trigger that path's jobs. When you add a project or a build-affecting root file, add it to the filters in `ci.yml` and to this table.
 
 Before pushing, run `scripts/test.sh` locally.
 

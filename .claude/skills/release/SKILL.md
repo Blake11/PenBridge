@@ -19,6 +19,20 @@ Details: `docs/releasing.md`, `.github/workflows/release-please.yml`, `.github/w
 - Android: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. Missing keystore → unsigned/debug-signed APK path. Losing the keystore means users must uninstall to update — keep a backup.
 - macOS (disabled until a paid Apple account): `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`, toggled by repo variable `MACOS_NOTARIZE=true`.
 
+## CI path filters (`ci.yml`, issue #52)
+A `Detect changes` job (`dorny/paths-filter@v3`) gates the jobs with job-level `if:`. Never use workflow-level `paths:`: a required check that never reports blocks the PR, while a job skipped by `if:` reports "skipped" (passing). Pushes to `main`, `workflow_dispatch`, and a failed `Detect changes` run everything. Full table: CONTRIBUTING.md "CI jobs".
+
+| Changed paths | Jobs |
+|---|---|
+| `.github/workflows/**`, `.github/actions/**`, `scripts/**`, `.githooks/**` | all |
+| `src/PenBridge.Core/**`, `tests/**`, `tools/**`, `build/**`, `**/Directory.Build.*`, `**/Directory.Packages.props`, `global.json`, `PenBridge.slnx`, `.editorconfig` | all |
+| `src/PenBridge.Mac/**` | macOS build |
+| `src/PenBridge.Android/**` | Android build |
+| `src/PenBridge.iOS/**` | iOS build (placeholder) |
+| docs, `.claude/**`, `LICENSE`, issue/PR templates | none (only Conventional Commit title) |
+
+Keep required check names (`name:`) unchanged when editing jobs, and add new projects or build-affecting root files to the filters.
+
 ## Unsigned macOS caveats (ADR-0007)
 - The app is ad-hoc signed, not notarized → Gatekeeper blocks first launch. Users: right-click ▸ Open, or System Settings ▸ Privacy & Security ▸ Open Anyway, or `xattr -dr com.apple.quarantine /Applications/PenBridge.app`.
 - Ad-hoc signature changes every release → **Accessibility grant is lost on each update**; users must remove and re-add PenBridge in Accessibility. Mention in release notes.

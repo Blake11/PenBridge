@@ -20,8 +20,65 @@ env:
   NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
 
 jobs:
+  # Decides which jobs a PR can affect (issue #52). The build jobs below skip via job-level
+  # `if:` rather than workflow-level `paths:`: a skipped job still reports its check name
+  # and branch protection treats "skipped" as passing, whereas a check that never reports
+  # blocks the PR forever. Pushes to main and manual runs always run everything. The path
+  # -> job table lives in CONTRIBUTING.md ("CI jobs"); keep both in sync.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      core: ${{ github.event_name != 'pull_request' || steps.filter.outputs.core == 'true' }}
+      mac: ${{ github.event_name != 'pull_request' || steps.filter.outputs.mac == 'true' }}
+      android: ${{ github.event_name != 'pull_request' || steps.filter.outputs.android == 'true' }}
+      ios: ${{ github.event_name != 'pull_request' || steps.filter.outputs.ios == 'true' }}
+    steps:
+      # On pull_request the filter lists the PR's files through the API: no checkout needed.
+      # Each filter is the full trigger set of one job: infra and core changes run every job,
+      # since every head depends on Core. Paths matching no filter (docs, .claude, LICENSE,
+      # issue/PR templates) skip every build job.
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            infra: &infra
+              - '.github/workflows/**'
+              - '.github/actions/**'
+              - 'scripts/**'
+              - '.githooks/**'
+            core: &core
+              - *infra
+              - 'src/PenBridge.Core/**'
+              - 'tests/**'
+              - 'tools/**'
+              - 'build/**'
+              - '**/Directory.Build.*'
+              - '**/Directory.Packages.props'
+              - 'global.json'
+              - 'PenBridge.slnx'
+              - '.editorconfig'
+            mac:
+              - *core
+              - 'src/PenBridge.Mac/**'
+            android:
+              - *core
+              - 'src/PenBridge.Android/**'
+            ios:
+              - *core
+              - 'src/PenBridge.iOS/**'
+
   core-tests:
     name: Core tests
+    needs: changes
+    # Runs if `changes` failed too, so a broken filter can never turn required checks into
+    # passing skips.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.core == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -61,6 +118,8 @@ jobs:
 
   mac-build:
     name: macOS build
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.mac == 'true') }}
     # The .NET macos/ios workload packs require Xcode 27.0; macos-latest (macos-26) ships
     # only Xcode 26.x. xcode-27 is the hosted image with Xcode 27 (preview label).
     runs-on: xcode-27
@@ -104,6 +163,8 @@ jobs:
 
   android-build:
     name: Android build
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.android == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -147,6 +208,8 @@ jobs:
 
   ios-build:
     name: iOS build (placeholder)
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.ios == 'true') }}
     # The .NET macos/ios workload packs require Xcode 27.0; macos-latest (macos-26) ships
     # only Xcode 26.x. xcode-27 is the hosted image with Xcode 27 (preview label).
     runs-on: xcode-27
