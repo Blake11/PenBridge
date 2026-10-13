@@ -66,8 +66,10 @@ public readonly record struct InputFilterResult(bool HasPen, PenSample Pen, int 
 /// If a second finger lands first, it is a gesture: the held samples are dropped and the fingers are reported as raw
 /// touches until all lift. Otherwise the stroke starts and the held samples are replayed
 /// (<see cref="InputFilterResult.ReplayCount"/>); a finger that lifts within the delay is replayed as a whole tap
-/// ending in a sample with <see cref="PenState.None"/>. A finger that does not move produces no event, so the head
-/// calls <see cref="Process"/> again at <see cref="PendingDeadline"/>.</para>
+/// ending in a sample with <see cref="PenState.None"/>, also when a new lone finger replaces it in the same snapshot
+/// (the new finger's hold starts at once). Each event's batched finger history is held too, so nothing is lost; once
+/// armed, the stroke finger's history comes back through <see cref="ReplaySamples"/> as well. A finger that does not
+/// move produces no event, so the head calls <see cref="Process"/> again at <see cref="PendingDeadline"/>.</para>
 /// <para>Not thread-safe; allocation-free per call.</para>
 /// </remarks>
 public sealed class InputFilter
@@ -76,8 +78,9 @@ public sealed class InputFilter
     public const int MaxTouches = 10;
 
     /// <summary>
-    /// Capacity of the finger-fallback hold buffer. Beyond it the newest sample replaces the last slot (the touch-down
-    /// point and the latest position are always kept); 128 covers 100 ms at well over 1 kHz.
+    /// Capacity of the finger-fallback hold buffer (held samples and history). Beyond it the newest sample replaces
+    /// the last slot (the touch-down point and the latest position are always kept); 128 covers 100 ms at well over
+    /// 1 kHz.
     /// </summary>
     public const int MaxHeldSamples = 128;
 
@@ -85,7 +88,8 @@ public sealed class InputFilter
     private readonly bool[] _suppressed = new bool[256];
     private readonly bool[] _present = new bool[256];
     private readonly byte[] _previousIds = new byte[256];
-    private readonly PenSample[] _held = new PenSample[MaxHeldSamples];
+    private PenSample[] _held = new PenSample[MaxHeldSamples];
+    private PenSample[] _replay = new PenSample[MaxHeldSamples];
     private int _previousCount;
     private bool _penSeen;
     private TimeSpan _lastPenTime;
@@ -123,15 +127,27 @@ public sealed class InputFilter
     /// </summary>
     public TimeSpan? PendingDeadline => _mode == FingerMode.Holding ? _holdStart + _options.FingerFallbackArmDelay : null;
 
-    /// <summary>The held samples to send before the result's pen sample; valid until the next <see cref="Process"/>.</summary>
-    public ReadOnlySpan<PenSample> ReplaySamples => _held.AsSpan(0, _replayCount);
+    /// <summary>
+    /// The finger-fallback samples to send before the result's pen sample, oldest first (held samples and this event's
+    /// history); valid until the next <see cref="Process"/>.
+    /// </summary>
+    public ReadOnlySpan<PenSample> ReplaySamples => _replay.AsSpan(0, _replayCount);
 
     /// <summary>Filters one snapshot of input state.</summary>
     /// <param name="timestamp">Monotonic event time (e.g. Android event uptime).</param>
     /// <param name="pen">The stylus/eraser sample, or null when no stylus pointer is present.</param>
     /// <param name="touches">All current finger pointers (exclude a pointer that is lifting in this event).</param>
     /// <param name="touchesOut">Destination for touches to send; at most <see cref="MaxTouches"/> are written.</param>
-    public InputFilterResult Process(TimeSpan timestamp, in PenSample? pen, ReadOnlySpan<RawTouch> touches, Span<TouchSample> touchesOut)
+    /// <param name="history">
+    /// Earlier finger positions batched into this event (e.g. Android historical samples), each pointer's entries in
+    /// time order. Only the lone finger's entries are used (held, or replayed while it draws).
+    /// </param>
+    public InputFilterResult Process(
+        TimeSpan timestamp,
+        in PenSample? pen,
+        ReadOnlySpan<RawTouch> touches,
+        Span<TouchSample> touchesOut,
+        ReadOnlySpan<RawTouch> history = default)
     {
         _replayCount = 0;
         ForgetLiftedPointers(touches);
@@ -241,32 +257,34 @@ public sealed class InputFilter
         }
 
         PenSample sample = FallbackSample(single);
+        if (_mode == FingerMode.Idle && _options.FingerFallbackArmDelay <= TimeSpan.Zero)
+        {
+            _mode = FingerMode.Fallback;
+        }
+
         if (_mode == FingerMode.Fallback)
         {
-            return new InputFilterResult(true, sample, 0);
+            AppendHistory(_replay, ref _replayCount, history, single.PointerId);
+            return new InputFilterResult(true, sample, 0, _replayCount);
         }
 
         if (_mode == FingerMode.Holding && single.PointerId != _heldId)
         {
-            // The held finger was replaced by another lone finger: start over with the new one.
-            ClearFingerMode();
+            // The held finger lifted and another lone finger landed in the same snapshot: the first one was a tap.
+            InputFilterResult tap = EndTap();
+            StartHold(timestamp, single.PointerId);
+            AppendHistory(_held, ref _heldCount, history, single.PointerId);
+            Append(_held, ref _heldCount, sample);
+            return tap;
         }
 
         if (_mode == FingerMode.Idle)
         {
-            if (_options.FingerFallbackArmDelay <= TimeSpan.Zero)
-            {
-                _mode = FingerMode.Fallback;
-                return new InputFilterResult(true, sample, 0);
-            }
-
-            _mode = FingerMode.Holding;
-            _heldId = single.PointerId;
-            _holdStart = timestamp;
-            _heldCount = 0;
+            StartHold(timestamp, single.PointerId);
         }
 
-        Hold(sample);
+        AppendHistory(_held, ref _heldCount, history, single.PointerId);
+        Append(_held, ref _heldCount, sample);
         if (timestamp - _holdStart < _options.FingerFallbackArmDelay)
         {
             return default;
@@ -274,10 +292,9 @@ public sealed class InputFilter
 
         // Armed: replay everything held before the newest sample, then continue the stroke live.
         _mode = FingerMode.Fallback;
-        _replayCount = _heldCount - 1;
-        PenSample current = _held[_heldCount - 1];
-        _heldCount = 0;
-        return new InputFilterResult(true, current, 0, _replayCount);
+        int n = TakeHeld();
+        _replayCount = n - 1;
+        return new InputFilterResult(true, _replay[n - 1], 0, _replayCount);
     }
 
     /// <summary>Clears all state (e.g. when a session restarts).</summary>
@@ -305,24 +322,52 @@ public sealed class InputFilter
         PenState.InRange | PenState.Contact,
         PenButtons.None);
 
-    private void Hold(in PenSample sample)
+    private static void Append(PenSample[] buffer, ref int count, in PenSample sample)
     {
-        if (_heldCount < _held.Length)
+        if (count < buffer.Length)
         {
-            _held[_heldCount++] = sample;
+            buffer[count++] = sample;
         }
         else
         {
-            _held[^1] = sample;
+            buffer[^1] = sample;
         }
+    }
+
+    private void AppendHistory(PenSample[] buffer, ref int count, ReadOnlySpan<RawTouch> history, byte pointerId)
+    {
+        for (int i = 0; i < history.Length; i++)
+        {
+            RawTouch h = history[i];
+            if (h.PointerId == pointerId && h.Contact && !h.Canceled)
+            {
+                Append(buffer, ref count, FallbackSample(h));
+            }
+        }
+    }
+
+    private void StartHold(TimeSpan timestamp, byte pointerId)
+    {
+        _mode = FingerMode.Holding;
+        _heldId = pointerId;
+        _holdStart = timestamp;
+        _heldCount = 0;
+    }
+
+    /// <summary>Moves the held samples into the replay buffer (swap, no copy) and returns their count.</summary>
+    private int TakeHeld()
+    {
+        (_held, _replay) = (_replay, _held);
+        int n = _heldCount;
+        _heldCount = 0;
+        return n;
     }
 
     /// <summary>The held finger lifted before arming: replay the whole tap and end it out of range.</summary>
     private InputFilterResult EndTap()
     {
-        _replayCount = _heldCount;
-        PenSample last = _held[_heldCount - 1];
-        _heldCount = 0;
+        _replayCount = TakeHeld();
+        PenSample last = _replay[_replayCount - 1];
         _mode = FingerMode.Idle;
         PenSample end = last with { Pressure = 0, State = PenState.None };
         return new InputFilterResult(true, end, 0, _replayCount);

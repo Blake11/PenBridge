@@ -487,6 +487,123 @@ public class InputFilterTests
     }
 
     [Fact]
+    public void Held_event_history_is_replayed_in_order_without_loss()
+    {
+        var f = new InputFilter();
+
+        // Event 1: two batched positions before the current one; another finger's entries are ignored.
+        AssertNothing(f.Process(Ms(0), null, [Finger(1, 3, 0)], _out, [Finger(1, 1, 0), Finger(9, 500, 0), Finger(1, 2, 0)]));
+        AssertNothing(f.Process(Ms(50), null, [Finger(1, 6, 0)], _out, [Finger(1, 4, 0), Finger(1, 5, 0)]));
+        InputFilterResult armed = f.Process(Ms(100), null, [Finger(1, 8, 0)], _out, [Finger(1, 7, 0)]);
+
+        Assert.True(armed.HasPen);
+        Assert.Equal(8, armed.Pen.X);
+        Assert.Equal(7, armed.ReplayCount);
+        PenSample[] replay = f.ReplaySamples.ToArray();
+        for (int i = 0; i < replay.Length; i++)
+        {
+            Assert.Equal((ushort)(i + 1), replay[i].X);
+            Assert.Equal(PenTool.FingerFallback, replay[i].Tool);
+        }
+    }
+
+    [Fact]
+    public void Live_fallback_stroke_returns_the_event_history_as_replay()
+    {
+        var f = new InputFilter(Immediate);
+        InputFilterResult first = f.Process(Ms(0), null, [Finger(1, 3, 0)], _out, [Finger(1, 1, 0), Finger(1, 2, 0)]);
+        Assert.Equal(2, first.ReplayCount);
+        Assert.Equal(1, f.ReplaySamples[0].X);
+
+        InputFilterResult next = f.Process(Ms(10), null, [Finger(1, 5, 0)], _out, [Finger(1, 4, 0, canceled: true), new RawTouch(1, false, false, 4, 0)]);
+        Assert.Equal(0, next.ReplayCount);
+        Assert.Equal(5, next.Pen.X);
+    }
+
+    [Fact]
+    public void Held_history_overflow_keeps_the_bounded_buffer_policy()
+    {
+        var f = new InputFilter();
+        var history = new RawTouch[InputFilter.MaxHeldSamples + 50];
+        for (int i = 0; i < history.Length; i++)
+        {
+            history[i] = Finger(1, (ushort)i, 0);
+        }
+
+        AssertNothing(f.Process(Ms(0), null, [Finger(1, 9000, 0)], _out, history));
+        InputFilterResult armed = f.Process(Ms(100), null, [Finger(1, 9001, 0)], _out);
+        Assert.Equal(InputFilter.MaxHeldSamples - 1, armed.ReplayCount);
+        Assert.Equal(0, f.ReplaySamples[0].X);
+        Assert.Equal(InputFilter.MaxHeldSamples - 2, f.ReplaySamples[^1].X);
+        Assert.Equal(9001, armed.Pen.X);
+    }
+
+    [Fact]
+    public void Held_finger_replaced_in_the_same_snapshot_flushes_its_tap_then_holds_the_new_one()
+    {
+        var f = new InputFilter();
+        AssertNothing(f.Process(Ms(0), null, [Finger(1, 10, 0)], _out));
+        AssertNothing(f.Process(Ms(30), null, [Finger(1, 11, 0)], _out));
+
+        // Finger 1 lifted and finger 2 landed between two snapshots.
+        InputFilterResult tap = f.Process(Ms(60), null, [Finger(2, 500, 0)], _out, [Finger(2, 499, 0)]);
+        Assert.True(tap.HasPen);
+        Assert.Equal(PenState.None, tap.Pen.State);
+        Assert.Equal(11, tap.Pen.X);
+        Assert.Equal(2, tap.ReplayCount);
+        Assert.Equal(10, f.ReplaySamples[0].X);
+        Assert.Equal(11, f.ReplaySamples[1].X);
+        Assert.Equal(Ms(160), f.PendingDeadline);
+
+        AssertNothing(f.Process(Ms(100), null, [Finger(2, 501, 0)], _out));
+        InputFilterResult armed = f.Process(Ms(160), null, [Finger(2, 502, 0)], _out);
+        Assert.True(armed.HasPen);
+        Assert.Equal(502, armed.Pen.X);
+        Assert.Equal(3, armed.ReplayCount);
+        Assert.Equal(499, f.ReplaySamples[0].X);
+        Assert.Equal(500, f.ReplaySamples[1].X);
+        Assert.Equal(501, f.ReplaySamples[2].X);
+    }
+
+    [Fact]
+    public void Three_fingers_are_touches_and_never_a_stroke()
+    {
+        var f = new InputFilter();
+        AssertNothing(f.Process(Ms(0), null, [Finger(1)], _out));
+        InputFilterResult three = f.Process(Ms(20), null, [Finger(1), Finger(2), Finger(3)], _out);
+        Assert.False(three.HasPen);
+        Assert.Equal(3, three.TouchCount);
+        Assert.Equal([1, 2, 3], _out[..3].Select(t => (int)t.PointerId));
+
+        InputFilterResult two = f.Process(Ms(200), null, [Finger(1), Finger(3)], _out);
+        Assert.False(two.HasPen);
+        Assert.Equal(2, two.TouchCount);
+        Assert.False(f.Process(Ms(300), null, [Finger(3)], _out).HasPen);
+        Assert.Null(f.PendingDeadline);
+    }
+
+    [Fact]
+    public void Dropping_from_two_fingers_to_one_stays_in_touch_mode_with_the_arm_delay()
+    {
+        var f = new InputFilter();
+        Assert.Equal(2, f.Process(Ms(0), null, [Finger(1), Finger(2)], _out).TouchCount);
+
+        for (int t = 10; t <= 500; t += 50)
+        {
+            InputFilterResult one = f.Process(Ms(t), null, [Finger(2, (ushort)t, 0)], _out);
+            Assert.False(one.HasPen);
+            Assert.Equal(0, one.ReplayCount);
+            Assert.Equal(1, one.TouchCount);
+            Assert.Equal(new TouchSample(2, true, (ushort)t, 0), _out[0]);
+            Assert.Null(f.PendingDeadline);
+        }
+
+        Assert.Equal(default, f.Process(Ms(510), null, [], _out));
+        AssertNothing(f.Process(Ms(520), null, [Finger(4)], _out));
+        Assert.Equal(Ms(620), f.PendingDeadline);
+    }
+
+    [Fact]
     public void Hold_arm_tap_and_palm_paths_are_allocation_free()
     {
         var f = new InputFilter();
@@ -508,13 +625,17 @@ public class InputFilterTests
             [],
             [],
             [],
+            [Finger(7)],
+            [Finger(8)], // held finger replaced in one snapshot: tap, then a new hold
+            [],
         ];
+        RawTouch[] history = [Finger(1, 50, 50), Finger(2, 60, 60), Finger(8, 70, 70), Finger(9, 1, 1)];
         TouchSample[] dest = _out;
         long pens = 0;
         long replayed = 0;
         Alloc.AssertZero(4_000, i =>
         {
-            InputFilterResult r = f.Process(TimeSpan.FromMilliseconds(i * 50.0), null, frames[i % frames.Length], dest);
+            InputFilterResult r = f.Process(TimeSpan.FromMilliseconds(i * 50.0), null, frames[i % frames.Length], dest, history);
             if (r.HasPen)
             {
                 pens++;
