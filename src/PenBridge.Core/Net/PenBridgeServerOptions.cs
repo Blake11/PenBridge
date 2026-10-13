@@ -1,0 +1,71 @@
+using System.Net;
+using Microsoft.Extensions.Logging;
+using PenBridge.Core.Input;
+using PenBridge.Core.Security;
+
+namespace PenBridge.Core.Net;
+
+/// <summary>Configuration of a <see cref="PenBridgeServer"/>. Timeouts follow docs/specs/phase-1-core.md.</summary>
+public sealed class PenBridgeServerOptions
+{
+    /// <summary>The TLS identity (its fingerprint is what phones pin). Owned by the caller.</summary>
+    public required ServerIdentity Identity { get; init; }
+
+    /// <summary>Paired devices and their keys.</summary>
+    public required IPairedDeviceRegistry Registry { get; init; }
+
+    /// <summary>Receives pen and gesture events; called under the server's input lock, so it must not block.</summary>
+    public required IInputSink InputSink { get; init; }
+
+    /// <summary>Name sent in HelloAck (truncated to 256 UTF-8 bytes).</summary>
+    public string ServerName { get; init; } = Environment.MachineName;
+
+    /// <summary>Local address for both sockets. The default <see cref="IPAddress.IPv6Any"/> is bound dual-mode (IPv4 + IPv6).</summary>
+    public IPAddress BindAddress { get; init; } = IPAddress.IPv6Any;
+
+    /// <summary>First port tried for TCP and UDP (ADR-0011). 0 binds an ephemeral port (tests).</summary>
+    public int Port { get; init; } = ProtocolInfo.DefaultPort;
+
+    /// <summary>How many following ports are tried when <see cref="Port"/> is taken (47821–47829).</summary>
+    public int PortFallbackCount { get; init; } = 9;
+
+    /// <summary>Initial "allow takeover" setting (ADR-0010); changeable through <see cref="PenBridgeServer.AllowTakeover"/>.</summary>
+    public bool AllowTakeover { get; init; }
+
+    /// <summary>Target display in global display points. The default unit square yields normalized 0..1 positions.</summary>
+    public DisplayRect TargetDisplay { get; init; } = new(0, 0, 1, 1);
+
+    /// <summary>Sub-region of <see cref="TargetDisplay"/> in fractions.</summary>
+    public NormalizedRect TargetRegion { get; init; } = NormalizedRect.Full;
+
+    /// <summary>Host put into QR payloads; null picks the first non-loopback IPv4 address.</summary>
+    public string? AdvertisedHost { get; init; }
+
+    /// <summary>From TCP accept until SessionStart (TLS handshake, Hello, pairing, Auth).</summary>
+    public TimeSpan HandshakeTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>Deadline for each control read before the session starts.</summary>
+    public TimeSpan ReadTimeout { get; init; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>From the phone's PairRound1 to PairResult; holds the single pairing slot at most this long.</summary>
+    public TimeSpan PairingTimeout { get; init; } = TimeSpan.FromSeconds(20);
+
+    /// <summary>A session peer silent this long on the control channel is dead (it pings every 2 s).</summary>
+    public TimeSpan PeerTimeout { get; init; } = TimeSpan.FromSeconds(6);
+
+    /// <summary>Heartbeat interval; <see cref="Timeout.InfiniteTimeSpan"/> disables pings.</summary>
+    public TimeSpan PingInterval { get; init; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>Concurrent connections that haven't authenticated yet; more are closed on accept.</summary>
+    public int MaxPendingConnections { get; init; } = 8;
+
+    /// <summary>Sustained rate of failed datagram decryptions tolerated per session (bursts up to twice this).</summary>
+    public int MaxAuthFailuresPerSecond { get; init; } = 16;
+
+    /// <summary>Watchdog and history options for the tracker.</summary>
+    public PenStateTrackerOptions? TrackerOptions { get; init; }
+
+    public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
+
+    public ILoggerFactory? LoggerFactory { get; init; }
+}
