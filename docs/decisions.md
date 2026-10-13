@@ -49,3 +49,30 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
 - **Decision:** the phone app offers **Advanced ▸ Connect manually**: the user enters host/IP, port and the PIN shown on the Mac.
 - **Security:** the same pairing as ADR-0004 applies. The PIN authorizes the pairing, the Mac's cert fingerprint is pinned on first pairing, and nothing is weakened.
 - **Display:** the Mac's "Pair new device…" window shows its IP address and port next to the PIN and QR code.
+
+## ADR-0009 — PIN/QR pairing via J-PAKE (BouncyCastle), bound to the Mac's TLS certificate
+**Status:** accepted (2026-10-13)
+- **Context:** the first pairing happens before the phone has pinned the Mac's certificate. With plain PIN-over-TLS, a relay on the LAN could pass the PIN through.
+- **Decision:** pairing runs J-PAKE (RFC 8236) over the TLS control channel, using `BouncyCastle.Cryptography` (`Org.BouncyCastle.Crypto.Agreement.JPake`).
+  - The shared secret is the 6-digit PIN (manual or discovered path) or the QR one-time token (QR path). It's one flow with two secret sources.
+  - The J-PAKE key-confirmation step MACs the Mac's certificate SHA-256 fingerprint as each side sees it. A relay presenting its own certificate therefore fails confirmation.
+  - Success yields a 32-byte device key `K_dev`, stored on both sides (platform secret store). The phone pins the fingerprint.
+- **PIN policy:** a PIN is valid for 2 min. After 3 failed attempts it's discarded and a new one is shown. Only one pairing attempt runs at a time.
+- **Rejected:** SPAKE2 (no maintained .NET implementation; hand-written curve math is too risky) and SRP-6a (an asymmetric client/server design).
+- **Consequence:** adds a BouncyCastle dependency. It must stay trim/AOT-clean, and we use only the JPake and digest classes directly.
+
+## ADR-0010 — Many paired devices, one active session
+**Status:** accepted (2026-10-13)
+- **Decision:** the Mac keeps a registry of paired devices (id, name, `K_dev`, paired-at, last-seen), and the menu can forget one.
+- **One active session:** only one authenticated session may inject input at a time. Another device gets `Busy`, unless the user has enabled "allow takeover", in which case the old session is closed with `Bye(TakenOver)`.
+
+## ADR-0011 — Fixed default port 47820 with fallback
+**Status:** accepted (2026-10-13)
+- **Decision:** TCP (control) and UDP (input) both use 47820. If it's taken, the server tries 47821–47829.
+- **Visibility:** the bound port is advertised over Bonjour and shown in the pairing window (ADR-0008).
+
+## ADR-0012 — Phase 1 Core includes the cross-platform network engine
+**Status:** accepted (2026-10-13)
+- **Decision:** `PenBridge.Core` contains the TLS control server/client, the encrypted UDP input channel, session orchestration and the pairing state machines, all on `System.Net`. They are tested end to end over loopback.
+- **Platform heads add only:** discovery (Bonjour/NSD), secret-store adapters (Keychain/Keystore), UI and input injection/sampling.
+- **Gesture recognition runs on the receiver (Mac) side**, from raw touch-pointer state carried in every input datagram. Lost packets then can't drop scroll deltas, and the phone stays a thin sampler.
