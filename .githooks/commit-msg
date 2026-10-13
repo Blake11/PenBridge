@@ -5,7 +5,7 @@
 #   <type>[(<scope>)][!]: <subject>
 #
 # types:  feat fix refactor perf docs test build ci chore style revert
-# scopes: core mac android ios protocol ci deps docs (optional)
+# scopes: core protocol security input net simclient mac android ios windows ci deps docs spec release (optional)
 # Merge, Revert "...", fixup!, squash! and amend! commits are allowed as-is.
 
 msg_file="$1"
@@ -24,7 +24,7 @@ case "$subject" in
 esac
 
 types='feat|fix|refactor|perf|docs|test|build|ci|chore|style|revert'
-scopes='core|mac|android|ios|protocol|ci|deps|docs'
+scopes='core|protocol|security|input|net|simclient|mac|android|ios|windows|ci|deps|docs|spec|release'
 pattern="^($types)(\\(($scopes)\\))?!?: [^[:space:]].*"
 
 if ! printf '%s\n' "$subject" | grep -Eq "$pattern"; then

@@ -13,7 +13,7 @@ description: Create or update a GitHub pull request for PenBridge following repo
 
 ## Commits
 - Conventional Commits: `<type>(<optional scope>): <imperative subject>`; types feat, fix, perf, refactor, test, docs, build, ci, chore, style. Breaking: `feat!:` or `BREAKING CHANGE:` footer (bumps major via release-please).
-- Scopes: `core`, `mac`, `android`, `ios`, `protocol`, `ci`, `scripts`.
+- Scopes (optional; enforced by `.githooks/commit-msg` and `pr-title.yml`): `core`, `protocol`, `security`, `input`, `net`, `simclient`, `mac`, `android`, `ios`, `windows`, `ci`, `deps`, `docs`, `spec`, `release`.
 - **No AI attribution**: no `Co-Authored-By: Claude`, no "Generated with" lines, no session trailers.
 - `.githooks/commit-msg` validates; enable with `git config core.hooksPath .githooks` if not set.
 

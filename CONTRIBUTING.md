@@ -31,7 +31,7 @@ The `commit-msg` hook rejects commit subjects that are not Conventional Commits.
 | | Allowed values |
 |---|---|
 | type | `feat` `fix` `refactor` `perf` `docs` `test` `build` `ci` `chore` `style` `revert` |
-| scope (optional) | `core` `mac` `android` `ios` `protocol` `ci` `deps` `docs` |
+| scope (optional) | `core` `protocol` `security` `input` `net` `simclient` `mac` `android` `ios` `windows` `ci` `deps` `docs` `spec` `release` |
 
 - Write the subject in lowercase imperative mood, with no trailing period and 100 characters at most.
 - Mark a breaking change with `!` (`feat(protocol)!: ...`) or a `BREAKING CHANGE:` footer.

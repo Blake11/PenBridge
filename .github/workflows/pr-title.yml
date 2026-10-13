@@ -33,13 +33,20 @@ jobs:
             revert
           scopes: |
             core
+            protocol
+            security
+            input
+            net
+            simclient
             mac
             android
             ios
-            protocol
+            windows
             ci
             deps
             docs
+            spec
+            release
           requireScope: false
           # Subject must not start with an uppercase letter.
           subjectPattern: ^(?![A-Z]).+$
