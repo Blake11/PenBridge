@@ -34,6 +34,7 @@ The `commit-msg` hook rejects commit subjects that are not Conventional Commits.
 | scope (optional) | `core` `protocol` `security` `input` `net` `simclient` `mac` `android` `ios` `windows` `ci` `deps` `docs` `spec` `release` |
 
 - Write the subject in lowercase imperative mood, with no trailing period and 100 characters at most.
+  The PR-title check also accepts a leading `Bump ` on PRs opened by Dependabot, which capitalises it.
 - Mark a breaking change with `!` (`feat(protocol)!: ...`) or a `BREAKING CHANGE:` footer.
 - `Merge ...`, `Revert "..."`, `fixup!`, `squash!` and `amend!` commits are let through by the hook. They disappear on squash merge anyway.
 - **No AI attribution**: no `Co-Authored-By: Claude` or similar trailers, and no "Generated with ..." lines, in commits or PR descriptions.

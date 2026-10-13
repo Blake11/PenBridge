@@ -48,7 +48,10 @@ jobs:
             spec
             release
           requireScope: false
-          # Subject must not start with an uppercase letter.
-          subjectPattern: ^(?![A-Z]).+$
+          # Subject must not start with an uppercase letter. Dependabot PRs
+          # (author dependabot[bot], not the triggering actor) may also start
+          # with "Bump ", which Dependabot capitalises and offers no setting
+          # to change.
+          subjectPattern: ${{ github.event.pull_request.user.login == 'dependabot[bot]' && '^(?:Bump |(?![A-Z])).+$' || '^(?![A-Z]).+$' }}
           subjectPatternError: |
             The subject "{subject}" in "{title}" must start with a lowercase letter.
