@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  No cleartext anywhere. PenBridge speaks only TLS (control channel, Mac certificate pinned by
+  fingerprint in Core) and AES-GCM UDP (input). The platform trust store never vouches for the Mac.
+-->
+<network-security-config>
+  <base-config cleartextTrafficPermitted="false">
+    <trust-anchors>
+      <certificates src="system" />
+    </trust-anchors>
+  </base-config>
+</network-security-config>
