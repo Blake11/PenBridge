@@ -53,6 +53,9 @@ scripts/mac-run.sh -- <dotnet build args>   # e.g. -- -p:ValidateXcodeVersion=fa
 - Pressure 0..1 in `kCGTabletEventPointPressure` (subtype `TabletPoint`) and `kCGMouseEventPressure`; tilt −1..1.
 - While down use `LeftMouseDragged`, not `MouseMoved`; unmatched down/up leaves apps stuck (150 ms pen-up watchdog covers packet loss).
 - Sanity-check in Preview/Notes (mouse behaviour) and on multiple displays/regions.
+- **CGEvent timestamps = nanoseconds on CLOCK_UPTIME_RAW**, not mach ticks (measured on Apple silicon, timebase 125/3): an NSEvent made with timestamp t s converts to a CGEvent timestamp of exactly t·10⁹ = `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)`, and NSEvent reads a CGEvent's timestamp as ns. `CGEventCreate*` leaves it 0 (the window server stamps on post). On macOS `Stopwatch.GetTimestamp()` is that clock at 1 GHz; convert with `TabletEventMath.TicksToNanoseconds(ticks, Stopwatch.Frequency)`.
+- Hot path posts through raw handles (`CGEventCreateMouseEvent`/`CGEventSet*ValueField`/`CGEventSetTimestamp`/`CGEventPost`/`CFRelease`), not the `CGEvent` binding, which allocates a managed wrapper per event. The bound `CGEventField`/`CGEventType` enums give the field ids.
+- Headless injection check (no Screen Recording needed): another process polling `CGEventGetLocation(CGEventCreate(NULL))` sees the cursor follow a SimClient `draw circle`.
 
 ## Mac services notes (`src/PenBridge.Mac/Services`)
 - **Bonjour** uses the DNS-SD C API (`DNSServiceRegister` + `DNSServiceSetDispatchQueue` on the main queue, static `[UnmanagedCallersOnly]` reply callback; NativeAOT-clean). `NSNetService`/`NSHost` are obsoleted (CA1422 = build error). Check with `dns-sd -B _penbridge._tcp` and `dns-sd -L "<name>" _penbridge._tcp local`.

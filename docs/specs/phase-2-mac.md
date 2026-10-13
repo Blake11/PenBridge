@@ -22,9 +22,9 @@ Wave 2 consumes the wave-1 public types. Wave 3 runs after everything else has m
   - Fields: enter/leave, pointer type (pen = 1, eraser = 3), and a stable device and pointer id. The capability mask declares pressure, tilt and rotation.
   - `ProximityLeave` posts the matching leave.
 - **Motion:** each pen event posts a mouse event at the mapped point, `kCGMouseEventSubtype = kCGEventMouseSubtypeTabletPoint`.
-  - Fields: `kCGTabletEventPointPressure` (0..1), tilt X/Y (−1..1 from centi-degrees/9000), rotation, and `kCGMouseEventPressure`.
+  - Fields: `kCGTabletEventPointPressure` (0..1), tilt X/Y (−1..1: ±60° maps to ±1, clamped, which is the Wacom/Qt convention and the S Pen's physical range; the Y sign is the `TiltYSign` constant, verified in Krita), rotation, and `kCGMouseEventPressure`.
   - Event types: `Move` → `MouseMoved`, `Down` → `LeftMouseDown`, `Drag` → `LeftMouseDragged`, `Up` → `LeftMouseUp`.
-  - The event timestamp comes from `PenEvent.TimestampUs`, mapped onto the mach clock.
+  - The event timestamp comes from `PenEvent.TimestampUs`, mapped to nanoseconds on `CLOCK_UPTIME_RAW` (the same clock as `Stopwatch`; no mach timebase conversion).
 - **Side button (Wacom default):** `ButtonDown(Primary)` posts `RightMouseDown` at the current point and `ButtonUp(Primary)` posts `RightMouseUp`. This works while hovering and while touching. Secondary is reserved and ignored. Button mapping becomes configurable in Phase 5.
 - **Safety:** releasing on `ProximityLeave`, disconnect or pause posts any outstanding up/right-up, so nothing stays stuck.
 - **Mapping:** `DisplayTargetResolver` lists displays (`CGGetActiveDisplayList`) with their UUID (`CGDisplayCreateUUIDFromDisplayID`).
@@ -36,7 +36,7 @@ Wave 2 consumes the wave-1 public types. Wave 3 runs after everything else has m
 
 ## P2-B — Services
 
-- `KeychainSecretStore : ISecretStore`: generic-password items, service `com.blake11.penbridge`, account = key. Accessible after first unlock, device-only. It holds the server PFX, device keys and the registry.
+- `KeychainSecretStore : ISecretStore`: generic-password items, service `com.blake11.penbridge`, account = key. `kSecAttrAccessible` = after first unlock, device-only. Note that this attribute only takes effect in the data-protection keychain; in the file-based login keychain used by unsandboxed apps it's ignored. The items are never synchronizable. It holds the server PFX, device keys and the registry.
 - `BonjourAdvertiser`: `NSNetService` `_penbridge._tcp` on the bound port, with the TXT record from Core (`v`, `fp`, `name` = the Mac's computer name). It re-publishes on name/port change and stops on quit.
 - `OsLogLoggerProvider`: `ILogger` → `os_log`, subsystem `com.blake11.penbridge`, one category per type. Sample-path logging is forbidden.
 - `SettingsStore` (`NSUserDefaults`): target display UUID, allow takeover, paused, run-at-startup mirror.
