@@ -83,12 +83,6 @@
       "Bash(git branch -D *)",
       "Bash(git worktree remove --force *)",
       "Bash(git remote add *)",
-      "Bash(gh pr create *)",
-      "Bash(gh pr merge *)",
-      "Bash(gh pr close *)",
-      "Bash(gh repo create *)",
-      "Bash(gh release *)",
-      "Bash(gh secret *)",
       "Bash(tccutil reset *)",
       "Bash(rm -rf *)"
     ],
