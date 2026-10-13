@@ -54,7 +54,7 @@ public sealed partial class AppDelegate : NSApplicationDelegate
         _settings = new SettingsStore();
         _injector = new CGEventTabletInjector(_loggers.CreateLogger<CGEventTabletInjector>());
         _resolver = new DisplayTargetResolver(_settings.TargetDisplayUuid, _loggers.CreateLogger<DisplayTargetResolver>());
-        _host = new ServerHost(_injector, new KeychainSecretStore(), _settings, _loggers);
+        _host = new ServerHost(_injector, SecretStoreFactory.Create(_loggers), _settings, _loggers);
         _displayBinding = _resolver.Bind(_host, _injector);
         _pairing = new PairingWindowController(_host);
 

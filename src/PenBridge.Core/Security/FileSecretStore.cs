@@ -4,8 +4,9 @@ namespace PenBridge.Core.Security;
 
 /// <summary>
 /// <see cref="ISecretStore"/> that keeps one file per key in a directory. Intended for tests and
-/// the SimClient only: values are protected by file permissions alone (directory 700, files 600 on
-/// Unix), not encrypted at rest. Platform heads must use the OS secret store instead.
+/// the SimClient, and for Debug builds of platform heads (ADR-0017): values are protected by file
+/// permissions alone (directory 700, files 600 on Unix), not encrypted at rest. Release builds of
+/// platform heads must use the OS secret store instead.
 /// </summary>
 public sealed class FileSecretStore : ISecretStore
 {
