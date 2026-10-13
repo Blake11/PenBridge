@@ -72,6 +72,30 @@ avd_home="${ANDROID_AVD_HOME:-$HOME/.android/avd}"
 if [[ -f "$avd_home/$AVD_NAME.ini" ]]; then ok "AVD $AVD_NAME"
 else soft "AVD $AVD_NAME not created" "scripts/android-emulator.sh"; fi
 
+step "Android build resolution (what dotnet build / Rider will use)"
+# Evaluates the Android head exactly like a build does: Directory.Build.targets fills in
+# JavaSdkDirectory / AndroidSdkDirectory only when neither the property nor the env var is set.
+if have dotnet && workload_installed android; then
+  props="$(cd "$REPO_ROOT" && dotnet msbuild "$ANDROID_PROJECT" -nologo \
+             -getProperty:JavaSdkDirectory -getProperty:AndroidSdkDirectory 2>/dev/null || true)"
+  prop() { printf '%s\n' "$props" | sed -n "s/.*\"$1\": *\"\([^\"]*\)\".*/\1/p"; }
+  b_jdk="$(prop JavaSdkDirectory)"; b_sdk="$(prop AndroidSdkDirectory)"
+  if [[ -n "$b_jdk" ]]; then src="auto-detected by Directory.Build.targets"
+  elif [[ -n "${JAVA_HOME:-}" ]]; then b_jdk="$JAVA_HOME"; src="JAVA_HOME"
+  else src=""; fi
+  if [[ -z "$b_jdk" ]]; then bad "build finds no JDK (XA5300)" "brew install $JDK_FORMULA (or export JAVA_HOME)"
+  elif jdk_ok "$b_jdk"; then ok "JDK → $b_jdk ($src)"
+  else bad "build JDK $b_jdk ($src) is not a JDK ${JDK_MIN_MAJOR}–${JDK_MAX_MAJOR} home" "$(jdk_fix_hint "$b_jdk")"; fi
+  if [[ -n "$b_sdk" ]]; then src="auto-detected by Directory.Build.targets"
+  elif [[ -n "${ANDROID_HOME:-}" ]]; then b_sdk="$ANDROID_HOME"; src="ANDROID_HOME"
+  elif [[ -n "${ANDROID_SDK_ROOT:-}" ]]; then b_sdk="$ANDROID_SDK_ROOT"; src="ANDROID_SDK_ROOT"
+  else src=""; fi
+  if [[ -n "$b_sdk" && -d "$b_sdk" ]]; then ok "Android SDK → $b_sdk ($src)"
+  else bad "build finds no Android SDK${b_sdk:+ ($b_sdk from $src does not exist)}" "scripts/bootstrap.sh"; fi
+else
+  soft "skipped (needs dotnet + the android workload)"
+fi
+
 step "Android devices"
 if a="$(adb_bin 2>/dev/null)"; then
   devs="$("$a" devices 2>/dev/null | awk 'NR>1 && NF {print "      " $0}')"
