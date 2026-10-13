@@ -64,6 +64,7 @@ Rule: platform apps contain only platform glue; anything testable without a devi
   - Safety: if the pen is down and no packet arrives for 150 ms, the server issues pen-up.
   - Fallback: if UDP is blocked, input goes over the TLS channel.
 - **Versioning**: the protocol version is in the hello and the TXT record. A major mismatch is refused with a clear message on both sides.
+- **Wire contract**: the exact message table, datagram layout and key schedule are in `docs/specs/phase-1-core.md`, with all integers big-endian.
 - **Serialization**: hand-written `BinaryPrimitives`/`Span<T>`, with no reflection. It must stay trim/AOT-safe and allocation-free on the hot path.
 
 ## Roadmap

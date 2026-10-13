@@ -13,7 +13,7 @@ Protocol lives in `src/PenBridge.Core` (ADR-0004). Mac server and phone clients 
 - Prefer capability flags negotiated in hello over major bumps.
 
 ## 2. Core changes
-- Update the message/sample types and the hand-written serializer (`BinaryPrimitives`, explicit little-endian, `Span<byte>`); no reflection, no allocations on the input path.
+- Update the message/sample types and the hand-written serializer (`BinaryPrimitives`, explicit **big-endian** (network order, per docs/specs/phase-1-core.md), `Span<byte>`); no reflection, no allocations on the input path.
 - Update the protocol version constant(s) and the TXT record version.
 - Readers: validate lengths before reading, reject unknown message types on the control channel (or skip if marked optional), never trust counts from the wire (cap batch sizes).
 - Input datagrams: keep full-state-per-packet semantics, sequence numbers, AES-GCM AAD covering the header.
@@ -34,3 +34,7 @@ Protocol lives in `src/PenBridge.Core` (ADR-0004). Mac server and phone clients 
 
 ## 5. Verify
 `scripts/test.sh`; SimClient ↔ Mac server; S23 ↔ Mac for input-path changes. PR notes state the version change and compatibility.
+
+## Gotchas
+- Untrusted base64url (TXT `fp`, QR `fp`/`t`): use `Base64Url.DecodeFromChars` (`OperationStatus` overload). `TryDecodeFromChars` still throws `FormatException` on malformed or non-canonical input, because "Try" only covers destination size.
+- Readers ignore trailing bytes in known messages (minor-version extension point). Unknown enum values in *input samples* are rejected; unknown Error codes, Bye reasons and capability bits are accepted.
