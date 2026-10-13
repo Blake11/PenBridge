@@ -33,6 +33,7 @@ internal sealed class DrawSurfaceView : View
     private readonly TouchSample[] _touchOut = new TouchSample[InputFilter.MaxTouches];
     private readonly PenSample[] _samples = new PenSample[MaxSamplesPerEvent];
     private readonly Java.Lang.Runnable _penLeaveRunnable;
+    private readonly Java.Lang.Runnable _armRunnable;
     private InputFilter _filter;
     private InputFilterOptions? _pendingFilterOptions;
     private int _fingerCount;
@@ -42,6 +43,9 @@ internal sealed class DrawSurfaceView : View
     private long _lastPenMs = long.MinValue / 2;
     private bool _active;
     private bool _inkContact;
+    private long _armAtMs = -1;
+    private int _rangeDeviceId = int.MinValue;
+    private float _touchMajorMax;
 
     public DrawSurfaceView(Context context, PadSendQueue queue, InkEchoView? ink, InputFilterOptions filterOptions)
         : base(context)
@@ -50,6 +54,7 @@ internal sealed class DrawSurfaceView : View
         _ink = ink;
         _filter = new InputFilter(filterOptions);
         _penLeaveRunnable = new Java.Lang.Runnable(OnPenLeaveTimeout);
+        _armRunnable = new Java.Lang.Runnable(OnArmTimeout);
         Focusable = true;
         FocusableInTouchMode = true;
         SetBackgroundColor(Color.Rgb(16, 16, 18));
@@ -86,6 +91,7 @@ internal sealed class DrawSurfaceView : View
         _penPresent = false;
         _fingerCount = 0;
         _filter.Reset();
+        CancelArm();
         _queue.Enqueue(default, false, default, default);
         SetActive(false);
         _inkContact = false;
@@ -113,6 +119,7 @@ internal sealed class DrawSurfaceView : View
         int liftedCanceledId = -1;
 
         _fingerCount = 0;
+        UpdateTouchMajorRange(e);
         int count = e.PointerCount;
         for (int i = 0; i < count; i++)
         {
@@ -146,7 +153,8 @@ internal sealed class DrawSurfaceView : View
             }
 
             _fingerIndex[_fingerCount] = i;
-            _fingers[_fingerCount++] = new RawTouch((byte)id, true, canceled, Normalize(e.GetX(i), Width), Normalize(e.GetY(i), Height));
+            _fingers[_fingerCount++] = new RawTouch(
+                (byte)id, true, canceled, Normalize(e.GetX(i), Width), Normalize(e.GetY(i), Height), ContactSize(e, i));
         }
 
         int history = 0;
@@ -254,6 +262,7 @@ internal sealed class DrawSurfaceView : View
         if (disposing)
         {
             _penLeaveRunnable.Dispose();
+            _armRunnable.Dispose();
         }
 
         base.Dispose(disposing);
@@ -298,6 +307,42 @@ internal sealed class DrawSurfaceView : View
 
         float n = px * 65535f / size;
         return n >= 65535f ? ushort.MaxValue : (ushort)(n + 0.5f);
+    }
+
+    /// <summary>Contact size 0..1: touch major over the device's touch-major range, else <c>getSize</c>.</summary>
+    private float ContactSize(MotionEvent e, int index)
+    {
+        if (_touchMajorMax > 0f)
+        {
+            float major = e.GetTouchMajor(index);
+            if (major > 0f)
+            {
+                return Clamp01(major / _touchMajorMax);
+            }
+        }
+
+        return Clamp01(e.GetSize(index));
+    }
+
+    private static float Clamp01(float v) => v > 0f ? (v < 1f ? v : 1f) : 0f;
+
+    /// <summary>Caches the touch-major axis range; looked up again only when events come from another device.</summary>
+    private void UpdateTouchMajorRange(MotionEvent e)
+    {
+        int deviceId = e.DeviceId;
+        if (deviceId == _rangeDeviceId)
+        {
+            return;
+        }
+
+        _rangeDeviceId = deviceId;
+        _touchMajorMax = 0f;
+        using InputDevice? device = e.Device;
+        using InputDevice.MotionRange? range = device?.GetMotionRange(Axis.TouchMajor, e.Source);
+        if (range is not null && range.Max > 0f)
+        {
+            _touchMajorMax = range.Max;
+        }
     }
 
     private static ushort NormalizePressure(float pressure)
@@ -401,7 +446,16 @@ internal sealed class DrawSurfaceView : View
             active = contact;
             if (current.Tool == PenTool.FingerFallback)
             {
-                historyCount = touchEvent is null ? 0 : CollectFallbackHistory(touchEvent, current);
+                // Held samples replayed after the filter's arming delay precede this event's own history.
+                ReadOnlySpan<PenSample> replay = _filter.ReplaySamples;
+                if (replay.Length > _samples.Length - 1)
+                {
+                    replay = replay[^(_samples.Length - 1)..];
+                }
+
+                replay.CopyTo(_samples);
+                historyCount = replay.Length
+                    + (touchEvent is null ? 0 : CollectFallbackHistory(touchEvent, current, replay.Length));
             }
 
             if (historyCount == 0)
@@ -431,11 +485,13 @@ internal sealed class DrawSurfaceView : View
         }
 
         SetActive(active);
+        ScheduleArm();
     }
 
-    /// <summary>Writes the fallback finger's historical positions into <see cref="_samples"/> (oldest first) as
-    /// finger-fallback samples with the filter's pressure. Returns their count (0 if the finger isn't found).</summary>
-    private int CollectFallbackHistory(MotionEvent e, in PenSample current)
+    /// <summary>Writes the fallback finger's historical positions into <see cref="_samples"/> from
+    /// <paramref name="offset"/> (oldest first) as finger-fallback samples with the filter's pressure. Returns their
+    /// count (0 if the finger isn't found).</summary>
+    private int CollectFallbackHistory(MotionEvent e, in PenSample current, int offset)
     {
         int index = -1;
         for (int i = 0; i < _fingerCount; i++)
@@ -456,11 +512,11 @@ internal sealed class DrawSurfaceView : View
 
         int width = Width;
         int height = Height;
-        int first = Math.Max(0, historySize - (_samples.Length - 1));
+        int first = Math.Max(0, historySize - (_samples.Length - 1 - offset));
         int n = 0;
         for (int h = first; h < historySize; h++)
         {
-            _samples[n++] = current with
+            _samples[offset + n++] = current with
             {
                 X = Normalize(e.GetHistoricalX(index, h), width),
                 Y = Normalize(e.GetHistoricalY(index, h), height),
@@ -545,6 +601,47 @@ internal sealed class DrawSurfaceView : View
         _lastPenMs = SystemClock.UptimeMillis();
         Emit(null, _lastPenMs, 0);
         TryApplyPendingFilter();
+    }
+
+    /// <summary>A lone finger that doesn't move sends no events: re-run the filter when its arming delay ends.</summary>
+    private void ScheduleArm()
+    {
+        if (_filter.PendingDeadline is not { } deadline)
+        {
+            CancelArm();
+            return;
+        }
+
+        long atMs = (long)Math.Ceiling(deadline.TotalMilliseconds);
+        if (atMs == _armAtMs)
+        {
+            return;
+        }
+
+        RemoveCallbacks(_armRunnable);
+        _armAtMs = atMs;
+        PostDelayed(_armRunnable, Math.Max(0, atMs - SystemClock.UptimeMillis()));
+    }
+
+    private void CancelArm()
+    {
+        if (_armAtMs >= 0)
+        {
+            _armAtMs = -1;
+            RemoveCallbacks(_armRunnable);
+        }
+    }
+
+    private void OnArmTimeout()
+    {
+        if (_armAtMs < 0)
+        {
+            return;
+        }
+
+        long atMs = _armAtMs;
+        _armAtMs = -1;
+        Emit(null, Math.Max(atMs, SystemClock.UptimeMillis()), 0);
     }
 
     private void RemoveFinger(byte id)
