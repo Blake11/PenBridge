@@ -30,8 +30,22 @@ internal static class LogViewer
         try
         {
             string path = Path.Combine(Path.GetTempPath(), FileName);
-            File.WriteAllText(path, Script);
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            string temp = path + "." + Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".tmp";
+
+            // Created 0700 (never briefly world-readable or non-executable), then moved over any old copy atomically.
+            var options = new FileStreamOptions
+            {
+                Mode = FileMode.Create,
+                Access = FileAccess.Write,
+                UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute,
+            };
+            using (var writer = new StreamWriter(temp, new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false), options))
+            {
+                writer.Write(Script);
+            }
+
+            File.SetUnixFileMode(temp, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            File.Move(temp, path, overwrite: true);
             if (!NSWorkspace.SharedWorkspace.OpenUrl(NSUrl.CreateFileUrl(path, isDir: false, relativeToUrl: null)))
             {
                 error = "No app is set to open .command files.";

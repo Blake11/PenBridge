@@ -34,6 +34,7 @@ public sealed unsafe partial class GlobalHotkey : IDisposable
     private const uint TypeEventHotKeyId = 0x686B6964; // 'hkid'
     private const uint Signature = 0x5042686B; // 'PBhk'
     private const uint HotKeyId = 1;
+    private const uint HotKeyExclusive = 1 << 0; // kEventHotKeyExclusive: fail instead of silently sharing the combo
 
     private const int NoErr = 0;
     private const int EventNotHandledErr = -9874;
@@ -52,10 +53,10 @@ public sealed unsafe partial class GlobalHotkey : IDisposable
     /// <summary>Raised on the main thread when ⌃⌥⌘P is pressed.</summary>
     public event EventHandler? Pressed;
 
-    /// <summary>True when the hotkey is registered (another app may already own the combination).</summary>
+    /// <summary>True when the hotkey is registered. Registration is exclusive, so false means another app owns ⌃⌥⌘P.</summary>
     public bool IsRegistered => _hotKeyRef != IntPtr.Zero;
 
-    /// <summary>Installs the handler and registers ⌃⌥⌘P; false (logged) when the combination is taken.</summary>
+    /// <summary>Installs the handler and registers ⌃⌥⌘P exclusively; false (logged once) when the combination is taken.</summary>
     public bool Register()
     {
         if (IsRegistered)
@@ -81,7 +82,7 @@ public sealed unsafe partial class GlobalHotkey : IDisposable
         }
 
         IntPtr hotKeyRef;
-        int registered = RegisterEventHotKey(KeyCodeP, CmdKey | OptionKey | ControlKey, new EventHotKeyId(Signature, HotKeyId), target, 0, &hotKeyRef);
+        int registered = RegisterEventHotKey(KeyCodeP, CmdKey | OptionKey | ControlKey, new EventHotKeyId(Signature, HotKeyId), target, HotKeyExclusive, &hotKeyRef);
         if (registered != NoErr)
         {
             Log.RegisterFailed(_log, DisplayText, registered);
@@ -158,7 +159,7 @@ public sealed unsafe partial class GlobalHotkey : IDisposable
     private static extern IntPtr GetApplicationEventTarget();
 
     [DllImport(Carbon)]
-    private static extern int InstallEventHandler(IntPtr target, IntPtr handler, uint numTypes, EventTypeSpec* list, IntPtr userData, IntPtr* handlerRef);
+    private static extern int InstallEventHandler(IntPtr target, IntPtr handler, nuint numTypes, EventTypeSpec* list, IntPtr userData, IntPtr* handlerRef);
 
     [DllImport(Carbon)]
     private static extern int RemoveEventHandler(IntPtr handlerRef);

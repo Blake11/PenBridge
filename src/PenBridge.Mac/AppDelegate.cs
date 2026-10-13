@@ -25,6 +25,9 @@ public sealed partial class AppDelegate : NSApplicationDelegate
     /// <summary>Upper bound for a clean shutdown; quit proceeds anyway after it.</summary>
     private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(5);
 
+    /// <summary>NSUserDefaults flag: the system Accessibility prompt was shown once (first launch without the grant).</summary>
+    private const string AccessibilityPromptedKey = "AccessibilityPrompted";
+
     private OsLogLoggerFactory? _loggers;
     private ILogger? _log;
     private SettingsStore? _settings;
@@ -62,6 +65,7 @@ public sealed partial class AppDelegate : NSApplicationDelegate
         _statusItem = new StatusItemController(_host, _injector, _resolver, _settings, _pairing, _hotkey, _loggers.CreateLogger<StatusItemController>());
         Log.Launched(_log, NSBundle.MainBundle.ObjectForInfoDictionary("CFBundleShortVersionString")?.ToString() ?? "?");
 
+        PromptAccessibilityOnce();
         _ = StartServerAsync();
     }
 
@@ -88,6 +92,20 @@ public sealed partial class AppDelegate : NSApplicationDelegate
         }
 
         return NSApplicationTerminateReply.Later;
+    }
+
+    // The system prompt appears once, on the first launch without the grant; afterwards "Grant Accessibility…" in the
+    // menu opens only the Settings pane, so the two UIs never show together.
+    private void PromptAccessibilityOnce()
+    {
+        NSUserDefaults defaults = NSUserDefaults.StandardUserDefaults;
+        if (_injector!.IsAccessibilityTrusted || defaults.BoolForKey(AccessibilityPromptedKey))
+        {
+            return;
+        }
+
+        defaults.SetBool(true, AccessibilityPromptedKey);
+        _injector.RequestAccessibility();
     }
 
     private async Task StartServerAsync()

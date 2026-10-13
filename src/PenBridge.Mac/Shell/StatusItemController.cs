@@ -314,7 +314,7 @@ public sealed partial class StatusItemController : IDisposable
         _menu.AddItem(NSMenuItem.SeparatorItem);
 
         // 4. Pause input.
-        NSMenuItem pause = Action("Pause input", TogglePause);
+        NSMenuItem pause = Action(_hotkey.IsRegistered ? "Pause input" : "Pause input (" + GlobalHotkey.DisplayText + " unavailable)", TogglePause);
         pause.State = state.Paused ? NSCellStateValue.On : NSCellStateValue.Off;
         if (_hotkey.IsRegistered)
         {
@@ -422,7 +422,7 @@ public sealed partial class StatusItemController : IDisposable
 
     private void GrantAccessibility()
     {
-        _injector.RequestAccessibility();
+        // Only the Settings pane: the system prompt is shown once, at first launch (AppDelegate), never alongside it.
         using var url = new NSUrl(AccessibilityStatus.SettingsUrl);
         NSWorkspace.SharedWorkspace.OpenUrl(url);
     }
