@@ -148,9 +148,11 @@ jobs:
           dotnet --version
           dotnet workload list
 
-      - name: Build
+      # The shipped configuration: PublishAot applies only to `dotnet publish`, which produces the
+      # universal NativeAOT app with full trimming (issue #42); trim/AOT warnings are errors.
+      - name: Publish Release (NativeAOT)
         run: >
-          dotnet build src/PenBridge.Mac/PenBridge.Mac.csproj
+          dotnet publish src/PenBridge.Mac/PenBridge.Mac.csproj
           -c Release
           -p:CreatePackage=false
 
@@ -158,8 +160,10 @@ jobs:
       - name: Build (Debug)
         run: dotnet build src/PenBridge.Mac/PenBridge.Mac.csproj -c Debug
 
+      # NativeAOT: J-PAKE code compiled into the executable (dSYM symbols) and the ILLink output's
+      # reference closure; Debug: the bundled assemblies. The head pairs, so pairing must be present.
       - name: Check app bundles
-        run: scripts/check-bundle.sh --mac Release --mac Debug
+        run: scripts/check-bundle.sh --require-pairing --mac Release --mac Debug
 
   android-build:
     name: Android build

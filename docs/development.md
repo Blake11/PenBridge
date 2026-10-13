@@ -93,12 +93,14 @@ scripts/check-bundle.sh --mac Release --android Release --ios Release   # after 
 
 `check-bundle.sh` checks that every type a bundled assembly references still exists in the bundle, and that the J-PAKE types are present whenever `PairingSession` is. It reads the Mac `.app`'s `MonoBundle`, the iOS `.app`, and the ILLink output that goes into the APK (`obj/<config>/net10.0-android/<rid>/linked`), because the APK packs assemblies into a compressed store. CI runs both scripts (issue #46).
 
+The Mac Release app is NativeAOT (issue #42), so its bundle holds no assemblies. For it, `check-bundle.sh` reads the native symbols of each architecture (from `PenBridge.app.dSYM`, since the universal executable is stripped) and requires the J-PAKE code to be compiled in wherever `PairingSession` is. With `--mac Release` it also checks the reference closure of the ILLink output that ILC compiled (`obj/Release/net10.0-macos/<rid>/linked`). `--require-pairing` (used in CI) fails if the pairing code is missing altogether.
+
 ### Mac server
 
 ```bash
 scripts/mac-dev-cert.sh            # one-time: "PenBridge Dev" code-signing identity
 scripts/mac-run.sh                 # Debug build → sign → open the .app (menu-bar icon, no Dock icon)
-scripts/mac-run.sh --release
+scripts/mac-run.sh --release       # dotnet publish -c Release: the universal NativeAOT app
 scripts/mac-run.sh --logs          # + log stream --predicate 'process == "PenBridge"'
 scripts/mac-run.sh --no-build      # relaunch the last build
 scripts/mac-run.sh --reset-tcc     # tccutil reset Accessibility com.blake11.penbridge, then run
@@ -108,9 +110,11 @@ scripts/mac-run.sh --reset-dev-secrets   # delete the Debug file secret store (a
 
 **Every build signs** — `dotnet build`, `dotnet run`, Rider and `mac-run.sh` alike (issue #55). `PenBridge.Mac.csproj` runs `security find-identity -p codesigning` before the SDK's signing step: if the `PenBridge Dev` identity is in the keychain it sets `CodesignKey="PenBridge Dev"`, otherwise the SDK signs ad-hoc and the build prints a hint. The SDK's own signing (`EnableCodeSigning`, on by default) signs every native library in `Contents/MonoBundle`, then the bundle, with `Entitlements.plist`. Check with `codesign -dvv <app>` (`Authority=PenBridge Dev`).
 - Opt out with `-p:PenBridgeDevSigning=false`; pick another identity with `-p:PenBridgeDevCodesignKey="<name>"`; an explicit `-p:CodesignKey=…` wins.
-- CI and `build-release.yml` build with `-p:EnableCodeSigning=false` (the target is skipped) and sign with `scripts/mac-sign.sh <app> <identity>`: each MonoBundle library first, then the bundle with `codesign --force --deep --identifier com.blake11.penbridge`. The build rewrites the Microsoft-signed runtime dylibs there and `--deep` treats MonoBundle as resources, so a build with signing off that only re-signs the bundle is killed at launch with "Code Signature Invalid". `--hardened` adds `--options runtime --timestamp` (notarization). See `scripts/mac-sign.sh --help`.
+- `build-release.yml` publishes with `-p:EnableCodeSigning=false` (the target is skipped) and signs with `scripts/mac-sign.sh --no-entitlements <app> <identity>`: each MonoBundle library first, then the bundle with `codesign --force --deep --identifier com.blake11.penbridge`. The build rewrites the Microsoft-signed runtime dylibs there and `--deep` treats MonoBundle as resources, so a build with signing off that only re-signs the bundle is killed at launch with "Code Signature Invalid". `--hardened` adds `--options runtime --timestamp` (notarization). See `scripts/mac-sign.sh --help`.
 
-`mac-run.sh` kills a running instance, builds, re-signs with `mac-sign.sh` only if the bundle isn't already signed with an existing `PenBridge Dev` identity (an old build, `--no-build`, or `-- -p:EnableCodeSigning=false`), and launches.
+**Release is NativeAOT** (issue #42, ADR-0016). `PenBridge.Mac.csproj` sets `PublishAot` for Release, and the macOS SDK applies it only to `dotnet publish`, which then trims every assembly fully and compiles the app into one universal executable (`bin/Release/net10.0-macos/PenBridge.app`; the per-RID bundles next to it are intermediates). `dotnet build -c Release` still produces an untrimmed JIT bundle; Debug stays JIT for fast iteration. The NativeAOT bundle's `MonoBundle` holds only the five `libSystem.*.Native` dylibs, and its signature carries no entitlements: `Entitlements.plist` only grants `allow-jit`, which CoreCLR needs under the hardened runtime and NativeAOT doesn't. A publish takes about as long as a JIT build (about 30 s clean, both architectures). Idle memory, launch time and how to measure them: skill `mac-build-run` ("Memory and startup").
+
+`mac-run.sh` kills a running instance, builds (publishes for `--release`), re-signs with `mac-sign.sh` only if the bundle isn't already signed with an existing `PenBridge Dev` identity (an old build, `--no-build`, or `-- -p:EnableCodeSigning=false`), and launches.
 
 #### Why the dev certificate (Accessibility / TCC)
 

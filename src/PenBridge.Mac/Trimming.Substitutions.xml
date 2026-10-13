@@ -1,0 +1,25 @@
+<!--
+  ILLink substitutions for the NativeAOT Release publish only (PenBridge.Mac.csproj, issue #42).
+
+  Foundation.NSObject's static constructor has one private static field per Apple framework
+  (`fl`, `al`, `ab`, `wl`, ...), each initialized with ObjCRuntime.Dlfcn.dlopen(string, int). They
+  exist so a dynamically registered, untrimmed app finds every framework's classes. NativeAOT uses the
+  static registrar and full trimming, and the SDK links every framework whose types survive trimming
+  (LC_LOAD_DYLIB), so this preload is redundant. It still maps ~45 frameworks (WebKit, MapKit, GameKit,
+  SwiftUI, ...) and ~600 images into the process: about 28 MB of resident (shared) pages at idle.
+
+  The public dlopen(string, int) overload is stubbed (returns IntPtr.Zero); nothing else changes.
+  Invariant this relies on: in the trimmed Microsoft.macOS.dll the only callers of that overload are
+  NSObject's framework fields, whose values are never read. Libraries.*.Handle (field and constant
+  lookups) and Dlfcn.dlopen(string, Dlfcn.Mode) go through the internal _dlopen and are unaffected.
+  Re-check after a macOS workload update: list the callers of
+  `ObjCRuntime.Dlfcn::dlopen(string, int32)` in obj/Release/net10.0-macos/<rid>/linked/Microsoft.macOS.dll
+  (skill mac-build-run, "How to measure memory").
+-->
+<linker>
+  <assembly fullname="Microsoft.macOS">
+    <type fullname="ObjCRuntime.Dlfcn">
+      <method signature="System.IntPtr dlopen(System.String,System.Int32)" body="stub" />
+    </type>
+  </assembly>
+</linker>
