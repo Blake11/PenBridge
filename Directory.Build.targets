@@ -1,0 +1,19 @@
+<Project>
+  <!--
+    BouncyCastle.Cryptography (J-PAKE, ADR-0009) is not marked IsTrimmable. Under the heads' default
+    partial trim mode ILLink therefore copies the whole assembly and analyses every type in it,
+    including unused OpenPGP code (Org.BouncyCastle.Bcpg) that reports IL2045, which fails the build
+    as IL2104. Instead of suppressing, opt the assembly into trimming: ILLink keeps only the code
+    PenBridge.Core reaches (JPake, digests, BigInteger) and analyses that, which is warning-free.
+    A Native AOT publish of a full pairing (full trimming) is warning-free too.
+    Runs only when ILLink runs (trimmed head builds); a no-op for Core and the tests.
+  -->
+  <Target Name="PenBridgeTrimBouncyCastle" AfterTargets="PrepareForILLink">
+    <ItemGroup>
+      <ManagedAssemblyToLink Condition="'%(Filename)' == 'BouncyCastle.Cryptography'">
+        <IsTrimmable>true</IsTrimmable>
+        <TrimMode>link</TrimMode>
+      </ManagedAssemblyToLink>
+    </ItemGroup>
+  </Target>
+</Project>
