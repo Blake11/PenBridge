@@ -23,7 +23,7 @@ bootstrap: Homebrew `openjdk@17` + `android-commandlinetools` cask (seed), Andro
   sudo xcodebuild -runFirstLaunch
   ```
   Version-mismatch error → install the Xcode it names; temporary escape hatch for a minor mismatch: `-p:ValidateXcodeVersion=false`.
-- **`scripts/mac-dev-cert.sh`** — prompts for the login password (skill `mac-build-run`).
+- **`scripts/mac-dev-cert.sh`** — prompts for the login password (skill `mac-build-run`). Once it exists, every Mac build (`dotnet build`/`run`, Rider, scripts) signs with "PenBridge Dev" automatically (csproj target, #55); without it builds sign ad-hoc and print a hint.
 - **Wireless adb pairing** — needs the code shown on the phone (skill `android-build-run`).
 
 ## Gotchas

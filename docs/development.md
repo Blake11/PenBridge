@@ -93,30 +93,34 @@ scripts/check-bundle.sh --mac Release --android Release --ios Release   # after 
 
 `check-bundle.sh` checks that every type a bundled assembly references still exists in the bundle, and that the J-PAKE types are present whenever `PairingSession` is. It reads the Mac `.app`'s `MonoBundle`, the iOS `.app`, and the ILLink output that goes into the APK (`obj/<config>/net10.0-android/<rid>/linked`), because the APK packs assemblies into a compressed store. CI runs both scripts (issue #46).
 
+The Mac Release app is NativeAOT (issue #42), so its bundle holds no assemblies. For it, `check-bundle.sh` reads the native symbols of each architecture (from `PenBridge.app.dSYM`, since the universal executable is stripped) and requires the J-PAKE code to be compiled in wherever `PairingSession` is. With `--mac Release` it also checks the reference closure of the ILLink output that ILC compiled (`obj/Release/net10.0-macos/<rid>/linked`). `--require-pairing` (used in CI) fails if the pairing code is missing altogether.
+
 ### Mac server
 
 ```bash
 scripts/mac-dev-cert.sh            # one-time: "PenBridge Dev" code-signing identity
 scripts/mac-run.sh                 # Debug build → sign → open the .app (menu-bar icon, no Dock icon)
-scripts/mac-run.sh --release
+scripts/mac-run.sh --release       # dotnet publish -c Release: the universal NativeAOT app
 scripts/mac-run.sh --logs          # + log stream --predicate 'process == "PenBridge"'
 scripts/mac-run.sh --no-build      # relaunch the last build
 scripts/mac-run.sh --reset-tcc     # tccutil reset Accessibility com.blake11.penbridge, then run
+scripts/mac-run.sh --reset-keychain   # delete the app's Keychain items (Release; asks; phones must pair again)
+scripts/mac-run.sh --reset-dev-secrets   # delete the Debug file secret store (asks; phones must pair again)
 ```
 
-`mac-run.sh` builds with `EnableCodeSigning=false` and then signs with `scripts/mac-sign.sh <app> <identity>` (also used by the release workflow):
-- With the `PenBridge Dev` identity when it exists, otherwise ad-hoc.
-- It first signs every native library in `Contents/MonoBundle`, then the bundle with `codesign --force --deep --identifier com.blake11.penbridge`. The build rewrites the Microsoft-signed runtime dylibs there, and `--deep` treats MonoBundle as resources, so without this step the app is killed at launch with "Code Signature Invalid".
-- With `src/PenBridge.Mac/Entitlements.plist` when that file is present.
-- `--hardened` adds `--options runtime --timestamp` (notarization). See `scripts/mac-sign.sh --help`.
+**Every build signs** — `dotnet build`, `dotnet run`, Rider and `mac-run.sh` alike (issue #55). `PenBridge.Mac.csproj` runs `security find-identity -p codesigning` before the SDK's signing step: if the `PenBridge Dev` identity is in the keychain it sets `CodesignKey="PenBridge Dev"`, otherwise the SDK signs ad-hoc and the build prints a hint. The SDK's own signing (`EnableCodeSigning`, on by default) signs every native library in `Contents/MonoBundle`, then the bundle, with `Entitlements.plist`. Check with `codesign -dvv <app>` (`Authority=PenBridge Dev`).
+- Opt out with `-p:PenBridgeDevSigning=false`; pick another identity with `-p:PenBridgeDevCodesignKey="<name>"`; an explicit `-p:CodesignKey=…` wins.
+- `build-release.yml` publishes with `-p:EnableCodeSigning=false` (the target is skipped) and signs with `scripts/mac-sign.sh --no-entitlements <app> <identity>`: each MonoBundle library first, then the bundle with `codesign --force --deep --identifier com.blake11.penbridge`. The build rewrites the Microsoft-signed runtime dylibs there and `--deep` treats MonoBundle as resources, so a build with signing off that only re-signs the bundle is killed at launch with "Code Signature Invalid". `--hardened` adds `--options runtime --timestamp` (notarization). See `scripts/mac-sign.sh --help`.
 
-It kills a running instance before it launches the new one.
+**Release is NativeAOT** (issue #42, ADR-0016). `PenBridge.Mac.csproj` sets `PublishAot` for Release, and the macOS SDK applies it only to `dotnet publish`, which then trims every assembly fully and compiles the app into one universal executable (`bin/Release/net10.0-macos/PenBridge.app`; the per-RID bundles next to it are intermediates). `dotnet build -c Release` still produces an untrimmed JIT bundle; Debug stays JIT for fast iteration. The NativeAOT bundle's `MonoBundle` holds only the five `libSystem.*.Native` dylibs, and its signature carries no entitlements: `Entitlements.plist` only grants `allow-jit`, which CoreCLR needs under the hardened runtime and NativeAOT doesn't. A publish takes about as long as a JIT build (about 30 s clean, both architectures). Idle memory, launch time and how to measure them: skill `mac-build-run` ("Memory and startup").
+
+`mac-run.sh` kills a running instance, builds (publishes for `--release`), re-signs with `mac-sign.sh` only if the bundle isn't already signed with an existing `PenBridge Dev` identity (an old build, `--no-build`, or `-- -p:EnableCodeSigning=false`), and launches.
 
 #### Why the dev certificate (Accessibility / TCC)
 
 macOS stores the Accessibility grant against the app's designated requirement. With ad-hoc signing, that requirement is the cdhash, which changes on every build. The grant then silently stops applying: `AXIsProcessTrusted()` returns false, and the toggle in System Settings still looks on.
 
-When the app is signed with a fixed certificate, the requirement becomes `identifier "com.blake11.penbridge" and certificate leaf = H"…"`, which stays stable across rebuilds.
+When the app is signed with a fixed certificate, the requirement becomes `identifier "com.blake11.penbridge" and certificate root = H"…"` (for a self-signed certificate root and leaf are the same certificate), which stays stable across rebuilds.
 
 `mac-dev-cert.sh` makes the certificate as follows:
 - It generates an RSA-2048 self-signed certificate with the codeSigning EKU, valid for 10 years.
@@ -138,6 +142,26 @@ If injection does nothing after a rebuild, or System Settings shows a stale entr
 3. Grant access in System Settings → Privacy & Security → Accessibility.
 
 If the app was ever run unsigned, remove the old entry with the `–` button first.
+
+#### Where secrets live: Debug files, Release Keychain
+
+The server identity and the paired-device registry go through `Services/SecretStoreFactory.cs`:
+- **Debug builds** use a file store, `~/Library/Application Support/PenBridge-Dev/secrets` (Core's `FileSecretStore`: directory 0700, files 0600, not encrypted at rest). No Keychain prompts, however often you recompile. The log says `Debug build: using development file secret store (not Keychain)` at startup.
+- **Release builds always use the login Keychain** (service `com.blake11.penbridge`).
+- The two never share secrets. A Debug build has its own server identity (fingerprint) and its own paired devices, so a phone paired with a Debug build must pair again with a Release build, and the other way round.
+- Start Debug clean with `scripts/mac-run.sh --reset-dev-secrets`.
+
+#### Keychain prompts (Release builds)
+
+macOS checks two things on each Keychain read:
+- **The item ACL** trusts the app by its designated requirement. Ad-hoc builds (cdhash) are a new app on every rebuild; `PenBridge Dev` builds share one requirement.
+- **The partition list**. For code without an Apple Team ID, which includes the self-signed dev certificate, macOS records the build's **cdhash** there. Any build that recompiled something has a new cdhash and is outside the partition, so macOS asks again ("PenBridge wants to use your confidential information…"); **Always Allow** adds that build. An incremental build that rebuilt nothing keeps its cdhash and doesn't ask. The app can't widen the partition list itself (that needs the keychain password), and an explicit access object at creation gets the same cdhash partition. A certificate with a Team ID (Apple Development from a free Apple ID personal team, or Developer ID) should get a stable `teamid:` partition instead; that is untested here.
+
+This is why Debug builds use the file store. A locally built Release prompts once per keychain item after each recompile. Items created by older builds (including Debug builds from before the file store) carry stale cdhash ACL entries. To start clean, which removes the Release server identity and every pairing so phones must pair again:
+
+```bash
+scripts/mac-run.sh --reset-keychain    # asks for "yes"; or Keychain Access → login → search com.blake11.penbridge → delete
+```
 
 ### Android: emulator
 
@@ -182,4 +206,6 @@ scripts/android-run.sh --device 192.168.1.23:41234 --logs
 - **`Could not find BouncyCastle.Cryptography` at runtime / pairing closes the connection (Mac).** The bundle lacks an assembly Core needs. Run `scripts/check-bundle.sh --mac Debug`. See the toolchain skill ("BouncyCastle trimming") for the cause. Incremental builds don't remove a stale dll from an existing bundle, so delete `src/PenBridge.Mac/bin` and `obj` before you trust a check after changing trim settings.
 - **Emulator won't boot.** Check `$TMPDIR/penbridge-emulator.log`. Try `--cold-boot`, then `--wipe`. `--recreate` rebuilds the AVD after you change `AVD_DEVICE` or `ANDROID_API_LEVEL`.
 - **`adb pair` fails.** The code and the pairing port expire when the dialog closes; reopen it. Use the pairing port for `pair` and the connect port for `connect`. VPNs and guest Wi-Fi with client isolation block wireless adb.
-- **Accessibility granted, but nothing happens.** The signature changed. Check `codesign -dr - <app>`: it should show `certificate leaf`, not `cdhash`. Then run `--reset-tcc`.
+- **Accessibility granted, but nothing happens.** The signature changed. Check `codesign -dr - <app>`: it should show `certificate root`/`certificate leaf`, not `cdhash`. Then run `--reset-tcc`.
+- **Keychain prompt after a rebuild.** Debug builds never touch the Keychain; if one prompts, check the startup log for `development file secret store`. In a local Release build, a prompt is expected after a recompile (see "Keychain prompts"); choose Always Allow. A prompt after *every* launch or a `cdhash` designated requirement means the build signed ad-hoc: check the build output for `PenBridge: no "PenBridge Dev" code-signing identity` and run `scripts/mac-dev-cert.sh`.
+- **Phone paired, but the Mac says it doesn't know it.** It was paired with the other build configuration. Debug and Release have separate identities and paired devices, so pair again.

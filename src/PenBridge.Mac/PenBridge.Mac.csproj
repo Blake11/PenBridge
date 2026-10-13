@@ -15,8 +15,53 @@
     <NoWarn>$(NoWarn);CA1711</NoWarn>
     <!-- [LibraryImport] (AXIsProcessTrusted) generates unsafe marshalling stubs. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <!--
+    NativeAOT + full trimming for Release (issue #42, ADR-0016). The macOS SDK applies PublishAot only
+    to `dotnet publish` (`_UseNativeAot` = PublishAot and _IsPublishing), and then defaults to full
+    trimming of every assembly (don't set LinkMode/TrimMode: the SDK warns under NativeAOT).
+    `dotnet publish -c Release` (CI, build-release.yml, scripts/mac-run.sh with the release flag)
+    produces the universal NativeAOT app. `dotnet build -c Release` still produces an untrimmed JIT
+    (CoreCLR) bundle, and Debug stays untrimmed JIT for fast iteration. IsAotCompatible turns on the
+    trim/AOT analyzers in every configuration, so warnings show up while editing too.
+  -->
+  <PropertyGroup>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <PublishAot>true</PublishAot>
+  </PropertyGroup>
+
+  <!--
+    Entitlements.plist only grants allow-jit, which CoreCLR needs under the hardened runtime; NativeAOT never
+    JITs, so its signature carries no entitlements. Same test as the SDK's _UseNativeAot, which is defined only
+    after this file is evaluated (the platform SDK is imported once TargetFramework is known). The SDK picks up
+    Entitlements.plist by itself when CodesignEntitlements is empty (hence EnableDefaultCodesignEntitlements),
+    and adds allow-jit to every desktop Release signature unless a CustomEntitlements item names it.
+  -->
+  <PropertyGroup Condition="'$(PublishAot)' == 'true' and '$(_IsPublishing)' == 'true'">
+    <EnableDefaultCodesignEntitlements>false</EnableDefaultCodesignEntitlements>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(PublishAot)' == 'true' and '$(_IsPublishing)' == 'true'">
+    <CustomEntitlements Include="com.apple.security.cs.allow-jit" Type="Remove" />
+  </ItemGroup>
+  <PropertyGroup Condition="!('$(PublishAot)' == 'true' and '$(_IsPublishing)' == 'true')">
     <CodesignEntitlements>Entitlements.plist</CodesignEntitlements>
   </PropertyGroup>
+
+  <!--
+    NativeAOT only: stop Foundation.NSObject's static constructor from dlopen-ing ~45 frameworks the
+    app never uses (about 28 MB of resident pages at idle; see Trimming.Substitutions.xml for the
+    invariant this relies on). _ExtraTrimmerArgs is the only way to pass substitutions to ILLink,
+    which runs before ILC in the macOS NativeAOT pipeline.
+  -->
+  <Target Name="PenBridgeAddTrimmingSubstitutions" AfterTargets="PrepareForILLink" Condition="'$(_UseNativeAot)' == 'true'">
+    <PropertyGroup>
+      <_ExtraTrimmerArgs>$(_ExtraTrimmerArgs) --substitutions "$(MSBuildThisFileDirectory)Trimming.Substitutions.xml"</_ExtraTrimmerArgs>
+    </PropertyGroup>
+  </Target>
 
   <ItemGroup>
     <!-- Direct reference so the [LoggerMessage] source generator runs here (analyzers don't flow through ProjectReference). -->
@@ -26,5 +71,49 @@
   <ItemGroup>
     <ProjectReference Include="..\PenBridge.Core\PenBridge.Core.csproj" />
   </ItemGroup>
+
+  <!--
+    Local dev signing (issue #55). Every build path (dotnet build/run, Rider, scripts/mac-run.sh) signs
+    with the stable self-signed "PenBridge Dev" identity (scripts/mac-dev-cert.sh) when it is in the
+    keychain search list, ad-hoc otherwise. The SDK's own signing (EnableCodeSigning, on by default)
+    signs every Contents/MonoBundle library and then the bundle, with Entitlements.plist.
+    A stable certificate gives a stable designated requirement
+    (identifier "com.blake11.penbridge" and certificate root = H"…"), so the Accessibility (TCC) grant
+    and the Keychain ACL's trusted-app entry survive rebuilds; an ad-hoc build gets a cdhash requirement
+    instead. (The Keychain partition list still uses the cdhash without a Team ID: KeychainSecretStore.)
+
+    Detection asks the keychain on every build (`security find-identity`, about 20 ms) rather than
+    trusting a marker file, so a deleted or recreated certificate falls back to ad-hoc instead of
+    failing the build. Without -v, so an untrusted (but usable) self-signed identity is found too.
+    Skipped when signing is off (CI and build-release.yml pass EnableCodeSigning=false and sign with
+    scripts/mac-sign.sh), when CodesignKey/CodeSigningKey is set explicitly, or with
+    -p:PenBridgeDevSigning=false. -p:PenBridgeDevCodesignKey=<name> picks another identity.
+  -->
+  <PropertyGroup>
+    <PenBridgeDevCodesignKey Condition="'$(PenBridgeDevCodesignKey)' == ''">PenBridge Dev</PenBridgeDevCodesignKey>
+  </PropertyGroup>
+
+  <Target Name="PenBridgeSelectDevSigningIdentity" BeforeTargets="_DetectSigningIdentity"
+          Condition="'$(EnableCodeSigning)' == 'true' and '$(CodesignKey)' == '' and '$(CodeSigningKey)' == '' and '$(PenBridgeDevSigning)' != 'false' and $([MSBuild]::IsOSPlatform('OSX'))">
+    <Exec Command="/usr/bin/security find-identity -p codesigning" ConsoleToMSBuild="true" IgnoreExitCode="true"
+          EchoOff="true" StandardOutputImportance="low" StandardErrorImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_PenBridgeCodesignIdentities" />
+    </Exec>
+    <PropertyGroup Condition="$([System.String]::Copy('$(_PenBridgeCodesignIdentities)').Contains('&quot;$(PenBridgeDevCodesignKey)&quot;'))">
+      <CodesignKey>$(PenBridgeDevCodesignKey)</CodesignKey>
+      <!-- The SDK reads the key from _SpecifiedCodesignKey, computed from CodesignKey at evaluation time. -->
+      <_SpecifiedCodesignKey>$(PenBridgeDevCodesignKey)</_SpecifiedCodesignKey>
+      <_PenBridgeUsesDevIdentity>true</_PenBridgeUsesDevIdentity>
+    </PropertyGroup>
+    <Message Importance="normal" Condition="'$(_PenBridgeUsesDevIdentity)' == 'true'" Text="PenBridge: signing with &quot;$(PenBridgeDevCodesignKey)&quot;" />
+    <Message Importance="high" Condition="'$(_PenBridgeUsesDevIdentity)' != 'true'"
+             Text="PenBridge: no &quot;$(PenBridgeDevCodesignKey)&quot; code-signing identity, signing ad-hoc (Accessibility and Keychain access must be re-granted after each rebuild; run scripts/mac-dev-cert.sh)" />
+  </Target>
+
+  <!-- Fails loudly if the SDK stops honouring the identity chosen above (it would silently sign ad-hoc). -->
+  <Target Name="PenBridgeCheckDevSigningIdentity" AfterTargets="_DetectSigningIdentity" Condition="'$(_PenBridgeUsesDevIdentity)' == 'true'">
+    <Error Condition="'$(_CodeSigningKey)' == '' or '$(_CodeSigningKey)' == '-'"
+           Text="PenBridge: selected code-signing identity &quot;$(PenBridgeDevCodesignKey)&quot; but the SDK resolved '$(_CodeSigningKey)'; check how the macOS SDK reads CodesignKey." />
+  </Target>
 
 </Project>

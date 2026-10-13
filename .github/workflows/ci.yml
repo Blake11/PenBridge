@@ -42,7 +42,7 @@ jobs:
       # Each filter is the full trigger set of one job: infra and core changes run every job,
       # since every head depends on Core. Paths matching no filter (docs, .claude, LICENSE,
       # issue/PR templates) skip every build job.
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: filter
         if: github.event_name == 'pull_request'
         with:
@@ -82,13 +82,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ${{ env.NUGET_PACKAGES }}
           key: nuget-${{ runner.os }}-core-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.Build.props', '**/Directory.Packages.props') }}
@@ -110,7 +110,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: core-test-results
           path: TestResults
@@ -125,15 +125,15 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/select-xcode
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ${{ env.NUGET_PACKAGES }}
           key: nuget-${{ runner.os }}-mac-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.Build.props', '**/Directory.Packages.props') }}
@@ -148,9 +148,11 @@ jobs:
           dotnet --version
           dotnet workload list
 
-      - name: Build
+      # The shipped configuration: PublishAot applies only to `dotnet publish`, which produces the
+      # universal NativeAOT app with full trimming (issue #42); trim/AOT warnings are errors.
+      - name: Publish Release (NativeAOT)
         run: >
-          dotnet build src/PenBridge.Mac/PenBridge.Mac.csproj
+          dotnet publish src/PenBridge.Mac/PenBridge.Mac.csproj
           -c Release
           -p:CreatePackage=false
 
@@ -158,8 +160,12 @@ jobs:
       - name: Build (Debug)
         run: dotnet build src/PenBridge.Mac/PenBridge.Mac.csproj -c Debug
 
+      # NativeAOT: J-PAKE code compiled into the executable (dSYM symbols, UUID-matched), the ILLink
+      # output's reference closure, and the Trimming.Substitutions.xml guard (dlopen stub still only
+      # hits NSObject's unread preload fields). Debug: the bundled assemblies. The head pairs, so
+      # pairing must be present.
       - name: Check app bundles
-        run: scripts/check-bundle.sh --mac Release --mac Debug
+        run: scripts/check-bundle.sh --require-pairing --mac Release --mac Debug
 
   android-build:
     name: Android build
@@ -168,18 +174,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ${{ env.NUGET_PACKAGES }}
           key: nuget-${{ runner.os }}-android-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.Build.props', '**/Directory.Packages.props') }}
@@ -217,15 +223,15 @@ jobs:
     # The iOS head is a placeholder that is never released, but it is a required
     # check: a broken trim/build here once slipped onto main unnoticed.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/select-xcode
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ${{ env.NUGET_PACKAGES }}
           key: nuget-${{ runner.os }}-ios-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.Build.props', '**/Directory.Packages.props') }}
