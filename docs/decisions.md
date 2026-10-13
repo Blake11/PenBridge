@@ -133,3 +133,14 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
   - Debug and Release keep separate identities and pairings, so a phone paired with a Debug build has to pair again with Release.
   - Debug-build secrets rely on file permissions only, which is acceptable for local development.
 - **Revisit:** if a paid or free Apple Development certificate with a Team ID is adopted, the Keychain can be used for Debug too.
+
+## ADR-0018 — NativeAOT Mac Release with a guarded SDK trimming substitution
+**Status:** accepted (2026-10-13). Refines the memory line of ADR-0016.
+- **Decision:** the Mac **Release** app is published with NativeAOT and full trimming. Debug and `dotnet build` stay JIT.
+- **Substitution:** `src/PenBridge.Mac/Trimming.Substitutions.xml` stubs `ObjCRuntime.Dlfcn::dlopen(string,int32)`.
+  - Its only callers are in `NSObject..cctor`, which eagerly dlopens about 45 frameworks into fields that are never read. That costs about 28 MB of RSS.
+  - Every framework the app actually uses is linked as an `LC_LOAD_DYLIB` dependency, and the Carbon and dns_sd P/Invokes don't go through `Dlfcn`.
+- **Guard:** a CI check (via `scripts/check-bundle.sh`) fails the build if a workload update adds a `Dlfcn.dlopen` caller outside `NSObject..cctor`, or if any of the stored fields becomes read. The substitution then has to be re-validated.
+- **Result:** idle RSS is 50–62 MB (target ≤ 60 MB), footprint about 20 MB, and launch time 168 ms (JIT: 205 MB / 164 MB / 771 ms).
+- **Signing:** the AOT signature carries no `allow-jit` entitlement.
+- **Revisit:** drop the substitution if the SDK stops eager-loading, or if the guard fires and re-validation isn't worth the effort.
