@@ -27,19 +27,4 @@
     <ProjectReference Include="..\PenBridge.Core\PenBridge.Core.csproj" />
   </ItemGroup>
 
-  <!--
-    Debug builds run ILLink (trim-mode copy, Debug=true) without marking anything inside copied assemblies
-    (PenBridge.Core), so the link action that Directory.Build.targets (PenBridgeTrimBouncyCastle) puts on
-    BouncyCastle.Cryptography leaves it unmarked and ILLink deletes it: the Debug bundle has no BouncyCastle and
-    pairing fails with FileNotFoundException. Release marks through and keeps the trimmed assembly. In Debug, copy it
-    like every other assembly.
-  -->
-  <Target Name="PenBridgeMacKeepBouncyCastle" AfterTargets="PenBridgeTrimBouncyCastle" Condition="'$(Configuration)' == 'Debug'">
-    <ItemGroup>
-      <ManagedAssemblyToLink Condition="'%(Filename)' == 'BouncyCastle.Cryptography'">
-        <TrimMode>copy</TrimMode>
-      </ManagedAssemblyToLink>
-    </ItemGroup>
-  </Target>
-
 </Project>
