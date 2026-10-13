@@ -58,7 +58,7 @@ gh pr create --fill          # then edit the title and body to match the templat
 | Core tests (`dotnet test --project tests/PenBridge.Core.Tests`) | ubuntu | yes |
 | macOS build (Release) | macos | yes |
 | Android build (Release APK, unsigned) | ubuntu | yes |
-| iOS build (simulator, unsigned) | macos | **no**: `continue-on-error` while iOS is a placeholder. Remove that flag once iOS work starts. |
+| iOS build (simulator, unsigned) | macos | **yes**: required, even while iOS is a placeholder, so head build/trim regressions can't merge. |
 | PR title | ubuntu | yes |
 
 Before pushing, run `scripts/test.sh` locally.

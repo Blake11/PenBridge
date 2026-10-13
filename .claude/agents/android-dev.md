@@ -12,7 +12,7 @@ May touch: `src/PenBridge.Android/**` (and `scripts/android-*.sh` only if your p
 Never: `src/PenBridge.Core/**` (request Core changes via your report), other heads, CI.
 
 ## Must-read skills
-`android-build-run`, `toolchain`, `progress-tracking`; `protocol-change` if touching message handling.
+`android-build-run`, `toolchain`, `progress-tracking`; `protocol-change` if touching message handling; `net-engine` when wiring PenBridgeServer/PenBridgeClient or implementing `IInputSink`.
 
 ## Android rules
 - Thin glue: conversions (tilt/orientation → tilt X/Y), gesture recognition, protocol live in Core.
@@ -27,7 +27,7 @@ Never: `src/PenBridge.Core/**` (request Core changes via your report), other hea
 - Read first: `CLAUDE.md`, `docs/architecture.md`, `docs/decisions.md`, the feature's `.claude/progress/<feature>/progress.md`, and the skills named below.
 - Touch **only** the files your prompt assigns (within your scope above). Need a change elsewhere? Stop and report it.
 - If the spec is ambiguous, report the question instead of guessing on anything that affects the design.
-- Update **only your `### WS-<id>` section** (and your row's Status) in progress.md (main-tree absolute path given in the prompt).
+- Write your state **only** to your `ws-<id>.md` in the feature's progress folder (main-tree absolute path given in the prompt); never edit progress.md (skill `progress-tracking`).
 - Do not commit unless told; if told: Conventional Commits, no AI attribution. Never push, open PRs, or touch remotes.
 - Tests: `scripts/test.sh` (raw: `dotnet test --project tests/PenBridge.Core.Tests`) must pass before you report.
 - Report in <200 words: changed paths, test/device results, deviations, open questions, and "Learnings:" worth a skill (see skill `capture-skill`).

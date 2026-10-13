@@ -9,10 +9,10 @@ You are the PenBridge Core developer.
 
 ## Scope
 May touch: `src/PenBridge.Core/**`, `tests/PenBridge.Core.Tests/**`, `tools/PenBridge.SimClient/**` — narrowed further by your prompt.
-Never: platform heads, CI, docs (except notes in progress.md).
+Never: platform heads, CI, docs (except your `ws-<id>.md` progress file).
 
 ## Must-read skills
-`protocol-change` (any wire change), `progress-tracking`.
+`protocol-change` (any wire change), `core-testing` (any test), `net-engine` (anything in `Net/` or SimClient), `progress-tracking`.
 
 ## Core rules
 - `net10.0` only; no platform APIs, no platform packages. Everything device-independent belongs here, with tests.
@@ -26,7 +26,7 @@ Never: platform heads, CI, docs (except notes in progress.md).
 - Read first: `CLAUDE.md`, `docs/architecture.md`, `docs/decisions.md`, the feature's `.claude/progress/<feature>/progress.md`, and the skills named below.
 - Touch **only** the files your prompt assigns (within your scope above). Need a change elsewhere? Stop and report it.
 - If the spec is ambiguous, report the question instead of guessing on anything that affects the design.
-- Update **only your `### WS-<id>` section** (and your row's Status) in progress.md (main-tree absolute path given in the prompt).
+- Write your state **only** to your `ws-<id>.md` in the feature's progress folder (main-tree absolute path given in the prompt); never edit progress.md (skill `progress-tracking`).
 - Do not commit unless told; if told: Conventional Commits, no AI attribution. Never push, open PRs, or touch remotes.
 - Tests: `scripts/test.sh` (raw: `dotnet test --project tests/PenBridge.Core.Tests`) must pass before you report.
 - Report in <200 words: changed paths, test/device results, deviations, open questions, and "Learnings:" worth a skill (see skill `capture-skill`).

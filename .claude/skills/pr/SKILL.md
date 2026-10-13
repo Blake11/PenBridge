@@ -47,6 +47,6 @@ Closes #N
 Editing an existing PR: `gh pr view <n> --json body --jq .body > /tmp/body.md`, append the line, `gh pr edit <n> --body-file /tmp/body.md`.
 
 ## After
-- `gh pr checks <n>`, `gh run view <id> --log-failed` for failures.
+- `gh pr checks <n>`, `gh run view <id> --log-failed` for failures. Every check must be green before merging, not just the required ones: a non-required iOS check once let a broken trimmed build merge (#27). All head builds (macOS, Android, iOS) are now required; check with `gh api repos/Blake11/PenBridge/branches/main/protection/required_status_checks --jq .contexts`.
 - Merge only on user request: `gh pr merge <n> --squash --delete-branch`.
 - Update progress.md with the PR link and status; tick the workstream in the epic's task list.

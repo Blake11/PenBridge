@@ -27,3 +27,4 @@ Details: `docs/releasing.md`, `.github/workflows/release-please.yml`, `.github/w
 ## Rules
 - Never create tags/releases manually or edit CHANGELOG by hand — release-please owns them.
 - Merging the release PR, running workflows, and setting secrets need user approval.
+- **Held release PR:** the user may hold the release PR on purpose (e.g. #1, until a usable MVP at the end of Phase 3; it also needs `RELEASE_PLEASE_TOKEN`, #23). Record the hold and its blocker in progress.md "Next steps"/the epic, and when the blocker clears re-raise it with the user (`gh pr list -R Blake11/PenBridge --label "autorelease: pending"`) — it never merges itself.
