@@ -99,3 +99,18 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
   - Labels: `type: *`, `area: *`, `status: in progress`, `status: blocked`, `later` (skill `issues`).
 - **Progress files:** local progress files stay as session state and link the issues: the architect owns `progress.md`, and each workstream agent writes only its own `ws-<id>.md`, because concurrent agents editing one shared file lost each other's sections (skill `progress-tracking`).
 - **Unchanged:** Conventional Commit messages and PR titles (ADR-0007).
+
+## ADR-0015 — Windows host app as a later phase
+**Status:** accepted (2026-10-13), scope only; the design is finalised when the phase starts.
+- **Context:** the user wants the phone to work as a tablet for Windows PCs too. The phone client and protocol are host-agnostic.
+- **Decision:** add a later phase, "Windows host": a `net10.0-windows` tray app, `src/PenBridge.Windows`, that reuses `PenBridge.Core` unchanged (server engine, pairing, PenStateTracker, GestureRecognizer, CoordinateMapper). Only platform glue is new:
+  - **Shell:** a notification-area (tray) icon with the same menu as the Mac server, and no taskbar window. UI tech is decided at phase start: WinForms `NotifyIcon` (lightest) or WinUI 3.
+  - **Input injection:** `InjectSyntheticPointerInput` with `PT_PEN` (pressure, tilt, rotation, eraser, barrel button; Windows 10 1809+). It needs no driver and works with Windows Ink-aware apps.
+    - Touch gestures are injected as `PT_TOUCH` or mapped to wheel/zoom.
+    - This sits behind the same `IInputSink` / injector abstraction as the Mac (ADR-0003).
+  - **Discovery:** native mDNS via `DnsServiceRegister` (Windows 10+), advertising `_penbridge._tcp`.
+  - **Secrets:** a DPAPI (`ProtectedData`, current user) adapter for `ISecretStore`.
+  - **Run at startup:** HKCU `Run` key (unpackaged) or `StartupTask` (MSIX).
+  - **TLS:** SChannel supports TLS 1.3, so ADR-0013's concession is macOS-only.
+  - **Release:** an MSIX or zip on GitHub Releases, plus a `windows-latest` CI build job. Code signing is deferred, like macOS notarization.
+- **Consequence:** platform heads must keep Core free of macOS assumptions: no Apple-specific coordinate conventions in Core, and the display model stays generic.

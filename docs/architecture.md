@@ -78,6 +78,6 @@ Rule: platform apps contain only platform glue; anything testable without a devi
 | 4 | Gestures: two-finger scroll, pinch-zoom |
 | 5 | Settings: display/region mapping, button mapping (synced Mac ⇄ phone) |
 | 6 | Release pipeline live: unsigned .dmg + signed APK on GitHub Releases |
-| Later | Mac screen mirroring onto the phone (video stream), DriverKit virtual digitizer, iOS client, S Pen Air Actions, relative (trackpad) mode, Developer ID signing + notarization, Google Play |
+| Later | **Windows host app** (tray app, `InjectSyntheticPointerInput` pen injection, ADR-0015), Mac screen mirroring onto the phone (video stream), DriverKit virtual digitizer, iOS client, S Pen Air Actions, relative (trackpad) mode, Developer ID signing + notarization, Google Play |
 
 MVP = phases 1–5.
