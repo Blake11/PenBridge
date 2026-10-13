@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  PenBridge is intentionally NOT sandboxed: posting CGEvents into other apps
+  (tablet/mouse injection) is not permitted from the App Sandbox.
+-->
+<plist version="1.0">
+<dict>
+</dict>
+</plist>

@@ -1,0 +1,341 @@
+name: Build release
+
+# Builds the distributable apps and attaches them to a GitHub release.
+# - Called by release-please.yml when a release is created (tag given).
+# - Run manually with a tag to (re)build assets for an existing release, or
+#   without a tag to just produce workflow artifacts (nothing is uploaded).
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to upload assets to (e.g. v0.2.0)
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to upload to (empty = build artifacts only)
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      version_code: ${{ steps.v.outputs.version_code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - id: v
+        name: Read version from Directory.Build.props
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          version=$(sed -n 's:.*<Version>\([^<]*\)</Version>.*:\1:p' Directory.Build.props | head -n1)
+          if [ -z "$version" ]; then
+            echo "::error::Could not read <Version> from Directory.Build.props"
+            exit 1
+          fi
+          if [ -n "$TAG" ] && [ "v$version" != "$TAG" ]; then
+            echo "::error::Tag $TAG does not match Directory.Build.props version $version"
+            exit 1
+          fi
+          core=${version%%-*}
+          IFS=. read -r major minor patch <<< "$core"
+          # Android versionCode: monotonically increasing integer derived from semver.
+          version_code=$(( major * 1000000 + minor * 1000 + patch ))
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
+          echo "Version $version (Android versionCode $version_code)"
+
+  mac:
+    name: macOS app (.zip + .dmg)
+    needs: version
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      NOTARIZE: ${{ vars.MACOS_NOTARIZE == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: nuget-${{ runner.os }}-mac-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.Build.props', '**/Directory.Packages.props') }}
+          restore-keys: nuget-${{ runner.os }}-mac-
+
+      - name: Install macOS workload
+        run: dotnet workload install macos
+
+      - name: Build Release
+        run: >
+          dotnet build src/PenBridge.Mac/PenBridge.Mac.csproj
+          -c Release
+          -p:CreatePackage=false
+          -p:EnableCodeSigning=false
+          -p:Version="$VERSION"
+          -p:ApplicationDisplayVersion="$VERSION"
+          -p:ApplicationVersion="$VERSION"
+
+      - name: Locate app bundle
+        run: |
+          app=$(find src/PenBridge.Mac/bin/Release -type d -name 'PenBridge.app' -prune | head -n1)
+          if [ -z "$app" ]; then
+            echo "::error::PenBridge.app not found under src/PenBridge.Mac/bin/Release"
+            exit 1
+          fi
+          mkdir -p dist/stage
+          ditto "$app" dist/stage/PenBridge.app
+          echo "APP=dist/stage/PenBridge.app" >> "$GITHUB_ENV"
+
+      # ---- Developer ID signing + notarization (off until vars.MACOS_NOTARIZE == 'true') ----
+      - name: Import Developer ID certificate
+        if: env.NOTARIZE == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          kc_pass=$(uuidgen)
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$kc_pass" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$kc_pass" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$keychain"
+          # Prepend the signing keychain to the user search list, keeping the existing ones.
+          existing=$(security list-keychains -d user | tr -d '"' | xargs)
+          # shellcheck disable=SC2086 # word splitting of the keychain list is intended
+          security list-keychains -d user -s "$keychain" $existing
+          rm -f "$RUNNER_TEMP/cert.p12"
+          identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -n1)
+          if [ -z "$identity" ]; then
+            echo "::error::No 'Developer ID Application' identity in MACOS_CERT_P12"
+            exit 1
+          fi
+          echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: Sign (Developer ID, hardened runtime)
+        if: env.NOTARIZE == 'true'
+        run: |
+          entitlements=$(find src/PenBridge.Mac -maxdepth 1 -name 'Entitlements.plist' | head -n1)
+          codesign --force --deep --timestamp --options runtime \
+            ${entitlements:+--entitlements "$entitlements"} \
+            -s "$SIGN_IDENTITY" "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+
+      # ---- Default: ad-hoc signature (no paid Apple account) ----
+      - name: Sign (ad-hoc)
+        if: env.NOTARIZE != 'true'
+        run: |
+          codesign --force --deep -s - "$APP"
+          codesign --verify --verbose=2 "$APP"
+
+      - name: Create zip
+        run: |
+          ditto -c -k --keepParent "$APP" "dist/PenBridge-$VERSION-macos.zip"
+
+      - name: Create dmg
+        run: |
+          ln -s /Applications dist/stage/Applications
+          hdiutil create \
+            -volname "PenBridge $VERSION" \
+            -srcfolder dist/stage \
+            -ov -format UDZO \
+            "dist/PenBridge-$VERSION-macos.dmg"
+          rm dist/stage/Applications
+
+      - name: Notarize and staple
+        if: env.NOTARIZE == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          codesign --force --timestamp -s "$SIGN_IDENTITY" "dist/PenBridge-$VERSION-macos.dmg"
+          xcrun notarytool submit "dist/PenBridge-$VERSION-macos.dmg" \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" \
+            --wait
+          xcrun stapler staple "dist/PenBridge-$VERSION-macos.dmg"
+          # Staple the app too and rebuild the zip so both assets carry the ticket.
+          xcrun stapler staple "$APP"
+          rm "dist/PenBridge-$VERSION-macos.zip"
+          ditto -c -k --keepParent "$APP" "dist/PenBridge-$VERSION-macos.zip"
+
+      - name: Clean up keychain
+        if: always() && env.NOTARIZE == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-mac
+          path: |
+            dist/*.zip
+            dist/*.dmg
+          if-no-files-found: error
+
+  android:
+    name: Android APK (release-signed)
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      VERSION_CODE: ${{ needs.version.outputs.version_code }}
+      HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: nuget-${{ runner.os }}-android-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.Build.props', '**/Directory.Packages.props') }}
+          restore-keys: nuget-${{ runner.os }}-android-
+
+      - name: Install Android workload
+        run: dotnet workload install android
+
+      - name: Install Android SDK dependencies
+        run: >
+          dotnet build src/PenBridge.Android/PenBridge.Android.csproj
+          -t:InstallAndroidDependencies
+          -p:AndroidSdkDirectory="$ANDROID_SDK_ROOT"
+          -p:AcceptAndroidSDKLicenses=true
+
+      - name: Check signing secrets
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$HAS_KEYSTORE" != "true" ]; then
+            if [ -n "$TAG" ]; then
+              echo "::error::ANDROID_KEYSTORE_BASE64 is not set; a release APK must be signed. See docs/releasing.md."
+              exit 1
+            fi
+            echo "::warning::ANDROID_KEYSTORE_BASE64 not set; building an unsigned APK (artifact only)."
+          fi
+
+      - name: Decode keystore
+        if: env.HAS_KEYSTORE == 'true'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/penbridge.keystore"
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/penbridge.keystore" >> "$GITHUB_ENV"
+
+      - name: Publish Release APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -- \
+            -c Release \
+            -p:AndroidSdkDirectory="$ANDROID_SDK_ROOT" \
+            -p:AndroidPackageFormat=apk \
+            -p:Version="$VERSION" \
+            -p:ApplicationDisplayVersion="$VERSION" \
+            -p:ApplicationVersion="$VERSION_CODE" \
+            -o dist/android
+          if [ "$HAS_KEYSTORE" = "true" ]; then
+            # Passwords are read from the environment (env: prefix) so they never appear on the command line.
+            set -- "$@" \
+              -p:AndroidKeyStore=true \
+              -p:AndroidSigningKeyStore="$KEYSTORE_PATH" \
+              -p:AndroidSigningKeyAlias="$ANDROID_KEY_ALIAS" \
+              -p:AndroidSigningStorePass=env:ANDROID_KEYSTORE_PASSWORD \
+              -p:AndroidSigningKeyPass=env:ANDROID_KEY_PASSWORD
+          else
+            set -- "$@" -p:AndroidKeyStore=false
+          fi
+          dotnet publish src/PenBridge.Android/PenBridge.Android.csproj "$@"
+
+      - name: Collect APK
+        run: |
+          if [ "$HAS_KEYSTORE" = "true" ]; then
+            apk=$(find dist/android -name '*-Signed.apk' | head -n1)
+          else
+            apk=$(find dist/android -name '*.apk' | head -n1)
+          fi
+          if [ -z "$apk" ]; then
+            echo "::error::No APK found in dist/android"
+            exit 1
+          fi
+          suffix=""
+          [ "$HAS_KEYSTORE" = "true" ] || suffix="-unsigned"
+          mkdir -p dist/out
+          cp "$apk" "dist/out/PenBridge-$VERSION-android$suffix.apk"
+
+      - name: Remove keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/penbridge.keystore"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-android
+          path: dist/out/*.apk
+          if-no-files-found: error
+
+  publish:
+    name: Upload to GitHub release
+    needs: [mac, android]
+    if: inputs.tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: assets
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        working-directory: assets
+        run: |
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: gh release upload "$TAG" assets/* --clobber --repo "$GITHUB_REPOSITORY"

@@ -1,0 +1,63 @@
+# .NET build output
+bin/
+obj/
+artifacts/
+/packages/
+*.nupkg
+*.snupkg
+TestResults/
+*.trx
+*.coverage
+coverage*.xml
+*.binlog
+
+# IDEs
+.idea/
+.vs/
+.vscode/
+*.user
+*.suo
+*.userprefs
+*.DotSettings.user
+riderModule.iml
+/_ReSharper.Caches/
+_ReSharper*/
+
+# macOS
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+*.dmg
+
+# Xcode / Apple
+xcuserdata/
+DerivedData/
+*.xcuserstate
+*.mobileprovision
+*.provisionprofile
+
+# Android
+*.apk
+*.aab
+*.keystore
+*.jks
+*.p12
+*.pfx
+local.properties
+.gradle/
+
+# Secrets
+.env
+.env.*
+
+# Claude Code (local state only; .claude/ config stays tracked)
+.claude/progress/
+.claude/settings.local.json
+.claude/worktrees/
+
+# Serena (project config + memories tracked; local overrides ignored).
+# The negation overrides a global excludesFile that ignores .serena/.
+!.serena/
+.serena/project.local.yml
+.serena/cache/

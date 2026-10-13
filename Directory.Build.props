@@ -1,0 +1,21 @@
+<Project>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Version>0.1.0</Version><!-- x-release-please-version -->
+    <Company>PenBridge</Company>
+    <Product>PenBridge</Product>
+    <Authors>Paul Ciurea</Authors>
+    <Copyright>Copyright (c) 2026 Paul Ciurea</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+</Project>

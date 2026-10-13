@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build *)",
+      "Bash(dotnet test *)",
+      "Bash(dotnet test --project *)",
+      "Bash(dotnet restore *)",
+      "Bash(dotnet workload list *)",
+      "Bash(dotnet --info)",
+      "Bash(dotnet --version)",
+      "Bash(dotnet --list-sdks)",
+      "Bash(scripts/doctor.sh *)",
+      "Bash(scripts/test.sh *)",
+      "Bash(scripts/mac-dev-cert.sh *)",
+      "Bash(scripts/mac-run.sh *)",
+      "Bash(scripts/android-emulator.sh *)",
+      "Bash(scripts/android-device.sh *)",
+      "Bash(scripts/android-run.sh *)",
+      "Bash(./scripts/doctor.sh *)",
+      "Bash(./scripts/test.sh *)",
+      "Bash(./scripts/mac-dev-cert.sh *)",
+      "Bash(./scripts/mac-run.sh *)",
+      "Bash(./scripts/android-emulator.sh *)",
+      "Bash(./scripts/android-device.sh *)",
+      "Bash(./scripts/android-run.sh *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git branch *)",
+      "Bash(git fetch *)",
+      "Bash(git worktree *)",
+      "Bash(git rev-parse *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr list *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh pr diff *)",
+      "Bash(gh run view *)",
+      "Bash(gh run list *)",
+      "Bash(gh run watch *)",
+      "Bash(adb devices *)",
+      "Bash(adb logcat *)",
+      "Bash(adb install *)",
+      "Bash(adb shell am *)",
+      "Bash(adb shell getprop *)",
+      "Bash(adb shell pm list *)",
+      "Bash(xcrun *)",
+      "Bash(log stream *)",
+      "Bash(log show *)",
+      "Bash(emulator -list-avds)",
+      "Bash(security find-identity *)",
+      "Bash(codesign -dv *)",
+      "Bash(codesign --verify *)",
+      "Bash(plutil -p *)"
+    ],
+    "ask": [
+      "Bash(./scripts/bootstrap.sh *)",
+      "Bash(scripts/bootstrap.sh *)",
+      "Bash(git push *)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean *)",
+      "Bash(git branch -D *)",
+      "Bash(git worktree remove --force *)",
+      "Bash(git remote add *)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr merge *)",
+      "Bash(gh pr close *)",
+      "Bash(gh repo create *)",
+      "Bash(gh release *)",
+      "Bash(gh secret *)",
+      "Bash(tccutil reset *)",
+      "Bash(rm -rf *)"
+    ],
+    "deny": [
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git push * --force*)",
+      "Bash(git push * -f)",
+      "Bash(git push * -f *)",
+      "Bash(git push *+main*)",
+      "Bash(rm -rf /)",
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~)",
+      "Bash(rm -rf ~/)",
+      "Bash(rm -rf .)",
+      "Bash(rm -rf ./)",
+      "Bash(rm -rf ..)",
+      "Bash(rm -rf $HOME*)",
+      "Bash(rm -rf /Users/paulciurea/RiderProjects/MacOsDrawTablet)",
+      "Bash(rm -rf /Users/paulciurea/RiderProjects/MacOsDrawTablet/)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "root=$(git -C \"$CLAUDE_PROJECT_DIR\" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p'); root=${root:-$CLAUDE_PROJECT_DIR}; found=0; for f in \"$root\"/.claude/progress/*/progress.md; do [ -f \"$f\" ] || continue; [ $found -eq 0 ] && echo 'Active feature progress files (read the relevant one before working; see skill progress-tracking):'; found=1; echo \"- $f (updated $(date -r \"$f\" '+%Y-%m-%d %H:%M'))\"; done; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}

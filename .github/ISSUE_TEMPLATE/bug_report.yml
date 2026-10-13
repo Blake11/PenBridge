@@ -1,0 +1,67 @@
+name: Bug report
+description: Something does not work as expected
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting. Please fill in as much as you can.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Pair the phone with the Mac
+        2. Open Krita and draw with the S Pen
+        3. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      multiple: true
+      options:
+        - Mac server
+        - Android app
+        - Pairing / connection
+        - Pen input (pressure / tilt / hover / buttons)
+        - Gestures (scroll / zoom)
+        - Install / release
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: PenBridge version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: Mac model and macOS version
+      placeholder: MacBook Pro M3, macOS 15.2
+  - type: input
+    id: phone
+    attributes:
+      label: Phone model and Android version
+      placeholder: Galaxy S23 Ultra, Android 15 (One UI 7)
+  - type: input
+    id: app
+    attributes:
+      label: Target app on the Mac
+      placeholder: Krita 5.2, Photoshop, ...
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Mac log (Console.app, process PenBridge) and/or `adb logcat`. Remove anything private.
+      render: text

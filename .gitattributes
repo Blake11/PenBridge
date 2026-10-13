@@ -1,0 +1,31 @@
+* text=auto eol=lf
+
+*.sln    text eol=crlf
+
+# Binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.pdf binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.dmg binary
+*.apk binary
+*.aab binary
+*.jar binary
+*.dll binary
+*.exe binary
+*.so binary
+*.dylib binary
+*.keystore binary
+*.jks binary
+*.p12 binary
+*.snk binary

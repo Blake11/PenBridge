@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PenBridge.Core.Tests" />
+  </ItemGroup>
+
+</Project>

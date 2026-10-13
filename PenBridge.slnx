@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PenBridge.Android/PenBridge.Android.csproj" />
+    <Project Path="src/PenBridge.Core/PenBridge.Core.csproj" />
+    <Project Path="src/PenBridge.iOS/PenBridge.iOS.csproj" />
+    <Project Path="src/PenBridge.Mac/PenBridge.Mac.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PenBridge.Core.Tests/PenBridge.Core.Tests.csproj" />
+  </Folder>
+</Solution>

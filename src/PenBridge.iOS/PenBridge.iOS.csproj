@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-ios</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <SupportedOSPlatformVersion>17.0</SupportedOSPlatformVersion>
+    <ApplicationId>com.blake11.penbridge</ApplicationId>
+    <ApplicationTitle>PenBridge</ApplicationTitle>
+    <ApplicationDisplayVersion>$(Version)</ApplicationDisplayVersion>
+    <ApplicationVersion>1</ApplicationVersion>
+    <RootNamespace>PenBridge.iOS</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PenBridge.Core\PenBridge.Core.csproj" />
+  </ItemGroup>
+
+</Project>

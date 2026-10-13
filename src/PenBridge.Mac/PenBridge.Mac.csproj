@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-macos</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <SupportedOSPlatformVersion>14.0</SupportedOSPlatformVersion>
+    <ApplicationId>com.blake11.penbridge</ApplicationId>
+    <ApplicationTitle>PenBridge</ApplicationTitle>
+    <ApplicationDisplayVersion>$(Version)</ApplicationDisplayVersion>
+    <ApplicationVersion>1</ApplicationVersion>
+    <RootNamespace>PenBridge.Mac</RootNamespace>
+    <CodesignEntitlements>Entitlements.plist</CodesignEntitlements>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PenBridge.Core\PenBridge.Core.csproj" />
+  </ItemGroup>
+
+</Project>
