@@ -76,3 +76,14 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
 - **Decision:** `PenBridge.Core` contains the TLS control server/client, the encrypted UDP input channel, session orchestration and the pairing state machines, all on `System.Net`. They are tested end to end over loopback.
 - **Platform heads add only:** discovery (Bonjour/NSD), secret-store adapters (Keychain/Keystore), UI and input injection/sampling.
 - **Gesture recognition runs on the receiver (Mac) side**, from raw touch-pointer state carried in every input datagram. Lost packets then can't drop scroll deltas, and the phone stays a thin sampler.
+
+## ADR-0013 — Control channel accepts TLS 1.2+ (supersedes the "TLS 1.3" detail of ADR-0004)
+**Status:** accepted (2026-10-13)
+- **Context:** on macOS, the .NET `SslStream` server negotiates only TLS 1.2; forcing 1.3 makes the handshake fail. Cipher suites can't be restricted (`CipherSuitesPolicy` is unsupported there).
+- **Decision:** the control channel allows TLS 1.2 and 1.3 and negotiates the highest the platform supports.
+- **Why this is acceptable:** security doesn't rest on TLS alone.
+  - Input datagrams use AES-256-GCM under `K_in` derived from `K_dev`.
+  - Reconnect auth is an HMAC under `K_dev` bound to the certificate fingerprint.
+  - J-PAKE pairing stays secure even over a compromised channel.
+  - TLS adds confidentiality for control messages and server authentication via the pinned fingerprint.
+- **Revisit:** when .NET's macOS TLS server supports 1.3; a test asserts the negotiated version so the change is noticed. The alternative, BouncyCastle TLS 1.3, remains available if the threat model changes.

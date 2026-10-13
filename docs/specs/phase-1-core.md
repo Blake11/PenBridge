@@ -20,7 +20,7 @@ Tests mirror the folders: `tests/PenBridge.Core.Tests/<Folder>/`. The only exter
 - A different major is rejected with `Error(IncompatibleVersion)`. A different minor is accepted: features are gated by capability flags.
 - The Bonjour TXT record carries `v=1.0`, `fp=<base64url SHA-256 cert fingerprint>` and `name=<Mac name>`.
 
-## Control channel (TCP + TLS 1.3)
+## Control channel (TCP + TLS 1.2+, ADR-0013)
 
 - **Frame:** `u32 BE length` (type byte + payload, max 65 536, otherwise disconnect), then `u8 type`, then the payload. All integers are big-endian.
 - **Strings:** `u16` length followed by UTF-8 bytes, max 256 bytes.
