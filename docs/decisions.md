@@ -87,3 +87,15 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
   - J-PAKE pairing stays secure even over a compromised channel.
   - TLS adds confidentiality for control messages and server authentication via the pinned fingerprint.
 - **Revisit:** when .NET's macOS TLS server supports 1.3; a test asserts the negotiated version so the change is noticed. The alternative, BouncyCastle TLS 1.3, remains available if the threat model changes.
+
+## ADR-0014 — Issue-driven planning and bug tracking
+**Status:** accepted (2026-10-13)
+- **Context:** phase and workstream state lived only in local, untracked `progress.md` files, and bugs found by agents or reviewers were scattered across reports. Nothing was visible on GitHub or linked from PRs.
+- **Decision:** GitHub issues are the plan of record, and implementation is driven from them.
+  - Each roadmap phase is an epic issue (`type: epic`) with a milestone of the same name. The epic's task list references its workstream issues.
+  - Each workstream gets an issue (goal, owned files, acceptance, tests, dependencies) **before** it's delegated. Subagent prompts carry the issue number.
+  - Bugs found by agents or reviewers that aren't fixed in the same PR become `type: bug` issues. Post-MVP ideas are issues with the `later` label and the "Later" milestone.
+  - Every PR references its issue: `Closes #N` (or `Refs #N` when it doesn't finish the issue).
+  - Labels: `type: *`, `area: *`, `status: in progress`, `status: blocked`, `later` (skill `issues`).
+- **Progress files:** local progress files stay as session state and link the issues: the architect owns `progress.md`, and each workstream agent writes only its own `ws-<id>.md`, because concurrent agents editing one shared file lost each other's sections (skill `progress-tracking`).
+- **Unchanged:** Conventional Commit messages and PR titles (ADR-0007).

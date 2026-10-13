@@ -1,6 +1,6 @@
 ---
 name: pr
-description: Create or update a GitHub pull request for PenBridge following repo conventions — fresh branch from origin/main, dash-only branch name, Conventional Commits title and commits, concise description (what/why, testing incl. devices, notes), gh pr create, squash merge. Use when asked to commit, push, open/update a PR, or prepare changes for review. Never push without user approval.
+description: Create or update a GitHub pull request for PenBridge following repo conventions — fresh branch from origin/main, dash-only branch name, Conventional Commits title and commits, concise description (what/why, testing incl. devices, notes, Closes #N), gh pr create, squash merge. Use when asked to commit, push, open/update a PR, or prepare changes for review. Never push without user approval.
 ---
 
 # Pull requests (GitHub, `gh`)
@@ -32,7 +32,7 @@ gh pr create --base main --title "<type>(scope): subject" --body-file <file>
 ```
 PR title = Conventional Commit (CI `pr-title` validates; it becomes the squash commit and release-please input).
 
-Description (concise, no fluff, don't restate the title):
+Description (concise, no fluff, don't restate the title). It **must** reference its issue (ADR-0014): `Closes #N` on its own line when the PR finishes the issue, `Refs #N` when it doesn't. No issue yet → create one first (skill `issues`).
 ```markdown
 ## What / why
 - …
@@ -40,10 +40,13 @@ Description (concise, no fluff, don't restate the title):
 - scripts/test.sh: pass
 - Devices: Mac (Krita pressure ✓) / S23 Ultra / emulator / SimClient / not device-tested (why)
 ## Notes
-- Protocol version impact, migration, dependencies on other PRs / merge order, follow-ups
+- Protocol version impact, migration, dependencies on other PRs / merge order, follow-ups (as issue links)
+
+Closes #N
 ```
+Editing an existing PR: `gh pr view <n> --json body --jq .body > /tmp/body.md`, append the line, `gh pr edit <n> --body-file /tmp/body.md`.
 
 ## After
 - `gh pr checks <n>`, `gh run view <id> --log-failed` for failures.
 - Merge only on user request: `gh pr merge <n> --squash --delete-branch`.
-- Update progress.md with the PR link and status.
+- Update progress.md with the PR link and status; tick the workstream in the epic's task list.

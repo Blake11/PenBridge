@@ -12,7 +12,7 @@ Turns a phone (primary: Samsung Galaxy S23 Ultra + S Pen) into a pressure-sensit
 | `docs/releasing.md` | release-please + build-release pipeline |
 | `CONTRIBUTING.md` | Human-facing conventions |
 | `.claude/skills/*/SKILL.md` | Project how-tos (living documents) |
-| `.claude/progress/<feature>/progress.md` | Per-feature session state (untracked) |
+| `.claude/progress/<feature>/` | Per-feature session state (untracked): `progress.md` (architect) + `ws-<id>.md` (one per workstream agent) |
 
 ## Layout
 
@@ -47,7 +47,8 @@ scripts/android-run.sh [--emulator|--device <ip:port>] [--apk] [--logs|--logs-on
 
 - **Do not implement in the main session.** Clarify every ambiguity with the user *before* delegating — this is a hard gate. Ask, don't assume.
 - Record decisions as ADRs (`docs/decisions.md`, skill `adr`); update `docs/architecture.md` when the design changes.
-- Keep `.claude/progress/<feature>/progress.md` for every feature/part being developed (skill `progress-tracking`): goal, decisions, workstreams/owners, status, open questions, next steps. Subagents update only their own workstream section.
+- **Issues drive the work** (ADR-0014, skill `issues`): each phase is an epic issue + milestone; each workstream gets an issue *before* delegation, and its number goes in the subagent prompt. Bugs found by agents/reviewers and not fixed in the same PR become `type: bug` issues.
+- Keep `.claude/progress/<feature>/` for every feature/part being developed (skill `progress-tracking`). `progress.md` is the **architect's only**: goal, decisions, workstream table with issue numbers, open questions, next steps. Each workstream agent writes only its own `ws-<id>.md` (status, notes, follow-ups, learnings) and never edits `progress.md`.
 - Split work into workstreams with **disjoint file ownership**, then delegate to subagents (`.claude/agents/`: core-dev, mac-dev, android-dev, ci-dev, reviewer) to save context. Review the results; run `reviewer` before a PR.
 - Multi-agent sessions: one branch + worktree per workstream (Agent `isolation: "worktree"` or `git worktree add .claude/worktrees/<branch> -b <branch> origin/main`), merged back via PRs (skill `parallel-worktrees`).
 - End-to-end flow: skill `feature-workflow`.
@@ -68,6 +69,7 @@ scripts/android-run.sh [--emulator|--device <ip:port>] [--apk] [--logs|--logs-on
 - GitHub, default branch `main`, PRs via `gh`, squash merge (skill `pr`).
 - Branch from fresh `origin/main` (`git fetch origin && git switch -c <name> origin/main`); **dash-only branch names** (`feat-udp-input`, no slashes).
 - Conventional Commits for commits and PR titles (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `ci:`, `build:`, `chore:`, `perf:`); validated by `.githooks/commit-msg` and CI. release-please derives versions from them (skill `release`).
+- Every PR references its issue in the body: `Closes #N` (or `Refs #N` if it doesn't finish it).
 - **No Claude/AI attribution** in commits or PRs (no `Co-Authored-By: Claude`, no "Generated with").
 - **Never push, create PRs, or create remotes/repos without explicit user approval.** Subagents never commit unless told.
 - The user's global GitLab/`master`/`glab`/MR/prod rules do **not** apply here — only dash branches, Conventional Commits and no attribution carry over. There is no "Production" environment.
