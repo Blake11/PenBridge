@@ -275,6 +275,16 @@ public sealed class MacDiscovery : IDisposable
         }
     }
 
+    private void OnInfoCallbackFailed(int generation, string name, ServiceInfoCallback callback, NsdFailure failure)
+    {
+        Log.Warn(Tag, "NSD service-info registration failed: " + failure);
+        if (IsCurrent(generation) && _entries.TryGetValue(name, out Entry? entry) && ReferenceEquals(entry.Callback, callback))
+        {
+            // The platform dropped the registration: forget it so the next OnServiceFound registers again.
+            entry.Callback = null;
+        }
+    }
+
     private void ResolveNext()
     {
         if (_resolving || _listener is null || !_resolveQueue.TryDequeue(out NsdServiceInfo? info))
@@ -457,7 +467,7 @@ public sealed class MacDiscovery : IDisposable
     private sealed class ServiceInfoCallback(MacDiscovery owner, int generation, string name) : Java.Lang.Object, NsdManager.IServiceInfoCallback
     {
         public void OnServiceInfoCallbackRegistrationFailed(NsdFailure errorCode) =>
-            Log.Warn(Tag, "NSD service-info registration failed: " + errorCode);
+            owner.OnInfoCallbackFailed(generation, name, this, errorCode);
 
         public void OnServiceInfoCallbackUnregistered()
         {

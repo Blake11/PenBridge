@@ -52,6 +52,9 @@ public sealed class ClientHost : IAsyncDisposable
     private bool _autoConnectSuppressed;
     private bool _autoConnectTried;
 
+    /// <summary>Discovery-advertised endpoints that failed the pin for the current target (spoofed or stale TXT).</summary>
+    private readonly HashSet<string> _rejectedEndpoints = new(StringComparer.Ordinal);
+
     /// <param name="context">Any context; the application context is used.</param>
     /// <param name="surface">Initial drawing surface (e.g. <see cref="CreateSurface(Context)"/>); update with <see cref="UpdateSurface"/>.</param>
     /// <param name="loggerFactory">Optional Core engine logging (never logs secrets or per-sample data).</param>
@@ -66,11 +69,13 @@ public sealed class ClientHost : IAsyncDisposable
         _surface = surface;
         _loggerFactory = loggerFactory;
         _deviceName = GetDeviceName(app);
-        SecretStore = new AndroidKeystoreSecretStore(app.FilesDir?.AbsolutePath ?? throw new InvalidOperationException("No files dir."));
+        SecretStore = new CachingSecretStore(
+            new AndroidKeystoreSecretStore(app.FilesDir?.AbsolutePath ?? throw new InvalidOperationException("No files dir.")));
         Credentials = new ClientCredentialStore(SecretStore);
         Settings = new SettingsStore(app);
         Discovery = new MacDiscovery(app);
         Discovery.Changed += OnDiscoveryChanged;
+        Observe(Task.Run(WarmSecrets), "secret warm-up");
     }
 
     /// <summary>Raised on the main thread whenever <see cref="State"/> changes (value inequality).</summary>
@@ -84,7 +89,8 @@ public sealed class ClientHost : IAsyncDisposable
     /// <summary>Device id and per-Mac keys (Keystore-backed).</summary>
     public ClientCredentialStore Credentials { get; }
 
-    public AndroidKeystoreSecretStore SecretStore { get; }
+    /// <summary>The Keystore-backed store with a presence/device-id cache (all client writes go through it).</summary>
+    public CachingSecretStore SecretStore { get; }
 
     public SettingsStore Settings { get; }
 
@@ -117,12 +123,15 @@ public sealed class ClientHost : IAsyncDisposable
         return new SurfaceInfoMessage(w, h, dx, dy, w >= h ? SurfaceOrientation.Landscape : SurfaceOrientation.Portrait, SurfaceCapabilities.FingerFallback);
     }
 
-    /// <summary>True when this phone holds a device key for the Mac.</summary>
+    /// <summary>True when this phone holds a device key for the Mac. Cached: a keystore decrypt only on the first query per Mac.</summary>
     public bool IsPaired(DiscoveredServer mac)
     {
         ArgumentNullException.ThrowIfNull(mac);
-        return Credentials.IsPaired(mac.Fingerprint.Span);
+        return SecretStore.IsPaired(mac.Fingerprint.Span);
     }
+
+    /// <summary>True when this phone holds a device key for the fingerprint (cached).</summary>
+    public bool IsPaired(ReadOnlySpan<byte> fingerprint) => SecretStore.IsPaired(fingerprint);
 
     // ---- Lifecycle (Activity.OnStart / OnStop) ----
 
@@ -141,7 +150,7 @@ public sealed class ClientHost : IAsyncDisposable
         if (_target is not null)
         {
             _retryAttempt = 0;
-            _ = ReconnectTargetAsync();
+            Observe(ReconnectTargetAsync(), "reconnect");
         }
         else
         {
@@ -182,15 +191,19 @@ public sealed class ClientHost : IAsyncDisposable
         return BeginUserAttempt(AttemptKind.Connect, mac.Host, mac.Port, mac.Name, (c, ct) => c.ConnectAsync(mac.Host, mac.Port, mac.Fingerprint, ct));
     }
 
-    /// <summary>Pairs with a discovered Mac using the 6-digit PIN shown on it, then starts the session.</summary>
+    /// <summary>
+    /// Pairs with a discovered Mac using the 6-digit PIN shown on it, then starts the session. Defense in depth: if the
+    /// paired certificate differs from the advertised fingerprint, the new key is discarded and the result is
+    /// <see cref="ClientErrorKind.IdentityMismatch"/>.
+    /// </summary>
     public Task<bool> PairWithPinAsync(DiscoveredServer mac, string pin)
     {
         ArgumentNullException.ThrowIfNull(mac);
-        return PairWithPinAsync(mac.Host, mac.Port, pin, mac.Name);
+        return PairWithPinAsync(mac.Host, mac.Port, pin, mac.Name, mac.Fingerprint);
     }
 
     /// <summary>Pairs with host:port and a PIN (Advanced ▸ Connect manually, ADR-0008; emulator: host 10.0.2.2).</summary>
-    public Task<bool> PairWithPinAsync(string host, int port, string pin) => PairWithPinAsync(host, port, pin, null);
+    public Task<bool> PairWithPinAsync(string host, int port, string pin) => PairWithPinAsync(host, port, pin, null, default);
 
     /// <summary>Pairs with scanned QR text (<c>penbridge://pair?…</c>); the Mac's certificate must match its fingerprint.</summary>
     public Task<bool> PairWithQrAsync(string qrText)
@@ -296,7 +309,7 @@ public sealed class ClientHost : IAsyncDisposable
 
     // ---- Attempts ----
 
-    private Task<bool> PairWithPinAsync(string host, int port, string pin, string? name)
+    private Task<bool> PairWithPinAsync(string host, int port, string pin, string? name, ReadOnlyMemory<byte> expectedFingerprint)
     {
         EnsureUsable();
         if (pin is null || pin.Length != PinIssuer.PinLength || !IsAsciiDigits(pin))
@@ -305,10 +318,16 @@ public sealed class ClientHost : IAsyncDisposable
             return Task.FromResult(false);
         }
 
-        return BeginUserAttempt(AttemptKind.Pair, host, port, name, (c, ct) => c.PairWithPinAsync(host, port, pin, ct));
+        return BeginUserAttempt(AttemptKind.Pair, host, port, name, (c, ct) => c.PairWithPinAsync(host, port, pin, ct), expectedFingerprint);
     }
 
-    private Task<bool> BeginUserAttempt(AttemptKind kind, string host, int port, string? name, Func<PenBridgeClient, CancellationToken, Task> op)
+    private Task<bool> BeginUserAttempt(
+        AttemptKind kind,
+        string host,
+        int port,
+        string? name,
+        Func<PenBridgeClient, CancellationToken, Task> op,
+        ReadOnlyMemory<byte> expectedFingerprint = default)
     {
         EnsureUsable();
         if (!IsValidEndpoint(host, port))
@@ -319,13 +338,13 @@ public sealed class ClientHost : IAsyncDisposable
 
         _retryAttempt = 0;
         _autoConnectSuppressed = false;
-        return AttemptAsync(kind, host, port, name, reconnecting: false, op);
+        return AttemptAsync(kind, host, port, name, reconnecting: false, expectedFingerprint, op);
     }
 
     private Task<bool> ReconnectTargetAsync()
     {
         Target t = _target!;
-        return AttemptAsync(AttemptKind.Reconnect, t.Host, t.Port, t.Name, reconnecting: true, (c, ct) => c.ConnectAsync(t.Host, t.Port, t.Fingerprint, ct));
+        return AttemptAsync(AttemptKind.Reconnect, t.Host, t.Port, t.Name, reconnecting: true, default, (c, ct) => c.ConnectAsync(t.Host, t.Port, t.Fingerprint, ct));
     }
 
     private async Task<bool> AttemptAsync(
@@ -334,6 +353,7 @@ public sealed class ClientHost : IAsyncDisposable
         int port,
         string? name,
         bool reconnecting,
+        ReadOnlyMemory<byte> expectedFingerprint,
         Func<PenBridgeClient, CancellationToken, Task> op)
     {
         if (!_started)
@@ -347,31 +367,50 @@ public sealed class ClientHost : IAsyncDisposable
         Log.Info(Tag, "Connect attempt: " + kind);
         using var cts = new CancellationTokenSource();
         _attemptCts = cts;
-        PenBridgeClient client = CreateClient();
-        Volatile.Write(ref _client, client);
-        SetState(new ClientHostState(
-            kind == AttemptKind.Pair ? ClientHostStatus.Pairing : ClientHostStatus.Connecting,
-            MacName: name ?? _target?.Name,
-            IsReconnecting: reconnecting,
-            Error: reconnecting ? _state.Error : ClientErrorKind.None,
-            Message: reconnecting ? _state.Message : null));
 
         Failure failure;
         try
         {
-            await op(client, cts.Token).ConfigureAwait(true);
+            SetState(new ClientHostState(
+                kind == AttemptKind.Pair ? ClientHostStatus.Pairing : ClientHostStatus.Connecting,
+                MacName: name ?? _target?.Name,
+                IsReconnecting: reconnecting,
+                Error: reconnecting ? _state.Error : ClientErrorKind.None,
+                Message: reconnecting ? _state.Message : null));
+
+            // Keystore reads (device id on a cold cache, the device key check in Core's connect) stay off the main
+            // thread: build the client and run the operation's synchronous part on the pool, resume on the main thread.
+            PenBridgeClient client = await Task.Run(CreateClient, cts.Token).ConfigureAwait(true);
+            if (generation != _generation)
+            {
+                client.Disconnected -= OnClientDisconnected;
+                Observe(client.DisposeAsync().AsTask(), "client close");
+                return false;
+            }
+
+            Volatile.Write(ref _client, client);
+            await Task.Run(() => op(client, cts.Token), cts.Token).ConfigureAwait(true);
             if (generation != _generation)
             {
                 return false;
             }
 
-            if (client.IsConnected && client.ServerFingerprint is { } fp)
+            if (!client.IsConnected || client.ServerFingerprint is not { } fp)
+            {
+                failure = new Failure(ClientErrorKind.ConnectionLost, "The connection dropped.", 0, Retry: true);
+            }
+            else if (!expectedFingerprint.IsEmpty && !expectedFingerprint.Span.SequenceEqual(fp))
+            {
+                // PIN pairing bound the real certificate, but it isn't the one the Mac advertised: don't keep a key
+                // for a server we can't match to what the user picked.
+                Credentials.Forget(fp);
+                failure = new Failure(ClientErrorKind.IdentityMismatch, "The Mac's certificate doesn't match its advertisement.", 0, Retry: false);
+            }
+            else
             {
                 OnConnected(client, host, port, fp, name);
                 return true;
             }
-
-            failure = new Failure(ClientErrorKind.ConnectionLost, "The connection dropped.", 0, Retry: true);
         }
         catch (PenBridgeConnectException ex) when (generation == _generation)
         {
@@ -385,9 +424,18 @@ public sealed class ClientHost : IAsyncDisposable
         {
             failure = new Failure(ClientErrorKind.Unreachable, "Could not connect to the Mac.", 0, Retry: true);
         }
-        catch (Exception ex) when (generation != _generation && ex is not OutOfMemoryException)
+#pragma warning disable CA1031 // Anything else (keystore, platform, UI handler) is terminal for this attempt, never a dangling client.
+        catch (Exception ex) when (generation == _generation && ex is not OutOfMemoryException)
+#pragma warning restore CA1031
         {
-            return false; // superseded (OnStop, Disconnect, a newer attempt): that code already dropped the client
+            Log.Error(Tag, "Connect attempt failed unexpectedly: " + ex.GetType().Name);
+            failure = new Failure(ClientErrorKind.Internal, "Something went wrong. Try again.", 0, Retry: false);
+        }
+#pragma warning disable CA1031 // Superseded attempt (OnStop, Disconnect, a newer attempt): that code already dropped the client.
+        catch (Exception ex) when (generation != _generation && ex is not OutOfMemoryException)
+#pragma warning restore CA1031
+        {
+            return false;
         }
         finally
         {
@@ -399,6 +447,16 @@ public sealed class ClientHost : IAsyncDisposable
 
         DropClient(graceful: false);
         Log.Info(Tag, "Connect attempt failed: " + failure.Kind);
+        if (kind == AttemptKind.Reconnect && failure.Kind == ClientErrorKind.IdentityMismatch
+            && _target is { IsFollowingDiscovery: true } followed && followed.Host == host && followed.Port == port)
+        {
+            // The address came from an (unauthenticated) TXT record and the pin rejected it: stop following it and
+            // go back to the last address that passed the pin. The pin itself is never relaxed.
+            _rejectedEndpoints.Add(EndpointKey(host, port));
+            _target = followed with { Host = followed.GoodHost, Port = followed.GoodPort };
+            failure = failure with { Retry = true };
+        }
+
         if (kind == AttemptKind.Reconnect && failure.Retry && _started && _target is not null)
         {
             ScheduleRetry(failure.Kind, failure.Message);
@@ -425,7 +483,12 @@ public sealed class ClientHost : IAsyncDisposable
             name = fallbackName ?? host;
         }
 
-        _target = new Target(host, port, fingerprint, name);
+        if (_target is null || !_target.Fingerprint.AsSpan().SequenceEqual(fingerprint))
+        {
+            _rejectedEndpoints.Clear();
+        }
+
+        _target = new Target(host, port, fingerprint, name, host, port);
         Settings.RecordConnected(fingerprint, name, host, port);
         _retryAttempt = 0;
         _autoConnectSuppressed = false;
@@ -481,7 +544,7 @@ public sealed class ClientHost : IAsyncDisposable
             return;
         }
 
-        _ = ReconnectTargetAsync();
+        Observe(ReconnectTargetAsync(), "reconnect");
     }
 
     private void OnRefresh()
@@ -515,7 +578,8 @@ public sealed class ClientHost : IAsyncDisposable
             // connection still requires the pinned certificate.
             foreach (DiscoveredServer server in servers)
             {
-                if (server.IsCompatible && server.HasFingerprint(t.Fingerprint) && (server.Host != t.Host || server.Port != t.Port))
+                if (server.IsCompatible && server.HasFingerprint(t.Fingerprint) && (server.Host != t.Host || server.Port != t.Port)
+                    && !_rejectedEndpoints.Contains(EndpointKey(server.Host, server.Port)))
                 {
                     _target = t with { Host = server.Host, Port = server.Port };
                     if (_retryPending)
@@ -537,10 +601,10 @@ public sealed class ClientHost : IAsyncDisposable
             return;
         }
 
-        if (ReconnectPolicy.SelectAutoConnectTarget(servers, last, Credentials) is { } target)
+        if (ReconnectPolicy.SelectAutoConnectTarget(servers, last, IsPaired) is { } target)
         {
             _autoConnectTried = true;
-            _ = ConnectAsync(target);
+            Observe(ConnectAsync(target), "auto-connect");
         }
     }
 
@@ -564,7 +628,7 @@ public sealed class ClientHost : IAsyncDisposable
         if (old is not null)
         {
             old.Disconnected -= OnClientDisconnected;
-            _ = CloseClientAsync(old, graceful);
+            Observe(CloseClientAsync(old, graceful), "client close");
         }
     }
 
@@ -678,6 +742,27 @@ public sealed class ClientHost : IAsyncDisposable
         _ => (ClientErrorKind.ConnectionLost, "The connection dropped."),
     };
 
+    private static string EndpointKey(string host, int port) => SettingsStore.FormatEndpoint(host, port);
+
+    /// <summary>Observes a fire-and-forget task so a fault is logged instead of going unobserved.</summary>
+    private static void Observe(Task task, string what) =>
+        task.ContinueWith(
+            static (t, state) => Log.Error(Tag, "Background " + (string)state! + " failed: " + t.Exception?.GetBaseException().GetType().Name),
+            what,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+
+    /// <summary>Off the main thread: decrypt the device id and the paired state of known Macs once, into the cache.</summary>
+    private void WarmSecrets()
+    {
+        Credentials.GetOrCreateDeviceId();
+        foreach (KnownMac mac in Settings.GetKnownMacs())
+        {
+            SecretStore.IsPaired(mac.Fingerprint);
+        }
+    }
+
     private static TimeSpan? RoundMs(TimeSpan? rtt) =>
         rtt is { } value ? TimeSpan.FromMilliseconds(Math.Round(value.TotalMilliseconds)) : null;
 
@@ -720,7 +805,12 @@ public sealed class ClientHost : IAsyncDisposable
 
     private readonly record struct Failure(ClientErrorKind Kind, string Message, int AttemptsLeft, bool Retry);
 
-    private sealed record Target(string Host, int Port, byte[] Fingerprint, string Name);
+    /// <param name="GoodHost">The address of the last connection that passed the pin.</param>
+    private sealed record Target(string Host, int Port, byte[] Fingerprint, string Name, string GoodHost, int GoodPort)
+    {
+        /// <summary>True when <see cref="Host"/>/<see cref="Port"/> came from discovery and haven't passed the pin yet.</summary>
+        public bool IsFollowingDiscovery => Host != GoodHost || Port != GoodPort;
+    }
 }
 
 /// <summary>Payload of <see cref="ClientHost.StateChanged"/>.</summary>

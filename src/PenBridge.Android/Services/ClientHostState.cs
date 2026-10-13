@@ -76,6 +76,9 @@ public enum ClientErrorKind
 
     /// <summary>Invalid user input (PIN format, QR payload, host/port).</summary>
     InvalidInput,
+
+    /// <summary>An unexpected local failure (e.g. the secret store); the attempt was abandoned.</summary>
+    Internal,
 }
 
 /// <summary>

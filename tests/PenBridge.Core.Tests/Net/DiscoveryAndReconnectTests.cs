@@ -190,4 +190,15 @@ public class DiscoveryAndReconnectTests
         credentials.Forget(Fingerprint);
         Assert.Null(ReconnectPolicy.SelectAutoConnectTarget(list, Fingerprint, credentials));
     }
+
+    [Fact]
+    public void Auto_connect_with_a_custom_paired_check_asks_only_for_the_match()
+    {
+        DiscoveredServer other = Create(fp: OtherFingerprint);
+        DiscoveredServer last = Create();
+        var asked = new List<DiscoveredServer>();
+        Assert.Same(last, ReconnectPolicy.SelectAutoConnectTarget([other, last], Fingerprint, s => { asked.Add(s); return true; }));
+        Assert.Equal([last], asked);
+        Assert.Null(ReconnectPolicy.SelectAutoConnectTarget([other, last], Fingerprint, _ => false));
+    }
 }

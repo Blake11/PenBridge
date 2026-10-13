@@ -60,8 +60,21 @@ public static class ReconnectPolicy
         ReadOnlySpan<byte> lastUsedFingerprint,
         ClientCredentialStore credentials)
     {
-        ArgumentNullException.ThrowIfNull(discovered);
         ArgumentNullException.ThrowIfNull(credentials);
+        return SelectAutoConnectTarget(discovered, lastUsedFingerprint, server => credentials.IsPaired(server.Fingerprint.Span));
+    }
+
+    /// <summary>
+    /// As <see cref="SelectAutoConnectTarget(IReadOnlyList{DiscoveredServer}, ReadOnlySpan{byte}, ClientCredentialStore)"/>,
+    /// with a caller-supplied (e.g. cached) paired check, called at most once, for the matching server only.
+    /// </summary>
+    public static DiscoveredServer? SelectAutoConnectTarget(
+        IReadOnlyList<DiscoveredServer> discovered,
+        ReadOnlySpan<byte> lastUsedFingerprint,
+        Func<DiscoveredServer, bool> isPaired)
+    {
+        ArgumentNullException.ThrowIfNull(discovered);
+        ArgumentNullException.ThrowIfNull(isPaired);
         if (lastUsedFingerprint.Length != Security.CertificateFingerprint.Length)
         {
             return null;
@@ -72,7 +85,7 @@ public static class ReconnectPolicy
             DiscoveredServer server = discovered[i];
             if (server.IsCompatible && server.HasFingerprint(lastUsedFingerprint))
             {
-                return credentials.IsPaired(lastUsedFingerprint) ? server : null;
+                return isPaired(server) ? server : null;
             }
         }
 
