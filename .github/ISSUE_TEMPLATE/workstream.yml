@@ -1,0 +1,67 @@
+name: Workstream
+description: A planned unit of work inside a phase epic, delegated to one agent (ADR-0014)
+title: "<WS-ID>: "
+labels: ["type: feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One workstream = one owner, disjoint files, one branch/PR. Add `area:` labels and the phase milestone, and list this issue in the epic's task list.
+  - type: input
+    id: epic
+    attributes:
+      label: Epic
+      description: Phase epic this belongs to.
+      placeholder: "#10"
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What and why, with links to the spec / ADR sections.
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Owned files
+      description: Globs this workstream may change. Anything else needs the architect.
+      placeholder: |
+        src/PenBridge.Core/Net/**
+        tests/PenBridge.Core.Tests/Net/**
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: A task list; the PR that closes this issue satisfies all of it.
+      placeholder: |
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: Tests
+      description: Unit/E2E tests, scripts/test.sh, device checks (Mac + Krita, S23, emulator, SimClient).
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Issues/PRs that must land first, and what depends on this.
+      placeholder: "Blocked on #6, #7"
+  - type: dropdown
+    id: owner
+    attributes:
+      label: Owner agent
+      options:
+        - core-dev
+        - mac-dev
+        - android-dev
+        - ci-dev
+        - human

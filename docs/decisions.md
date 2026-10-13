@@ -87,3 +87,30 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
   - J-PAKE pairing stays secure even over a compromised channel.
   - TLS adds confidentiality for control messages and server authentication via the pinned fingerprint.
 - **Revisit:** when .NET's macOS TLS server supports 1.3; a test asserts the negotiated version so the change is noticed. The alternative, BouncyCastle TLS 1.3, remains available if the threat model changes.
+
+## ADR-0014 — Issue-driven planning and bug tracking
+**Status:** accepted (2026-10-13)
+- **Context:** phase and workstream state lived only in local, untracked `progress.md` files, and bugs found by agents or reviewers were scattered across reports. Nothing was visible on GitHub or linked from PRs.
+- **Decision:** GitHub issues are the plan of record, and implementation is driven from them.
+  - Each roadmap phase is an epic issue (`type: epic`) with a milestone of the same name. The epic's task list references its workstream issues.
+  - Each workstream gets an issue (goal, owned files, acceptance, tests, dependencies) **before** it's delegated. Subagent prompts carry the issue number.
+  - Bugs found by agents or reviewers that aren't fixed in the same PR become `type: bug` issues. Post-MVP ideas are issues with the `later` label and the "Later" milestone.
+  - Every PR references its issue: `Closes #N` (or `Refs #N` when it doesn't finish the issue).
+  - Labels: `type: *`, `area: *`, `status: in progress`, `status: blocked`, `later` (skill `issues`).
+- **Progress files:** local progress files stay as session state and link the issues: the architect owns `progress.md`, and each workstream agent writes only its own `ws-<id>.md`, because concurrent agents editing one shared file lost each other's sections (skill `progress-tracking`).
+- **Unchanged:** Conventional Commit messages and PR titles (ADR-0007).
+
+## ADR-0015 — Windows host app as a later phase
+**Status:** accepted (2026-10-13), scope only; the design is finalised when the phase starts.
+- **Context:** the user wants the phone to work as a tablet for Windows PCs too. The phone client and protocol are host-agnostic.
+- **Decision:** add a later phase, "Windows host": a `net10.0-windows` tray app, `src/PenBridge.Windows`, that reuses `PenBridge.Core` unchanged (server engine, pairing, PenStateTracker, GestureRecognizer, CoordinateMapper). Only platform glue is new:
+  - **Shell:** a notification-area (tray) icon with the same menu as the Mac server, and no taskbar window. UI tech is decided at phase start: WinForms `NotifyIcon` (lightest) or WinUI 3.
+  - **Input injection:** `InjectSyntheticPointerInput` with `PT_PEN` (pressure, tilt, rotation, eraser, barrel button; Windows 10 1809+). It needs no driver and works with Windows Ink-aware apps.
+    - Touch gestures are injected as `PT_TOUCH` or mapped to wheel/zoom.
+    - This sits behind the same `IInputSink` / injector abstraction as the Mac (ADR-0003).
+  - **Discovery:** native mDNS via `DnsServiceRegister` (Windows 10+), advertising `_penbridge._tcp`.
+  - **Secrets:** a DPAPI (`ProtectedData`, current user) adapter for `ISecretStore`.
+  - **Run at startup:** HKCU `Run` key (unpackaged) or `StartupTask` (MSIX).
+  - **TLS:** SChannel supports TLS 1.3, so ADR-0013's concession is macOS-only.
+  - **Release:** an MSIX or zip on GitHub Releases, plus a `windows-latest` CI build job. Code signing is deferred, like macOS notarization.
+- **Consequence:** platform heads must keep Core free of macOS assumptions: no Apple-specific coordinate conventions in Core, and the display model stays generic.

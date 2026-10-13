@@ -63,6 +63,8 @@ gh pr create --fill          # then edit the title and body to match the templat
 
 Before pushing, run `scripts/test.sh` locally.
 
-## Progress tracking
+## Issues and progress tracking
 
-Each feature in progress has a working note at `.claude/progress/<feature>/progress.md`. It records the goal, decisions, workstreams, status, open questions and next steps. These files are **untracked**, so don't commit them. Durable decisions go to `docs/decisions.md` as ADRs.
+GitHub issues are the plan of record (ADR-0014). Each roadmap phase is an epic issue with a matching milestone, each workstream has its own issue, and bugs are `type: bug` issues. Every PR references its issue with `Closes #N` (or `Refs #N`).
+
+Each feature in progress also has local working notes in `.claude/progress/<feature>/`: `progress.md` (goal, decisions, workstreams with issue numbers, open questions, next steps) and one `ws-<id>.md` per workstream. These files are **untracked**, so don't commit them. Durable decisions go to `docs/decisions.md` as ADRs.
