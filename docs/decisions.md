@@ -124,3 +124,12 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
 - **Target display:** the main display by default. The user's choice is remembered by display UUID and falls back to main.
 - **Memory:** NativeAOT plus full trimming; accept ≤ 60 MB idle RSS.
 - **Phase boundary:** gesture events are ignored until Phase 4.
+
+## ADR-0017 — Debug builds store secrets in a local file, not the Keychain
+**Status:** accepted (2026-10-13)
+- **Context:** for code with no Apple Team ID (we sign with a self-signed "PenBridge Dev" certificate), macOS records the binary's cdhash in each Keychain item's partition list. Every recompile therefore triggers an access prompt, even with a stable designated requirement. Custom access objects, partition-list edits and the data-protection keychain don't help without a Team ID (#55).
+- **Decision:** Debug builds use Core's `FileSecretStore` under `~/Library/Application Support/PenBridge-Dev/secrets` (0700 directory, 0600 files). Release and distributed builds always use the Keychain.
+- **Consequences:**
+  - Debug and Release keep separate identities and pairings, so a phone paired with a Debug build has to pair again with Release.
+  - Debug-build secrets rely on file permissions only, which is acceptable for local development.
+- **Revisit:** if a paid or free Apple Development certificate with a Team ID is adopted, the Keychain can be used for Debug too.
