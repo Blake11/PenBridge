@@ -324,7 +324,11 @@ public readonly struct ErrorMessage : IControlMessage<ErrorMessage>
 
     public ProtocolErrorCode Code { get; }
 
-    /// <summary>Human-readable detail. Never put keys, PINs or tokens here.</summary>
+    /// <summary>
+    /// Human-readable detail, at most <see cref="WireString.MaxBytes"/> UTF-8 bytes. Never put keys, PINs or tokens here.
+    /// A received message is untrusted peer text: heads may log or show it only as plain data (no markup, format
+    /// strings or control-character interpretation) and must not base decisions on it; use <see cref="Code"/>.
+    /// </summary>
     public string Message { get; }
 
     public int PayloadSize => 2 + WireString.GetSize(Message, nameof(Message));

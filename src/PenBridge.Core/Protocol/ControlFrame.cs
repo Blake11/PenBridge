@@ -89,8 +89,8 @@ public static class ControlFrame
 
     /// <summary>
     /// Decodes one frame from the start of <paramref name="buffer"/>.
-    /// Throws <see cref="ProtocolException"/> for a zero or oversized length (<see cref="ProtocolErrorCode.FrameTooLarge"/>)
-    /// and for an unknown non-reserved type (<see cref="ProtocolErrorCode.UnknownMessageType"/>); the caller must disconnect.
+    /// Throws <see cref="ProtocolException"/> for a zero length (<see cref="ProtocolErrorCode.ProtocolViolation"/>),
+    /// an oversized length (<see cref="ProtocolErrorCode.FrameTooLarge"/>) and an unknown non-reserved type (<see cref="ProtocolErrorCode.UnknownMessageType"/>); the caller must disconnect.
     /// </summary>
     public static ControlFrameStatus TryRead(
         ReadOnlySpan<byte> buffer,

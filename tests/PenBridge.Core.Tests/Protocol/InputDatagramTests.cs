@@ -161,37 +161,60 @@ public class InputDatagramTests
     }
 
     [Fact]
-    public void Payload_write_and_read_do_not_allocate()
+    public void Nonce_is_session_id_then_sequence_from_the_header()
     {
-        Span<byte> datagram = stackalloc byte[InputDatagram.MaxSize];
-        TouchSample[] touches = Touches;
-        PenSample[] history = [Earlier, Earlier];
-        int payloadLength = InputPayload.GetSize(true, touches.Length, history.Length);
+        Span<byte> header = stackalloc byte[InputDatagramHeader.Size];
+        new InputDatagramHeader(InputDatagramOptions.None, 0xA1B2C3D4, 0x0102).Write(header);
+        Assert.Equal("A1B2C3D40000000000000102", Hex.Of(InputDatagram.Nonce(header)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => InputDatagram.Nonce(new byte[15]));
+    }
 
-        void Once(Span<byte> buffer, ulong sequence)
+    [Fact]
+    public void Payload_write_and_read_do_not_allocate() => AssertNoAllocations(Touches, [Earlier, Earlier]);
+
+    [Fact]
+    public void Worst_case_payload_write_and_read_do_not_allocate()
+    {
+        var touches = new TouchSample[InputPayload.MaxTouches];
+        for (int i = 0; i < touches.Length; i++)
         {
-            InputDatagram.Slice(buffer, payloadLength, out Span<byte> header, out Span<byte> payload, out _);
-            new InputDatagramHeader(InputDatagramOptions.None, 42, sequence).Write(header);
-            InputPayload.Write(payload, (uint)sequence, Pen, touches, history);
-            Assert.True(InputDatagram.TrySplit(buffer[..InputDatagram.GetSize(payloadLength)], out InputDatagramHeader h, out _, out ReadOnlySpan<byte> body, out _));
-            Assert.True(InputPayload.TryRead(body, out InputPayload decoded));
-            var frame = new InputFrameMessage(decoded);
-            Span<byte> frameBuffer = stackalloc byte[ControlFrame.HeaderSize + InputPayload.MaxSize];
-            ControlFrame.Write(frameBuffer, frame);
-            if (decoded.Touches.Length != 2 || h.Sequence != sequence || decoded.Pen is null)
-            {
-                Assert.Fail("decode mismatch");
-            }
+            touches[i] = new TouchSample((byte)i, true, (ushort)(i * 100), (ushort)(i * 200));
         }
 
-        Once(datagram, 1);
+        var history = new PenSample[InputPayload.MaxHistory];
+        Array.Fill(history, Earlier);
+        AssertNoAllocations(touches, history);
+    }
+
+    private static void AssertNoAllocations(TouchSample[] touches, PenSample[] history)
+    {
+        Span<byte> datagram = stackalloc byte[InputDatagram.MaxSize];
+        Span<byte> frameBuffer = stackalloc byte[ControlFrame.HeaderSize + InputPayload.MaxSize];
+        int payloadLength = InputPayload.GetSize(true, touches.Length, history.Length);
+
+        RoundTrip(datagram, frameBuffer, payloadLength, touches, history, 1);
         long before = GC.GetAllocatedBytesForCurrentThread();
         for (ulong i = 2; i < 10_002; i++)
         {
-            Once(datagram, i);
+            RoundTrip(datagram, frameBuffer, payloadLength, touches, history, i);
         }
 
         long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         Assert.Equal(0, allocated);
+    }
+
+    private static void RoundTrip(Span<byte> buffer, Span<byte> frameBuffer, int payloadLength, TouchSample[] touches, PenSample[] history, ulong sequence)
+    {
+        InputDatagram.Slice(buffer, payloadLength, out Span<byte> header, out Span<byte> payload, out _);
+        new InputDatagramHeader(InputDatagramOptions.None, 42, sequence).Write(header);
+        InputPayload.Write(payload, (uint)sequence, Pen, touches, history);
+        Assert.True(InputDatagram.TrySplit(buffer[..InputDatagram.GetSize(payloadLength)], out InputDatagramHeader h, out ReadOnlySpan<byte> aad, out ReadOnlySpan<byte> body, out _));
+        _ = InputDatagram.Nonce(aad);
+        Assert.True(InputPayload.TryRead(body, out InputPayload decoded));
+        ControlFrame.Write(frameBuffer, new InputFrameMessage(decoded));
+        if (decoded.Touches.Length != touches.Length || decoded.History.Length != history.Length || h.Sequence != sequence || decoded.Pen is null)
+        {
+            Assert.Fail("decode mismatch");
+        }
     }
 }

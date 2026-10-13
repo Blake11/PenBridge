@@ -188,6 +188,43 @@ public class ControlFrameTests
     }
 
     [Fact]
+    public async Task Stream_reader_caps_consecutive_reserved_frames()
+    {
+        byte[] reserved = Hex.Bytes("00000001 F0");
+        using var ok = new MemoryStream();
+        for (int i = 0; i < ControlFrameReader.MaxConsecutiveReservedFrames; i++)
+        {
+            ok.Write(reserved);
+        }
+
+        await ControlFrameWriter.WriteAsync(ok, new PingMessage(1), TestContext.Current.CancellationToken);
+        for (int i = 0; i < ControlFrameReader.MaxConsecutiveReservedFrames; i++)
+        {
+            ok.Write(reserved);
+        }
+
+        await ControlFrameWriter.WriteAsync(ok, new PingMessage(2), TestContext.Current.CancellationToken);
+        ok.Position = 0;
+        using (var reader = new ControlFrameReader(ok))
+        {
+            Assert.Equal(1ul, (await reader.ReadAsync(TestContext.Current.CancellationToken))!.Value.Read<PingMessage>().TimestampUs);
+            Assert.Equal(2ul, (await reader.ReadAsync(TestContext.Current.CancellationToken))!.Value.Read<PingMessage>().TimestampUs);
+        }
+
+        using var flood = new MemoryStream();
+        for (int i = 0; i <= ControlFrameReader.MaxConsecutiveReservedFrames; i++)
+        {
+            flood.Write(reserved);
+        }
+
+        await ControlFrameWriter.WriteAsync(flood, new PingMessage(1), TestContext.Current.CancellationToken);
+        flood.Position = 0;
+        using var floodReader = new ControlFrameReader(flood);
+        var ex = await Assert.ThrowsAsync<ProtocolException>(async () => await floodReader.ReadAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(ProtocolErrorCode.ProtocolViolation, ex.Code);
+    }
+
+    [Fact]
     public async Task Stream_reader_grows_for_large_frames()
     {
         var blob = new byte[40_000];

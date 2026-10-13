@@ -54,6 +54,19 @@ public static class InputDatagram
     /// <summary>Largest ciphertext/payload that fits in <see cref="MaxSize"/>.</summary>
     public const int MaxPayloadSize = MaxSize - InputDatagramHeader.Size - TagSize;
 
+    /// <summary>Offset of the 96-bit AEAD nonce (<c>u32 sessionId ‖ u64 sequence</c>) inside the header.</summary>
+    public const int NonceOffset = 4;
+
+    /// <summary>Size of the AEAD nonce.</summary>
+    public const int NonceSize = 12;
+
+    /// <summary>The AEAD nonce, <c>header[4..16]</c> (<c>u32 sessionId ‖ u64 sequence</c>), as written by <see cref="InputDatagramHeader.Write"/>.</summary>
+    public static ReadOnlySpan<byte> Nonce(ReadOnlySpan<byte> header)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(header.Length, InputDatagramHeader.Size, nameof(header));
+        return header.Slice(NonceOffset, NonceSize);
+    }
+
     /// <summary>Total datagram size for a payload of <paramref name="payloadLength"/> bytes.</summary>
     public static int GetSize(int payloadLength) => InputDatagramHeader.Size + payloadLength + TagSize;
 

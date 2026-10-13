@@ -38,3 +38,4 @@ Protocol lives in `src/PenBridge.Core` (ADR-0004). Mac server and phone clients 
 ## Gotchas
 - Untrusted base64url (TXT `fp`, QR `fp`/`t`): use `Base64Url.DecodeFromChars` (`OperationStatus` overload). `TryDecodeFromChars` still throws `FormatException` on malformed or non-canonical input, because "Try" only covers destination size.
 - Readers ignore trailing bytes in known messages (minor-version extension point). Unknown enum values in *input samples* are rejected; unknown Error codes, Bye reasons and capability bits are accepted.
+- Control-stream reads have no built-in timeout: callers pass a per-read deadline (`CancellationTokenSource.CancelAfter`) and a pre-auth handshake timeout. Reserved (`0xF0–0xFF`) frames are skipped but count toward a cap (`ControlFrameReader.MaxConsecutiveReservedFrames`), so they can't keep a dead or hostile peer "alive". Any read failure or cancellation desyncs the stream: dispose and close.

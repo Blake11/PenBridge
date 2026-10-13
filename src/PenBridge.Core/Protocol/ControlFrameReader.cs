@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
 
 namespace PenBridge.Core.Protocol;
 
@@ -31,10 +32,26 @@ public readonly struct ReceivedControlFrame(ControlMessageType type, ReadOnlyMem
 /// <summary>
 /// Reads control frames from a <see cref="Stream"/> (the TLS <c>SslStream</c>). One pooled buffer is reused and
 /// grown on demand up to <see cref="ControlFrame.MaxLength"/>, so a peer can't make it allocate more than that.
-/// Reserved-type frames are skipped. Not thread-safe: one reader per connection.
+/// Reserved-type frames are skipped, but at most <see cref="MaxConsecutiveReservedFrames"/> in a row; more is a
+/// protocol violation, so reserved frames can't stand in for real traffic. Not thread-safe: one reader per connection.
 /// </summary>
+/// <remarks>
+/// <para>
+/// The reader has no timeouts of its own. Callers must pass a per-read deadline
+/// (a <see cref="CancellationToken"/> from a source with <c>CancelAfter</c>) and enforce a handshake timeout before
+/// authentication, otherwise a silent or trickling peer holds the connection open indefinitely.
+/// </para>
+/// <para>
+/// Any failure is terminal: after cancellation or any exception (including <see cref="ProtocolException"/>) the
+/// stream may be positioned mid-frame and is desynchronized. Dispose the reader and close the connection; never
+/// read again.
+/// </para>
+/// </remarks>
 public sealed class ControlFrameReader : IDisposable
 {
+    /// <summary>Most reserved (<c>0xF0–0xFF</c>) frames accepted back to back before the reader gives up.</summary>
+    public const int MaxConsecutiveReservedFrames = 16;
+
     private const int InitialBufferSize = 1024;
 
     private readonly Stream _stream;
@@ -50,14 +67,18 @@ public sealed class ControlFrameReader : IDisposable
 
     /// <summary>
     /// Reads the next non-reserved frame. Returns null on a clean end of stream at a frame boundary.
-    /// Throws <see cref="ProtocolException"/> on an invalid length, an unknown type, or a stream that ends mid-frame.
+    /// Throws <see cref="ProtocolException"/> on an invalid length, an unknown type, more than
+    /// <see cref="MaxConsecutiveReservedFrames"/> reserved frames in a row, or a stream that ends mid-frame.
+    /// Any exception or cancellation leaves the stream desynchronized (see remarks on the type).
     /// </summary>
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     public async ValueTask<ReceivedControlFrame?> ReadAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        int reserved = 0;
         while (true)
         {
-            int got = await ReadAtLeastAsync(_buffer.AsMemory(0, ControlFrame.LengthPrefixSize), cancellationToken).ConfigureAwait(false);
+            int got = await _stream.ReadAtLeastAsync(_buffer.AsMemory(0, ControlFrame.LengthPrefixSize), ControlFrame.LengthPrefixSize, throwOnEndOfStream: false, cancellationToken).ConfigureAwait(false);
             if (got == 0)
             {
                 return null;
@@ -70,7 +91,7 @@ public sealed class ControlFrameReader : IDisposable
 
             int length = ControlFrame.ValidateLength(BinaryPrimitives.ReadUInt32BigEndian(_buffer));
             EnsureCapacity(length);
-            if (await ReadAtLeastAsync(_buffer.AsMemory(0, length), cancellationToken).ConfigureAwait(false) < length)
+            if (await _stream.ReadAtLeastAsync(_buffer.AsMemory(0, length), length, throwOnEndOfStream: false, cancellationToken).ConfigureAwait(false) < length)
             {
                 throw Truncated();
             }
@@ -78,6 +99,11 @@ public sealed class ControlFrameReader : IDisposable
             byte type = _buffer[0];
             if (ControlFrame.ClassifyType(type))
             {
+                if (++reserved > MaxConsecutiveReservedFrames)
+                {
+                    throw new ProtocolException(ProtocolErrorCode.ProtocolViolation, "Too many consecutive reserved control frames.");
+                }
+
                 continue;
             }
 
@@ -96,9 +122,6 @@ public sealed class ControlFrameReader : IDisposable
         ArrayPool<byte>.Shared.Return(_buffer, clearArray: true);
         _buffer = [];
     }
-
-    private async ValueTask<int> ReadAtLeastAsync(Memory<byte> destination, CancellationToken cancellationToken) =>
-        await _stream.ReadAtLeastAsync(destination, destination.Length, throwOnEndOfStream: false, cancellationToken).ConfigureAwait(false);
 
     private void EnsureCapacity(int length)
     {
