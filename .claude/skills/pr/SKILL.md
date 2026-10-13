@@ -46,6 +46,20 @@ Closes #N
 ```
 Editing an existing PR: `gh pr view <n> --json body --jq .body > /tmp/body.md`, append the line, `gh pr edit <n> --body-file /tmp/body.md`.
 
+## CI path filters (`ci.yml`, issue #52)
+A `Detect changes` job (`dorny/paths-filter@v3`) gates the jobs with job-level `if:`. Never use workflow-level `paths:`: a required check that never reports blocks the PR, while a job skipped by `if:` reports "skipped" (passing). Pushes to `main`, `workflow_dispatch`, and a failed `Detect changes` run everything. Full table: CONTRIBUTING.md "CI jobs".
+
+| Changed paths | Jobs |
+|---|---|
+| `.github/workflows/**`, `.github/actions/**`, `scripts/**`, `.githooks/**` | all |
+| `src/PenBridge.Core/**`, `tests/**`, `tools/**`, `build/**`, `**/Directory.Build.*`, `**/Directory.Packages.props`, `global.json`, `PenBridge.slnx`, `.editorconfig` | all |
+| `src/PenBridge.Mac/**` | macOS build |
+| `src/PenBridge.Android/**` | Android build |
+| `src/PenBridge.iOS/**` | iOS build (placeholder) |
+| docs, `.claude/**`, `LICENSE`, issue/PR templates | none (only Conventional Commit title) |
+
+Keep required check names (`name:`) unchanged when editing jobs, and add new projects or build-affecting root files to the filters.
+
 ## After
 - `gh pr checks <n>`, `gh run view <id> --log-failed` for failures. Every check must be green before merging, not just the required ones: a non-required iOS check once let a broken trimmed build merge (#27). All head builds (macOS, Android, iOS) are now required; check with `gh api repos/Blake11/PenBridge/branches/main/protection/required_status_checks --jq .contexts`.
 - Merge only on user request: `gh pr merge <n> --squash --delete-branch`.
