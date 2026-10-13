@@ -1,0 +1,34 @@
+name: Select Xcode
+description: >
+  Selects the exact Xcode that the installed .NET macos/ios workload packs
+  require and fails fast when the runner image does not have it. The workload
+  validates Xcode major.minor, so "latest-stable" on a generic macOS image is
+  not enough. Bump `xcode-version` (and the job's runner label) together with
+  the workload.
+
+inputs:
+  xcode-version:
+    description: Xcode version to select (matches /Applications/Xcode_<version>.app)
+    required: false
+    default: "27.0"
+
+runs:
+  using: composite
+  steps:
+    - name: Select Xcode ${{ inputs.xcode-version }}
+      shell: bash
+      env:
+        XCODE_VERSION: ${{ inputs.xcode-version }}
+      run: |
+        set -euo pipefail
+        app="/Applications/Xcode_${XCODE_VERSION}.app"
+        if [ ! -d "$app" ]; then
+          echo "::error::Xcode ${XCODE_VERSION} not found at $app on runner image '${ImageOS:-unknown}' (${ImageVersion:-unknown}). The .NET macos/ios workload needs it; use a runner label whose image ships it (see actions/runner-images README). Installed:"
+          ls -d /Applications/Xcode*.app || true
+          exit 1
+        fi
+        sudo xcode-select -s "$app/Contents/Developer"
+        # Later steps (xcrun, the .NET Apple SDK) resolve Xcode via DEVELOPER_DIR first.
+        echo "DEVELOPER_DIR=$app/Contents/Developer" >> "$GITHUB_ENV"
+        xcode-select -p
+        xcodebuild -version
