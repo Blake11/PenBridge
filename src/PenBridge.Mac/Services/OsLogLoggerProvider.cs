@@ -74,8 +74,8 @@ public sealed class OsLogLoggerProvider : ILoggerProvider
         private static OSLogLevel Map(LogLevel level) => level switch
         {
             LogLevel.Trace or LogLevel.Debug => OSLogLevel.Debug,
-            LogLevel.Information => OSLogLevel.Info,
-            LogLevel.Warning => OSLogLevel.Default,
+            // Info-level entries are kept only in memory unless configured; Default is persisted, so Information survives for "Open logs".
+            LogLevel.Information or LogLevel.Warning => OSLogLevel.Default,
             LogLevel.Error => OSLogLevel.Error,
             _ => OSLogLevel.Fault,
         };

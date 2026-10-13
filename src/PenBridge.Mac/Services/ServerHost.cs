@@ -102,6 +102,7 @@ public sealed partial class ServerHost : IAsyncDisposable
     private PairedDeviceRegistry? _registry;
     private readonly BonjourAdvertiser _bonjour;
     private readonly List<NSObject> _observers = [];
+    private ComputerNameWatcher? _nameWatcher;
     private NWPathMonitor? _pathMonitor;
     private PenBridgeServer? _server;
     private Task _lifecycle = Task.CompletedTask;
@@ -232,11 +233,17 @@ public sealed partial class ServerHost : IAsyncDisposable
         return _server?.GetStats() ?? default;
     }
 
-    /// <summary>Forgets a paired device; its active session, if any, is closed with Bye(Unpaired).</summary>
-    public bool ForgetDevice(Guid deviceId)
+    /// <summary>
+    /// Forgets a paired device; its active session, if any, is closed with Bye(Unpaired). The Keychain write runs off
+    /// the main thread; the task completes (and <see cref="StateChanged"/> fires) back on it.
+    /// </summary>
+    public async Task<bool> ForgetDeviceAsync(Guid deviceId)
     {
         EnsureMainThread();
-        bool removed = _server?.ForgetDevice(deviceId) ?? _registry?.Remove(deviceId) ?? false;
+        PenBridgeServer? server = _server;
+        PairedDeviceRegistry? registry = _registry;
+        bool removed = await Task.Run(() => server?.ForgetDevice(deviceId) ?? registry?.Remove(deviceId) ?? false).ConfigureAwait(true);
+        EnsureMainThread();
         if (removed)
         {
             Log.DeviceForgotten(_log, deviceId);
@@ -312,6 +319,8 @@ public sealed partial class ServerHost : IAsyncDisposable
 
         _observers.Add(NSWorkspace.Notifications.ObserveWillSleep(OnWillSleep));
         _observers.Add(NSWorkspace.Notifications.ObserveDidWake(OnDidWake));
+        _nameWatcher = new ComputerNameWatcher();
+        _nameWatcher.Changed += OnComputerNameChanged;
 
         _addresses = LocalAddresses();
         var monitor = new NWPathMonitor();
@@ -329,6 +338,13 @@ public sealed partial class ServerHost : IAsyncDisposable
         }
 
         _observers.Clear();
+        if (_nameWatcher is not null)
+        {
+            _nameWatcher.Changed -= OnComputerNameChanged;
+            _nameWatcher.Dispose();
+            _nameWatcher = null;
+        }
+
         _pathMonitor?.Cancel();
         _pathMonitor?.Dispose();
         _pathMonitor = null;
@@ -336,8 +352,23 @@ public sealed partial class ServerHost : IAsyncDisposable
 
     private void OnWillSleep(object? sender, NSNotificationEventArgs e)
     {
+        if (!_wantRunning)
+        {
+            // Stopped by the user: stay Stopped, nothing to tear down.
+            return;
+        }
+
         Log.WillSleep(_log);
-        _ = Enqueue(() => StopServerAsync(ServerHostStatus.Sleeping));
+        RunInBackground(Enqueue(() => StopServerAsync(ServerHostStatus.Sleeping)), "sleep");
+    }
+
+    // The new name reaches the Bonjour instance and TXT at once; HelloAck uses it from the next server start.
+    private void OnComputerNameChanged(object? sender, EventArgs e)
+    {
+        if (_server is not null && _identity is not null)
+        {
+            _bonjour.Publish(ComputerName.Get(), _server.Port, _identity.Fingerprint);
+        }
     }
 
     private void OnDidWake(object? sender, NSNotificationEventArgs e)
@@ -346,7 +377,7 @@ public sealed partial class ServerHost : IAsyncDisposable
         if (_wantRunning)
         {
             _addresses = LocalAddresses();
-            _ = Enqueue(StartServerAsync);
+            RunInBackground(Enqueue(StartServerAsync), "wake");
         }
     }
 
@@ -367,7 +398,7 @@ public sealed partial class ServerHost : IAsyncDisposable
         }
         else if (_wantRunning && _status == ServerHostStatus.Failed)
         {
-            _ = Enqueue(StartServerAsync);
+            RunInBackground(Enqueue(StartServerAsync), "retry");
         }
 
         PublishState();
@@ -380,7 +411,26 @@ public sealed partial class ServerHost : IAsyncDisposable
         return next;
     }
 
-    private async Task RunAfterAsync(Task previous, Func<Task> operation)
+    /// <summary>Observes a fire-and-forget lifecycle operation: a fault is logged and shown as Failed at once.</summary>
+    private void RunInBackground(Task task, string operation)
+    {
+        task.ContinueWith(
+            t => DispatchQueue.MainQueue.DispatchAsync(() =>
+            {
+                Log.LifecycleFailed(_log, operation, t.Exception!.GetBaseException());
+                if (_server is null && !_disposed)
+                {
+                    _status = ServerHostStatus.Failed;
+                    _error = "The server could not " + (operation == "sleep" ? "stop" : "start") + "; see the logs.";
+                    PublishState();
+                }
+            }),
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private static async Task RunAfterAsync(Task previous, Func<Task> operation)
     {
         try
         {
@@ -388,8 +438,7 @@ public sealed partial class ServerHost : IAsyncDisposable
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            // Fire-and-forget operations (sleep/wake/retry) have nobody awaiting them: log here, then run the next one.
-            Log.LifecycleFailed(_log, ex);
+            // Already observed: by the awaiting caller, or by RunInBackground for sleep/wake/retry. Run the next one.
         }
 
         EnsureMainThread();
@@ -486,7 +535,7 @@ public sealed partial class ServerHost : IAsyncDisposable
             Log.Stopped(_log, status.ToString());
             if (hadPairingWindow)
             {
-                PairingChanged?.Invoke(this, EventArgs.Empty);
+                Raise(PairingChanged, nameof(PairingChanged));
             }
         }
 
@@ -534,27 +583,65 @@ public sealed partial class ServerHost : IAsyncDisposable
     {
         Log.DevicePaired(_log, PeerText.Sanitize(e.Device.Name), e.Device.DeviceId);
         PublishState();
-        DevicePaired?.Invoke(this, e);
+        Raise(DevicePaired, e, nameof(DevicePaired));
     });
 
     private void OnPairingWindowChanged(object? sender, EventArgs e) => OnMain(sender, () =>
     {
         PublishState();
-        PairingChanged?.Invoke(this, EventArgs.Empty);
+        Raise(PairingChanged, nameof(PairingChanged));
     });
 
     private void OnMain(object? sender, Action action) => DispatchQueue.MainQueue.DispatchAsync(() =>
     {
         if (!_disposed && ReferenceEquals(sender, _server))
         {
-            action();
+            try
+            {
+                action();
+            }
+#pragma warning disable CA1031 // A main-queue block must not throw into the dispatcher.
+            catch (Exception ex)
+#pragma warning restore CA1031
+            {
+                Log.HandlerFailed(_log, "server event", ex);
+            }
         }
     });
 
     private void PublishState()
     {
         State = BuildState();
-        StateChanged?.Invoke(this, EventArgs.Empty);
+        Raise(StateChanged, nameof(StateChanged));
+    }
+
+    // Handlers run on main-queue blocks; one that throws must not take the app down or skip the rest of the update.
+    private void Raise(EventHandler? handler, string name)
+    {
+        try
+        {
+            handler?.Invoke(this, EventArgs.Empty);
+        }
+#pragma warning disable CA1031
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            Log.HandlerFailed(_log, name, ex);
+        }
+    }
+
+    private void Raise<T>(EventHandler<T>? handler, T args, string name)
+    {
+        try
+        {
+            handler?.Invoke(this, args);
+        }
+#pragma warning disable CA1031
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            Log.HandlerFailed(_log, name, ex);
+        }
     }
 
     private ServerHostState BuildState() => new(
@@ -647,8 +734,11 @@ public sealed partial class ServerHost : IAsyncDisposable
         [LoggerMessage(11, LogLevel.Information, "Input paused: {Paused}")]
         public static partial void PausedChanged(ILogger logger, bool paused);
 
-        [LoggerMessage(14, LogLevel.Error, "Server start/stop failed unexpectedly")]
-        public static partial void LifecycleFailed(ILogger logger, Exception exception);
+        [LoggerMessage(14, LogLevel.Error, "Background {Operation} operation failed")]
+        public static partial void LifecycleFailed(ILogger logger, string operation, Exception exception);
+
+        [LoggerMessage(15, LogLevel.Error, "{Handler} handler threw")]
+        public static partial void HandlerFailed(ILogger logger, string handler, Exception exception);
 
         [LoggerMessage(13, LogLevel.Error, "Reading the server identity or paired devices failed")]
         public static partial void SecretsFailed(ILogger logger, Exception exception);

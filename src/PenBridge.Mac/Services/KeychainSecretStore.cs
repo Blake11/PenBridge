@@ -13,8 +13,9 @@ namespace PenBridge.Mac.Services;
 /// <remarks>
 /// <para>Items live in the login keychain (the file-based keychain). The data-protection keychain would need a
 /// keychain-access-groups entitlement backed by a provisioning profile, which a self-signed build can't have.
-/// The login keychain is never synced to iCloud, so items stay on this Mac; the accessibility class
-/// (after first unlock, this device only) is set for the data-protection semantics where the system honours it.</para>
+/// The login keychain is never synced to iCloud, so items stay on this Mac. <c>kSecAttrAccessible</c> has no effect
+/// in the file-based keychain (the login keychain's lock state governs access); it is set to "after first unlock,
+/// this device only" so the intent carries over if the items ever move to the data-protection keychain.</para>
 /// <para>The item ACL trusts the creating app by its designated requirement. Builds signed with the stable
 /// "PenBridge Dev" certificate (or a Developer ID) read their items without prompts; an ad-hoc build gets a new
 /// requirement on every build and macOS asks the user to allow access.</para>
