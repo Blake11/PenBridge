@@ -21,6 +21,11 @@ namespace PenBridge.Mac.Input;
 /// thread (typically the main thread). An internal lock serializes posting, so the posted button state is never
 /// torn; the lock is uncontended on the hot path. CGEventPost is thread-safe and never touches AppKit.
 /// <see cref="AccessibilityChanged"/> is always raised on the main thread.</para>
+/// <para><b>Split.</b> The translation rules (<see cref="TabletEventPlanner"/>) and unit math
+/// (<see cref="TabletEventMath"/>) are platform-free and tested in Core; this class only builds and posts CGEvents.</para>
+/// <para><b>Timestamps.</b> CGEvent timestamps are nanoseconds on the uptime clock (CLOCK_UPTIME_RAW, which
+/// NSEvent.timestamp reports in seconds); on macOS <see cref="Stopwatch"/> reads that same clock at 1 GHz, so "now"
+/// is <see cref="Stopwatch.GetTimestamp"/>.</para>
 /// <para><b>Allocation.</b> Per event, the only allocations are the CGEvent wrappers, which are disposed (released)
 /// right after posting. The CGEventSource is created once. The planner works on a stack buffer.</para>
 /// <para><b>Accessibility.</b> Without the Accessibility grant, CGEventPost silently drops events, so the injector
@@ -36,7 +41,7 @@ public sealed class CGEventTabletInjector : IInputSink, IDisposable
     /// <summary>The System Settings pane where the user grants Accessibility.</summary>
     public const string AccessibilitySettingsUrl = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
-    /// <summary>Samples older than this (after the learned latency) are re-anchored to now; see <see cref="TabletMath.MapTimestamp"/>.</summary>
+    /// <summary>Samples older than this (after the learned latency) are re-anchored to now; see <see cref="TabletEventMath.MapTimestamp"/>.</summary>
     private const long MaxTimestampLagNs = 100_000_000;
 
     /// <summary>Points a second tap may move and still count as a double-click.</summary>
@@ -50,8 +55,8 @@ public sealed class CGEventTabletInjector : IInputSink, IDisposable
     private readonly CGEventSource _source;
     private readonly long _doubleClickNs;
     private readonly NSObject _accessibilityObserver;
-    private PostedState _state;
-    private ClockAnchor _clock;
+    private TabletPostedState _state;
+    private HostClockAnchor _clock;
     private ClickState _leftClicks;
     private ClickState _rightClicks;
     private long _leftClickCount;
@@ -201,8 +206,8 @@ public sealed class CGEventTabletInjector : IInputSink, IDisposable
                 return;
             }
 
-            long nowNs = TabletMath.StopwatchToNanoseconds(Stopwatch.GetTimestamp(), Stopwatch.Frequency);
-            long timestampNs = TabletMath.MapTimestamp(ref _clock, e.TimestampUs, nowNs, MaxTimestampLagNs);
+            long nowNs = TabletEventMath.TicksToNanoseconds(Stopwatch.GetTimestamp(), Stopwatch.Frequency);
+            long timestampNs = TabletEventMath.MapTimestamp(ref _clock, e.TimestampUs, nowNs, MaxTimestampLagNs);
             for (int i = 0; i < count; i++)
             {
                 PostStep(steps[i], e.Position, e.Sample, timestampNs);
@@ -259,9 +264,8 @@ public sealed class CGEventTabletInjector : IInputSink, IDisposable
             return;
         }
 
-        long nowNs = TabletMath.StopwatchToNanoseconds(Stopwatch.GetTimestamp(), Stopwatch.Frequency);
-        long timestampNs = Math.Max(nowNs, _clock.LastNs);
-        _clock.LastNs = timestampNs;
+        long nowNs = TabletEventMath.TicksToNanoseconds(Stopwatch.GetTimestamp(), Stopwatch.Frequency);
+        long timestampNs = TabletEventMath.Now(ref _clock, nowNs);
         for (int i = 0; i < count; i++)
         {
             PostStep(steps[i], _lastPoint, _lastSample, timestampNs);
@@ -283,7 +287,7 @@ public sealed class CGEventTabletInjector : IInputSink, IDisposable
                 break;
             case TabletAction.LeftDown:
                 _mouseEventNumber++;
-                _leftClickCount = TabletMath.NextClickCount(ref _leftClicks, timestampNs, at, _doubleClickNs, ClickSlop);
+                _leftClickCount = TabletEventMath.NextClickCount(ref _leftClicks, timestampNs, at, _doubleClickNs, ClickSlop);
                 PostMouse(CGEventType.LeftMouseDown, CGMouseButton.Left, _leftClickCount, step, at, sample, timestampNs);
                 break;
             case TabletAction.LeftDragged:
@@ -294,7 +298,7 @@ public sealed class CGEventTabletInjector : IInputSink, IDisposable
                 break;
             case TabletAction.RightDown:
                 _mouseEventNumber++;
-                _rightClickCount = TabletMath.NextClickCount(ref _rightClicks, timestampNs, at, _doubleClickNs, ClickSlop);
+                _rightClickCount = TabletEventMath.NextClickCount(ref _rightClicks, timestampNs, at, _doubleClickNs, ClickSlop);
                 PostMouse(CGEventType.RightMouseDown, CGMouseButton.Right, _rightClickCount, step, at, sample, timestampNs);
                 break;
             case TabletAction.RightDragged:
@@ -333,7 +337,7 @@ public sealed class CGEventTabletInjector : IInputSink, IDisposable
     private void PostMouse(
         CGEventType type, CGMouseButton button, long clickState, in TabletStep step, DisplayPoint at, in PenSample sample, long timestampNs)
     {
-        double pressure = step.Contact ? TabletMath.Pressure(sample.Pressure) : 0;
+        double pressure = step.Contact ? TabletEventMath.Pressure(sample.Pressure) : 0;
         long buttons = (step.Contact ? TabletConstants.ButtonTip : 0) | (step.Side ? TabletConstants.ButtonLowerSide : 0);
 
         using var ev = new CGEvent(_source, type, new CGPoint(at.X, at.Y), button);
@@ -347,9 +351,9 @@ public sealed class CGEventTabletInjector : IInputSink, IDisposable
         ev.SetValueField(CGEventField.TabletEventPointY, (long)sample.Y);
         ev.SetValueField(CGEventField.TabletEventPointButtons, buttons);
         ev.SetValueField(CGEventField.TabletEventPointPressure, pressure);
-        ev.SetValueField(CGEventField.TabletEventTiltX, TabletMath.Tilt(sample.TiltX));
-        ev.SetValueField(CGEventField.TabletEventTiltY, TabletMath.Tilt(sample.TiltY));
-        ev.SetValueField(CGEventField.TabletEventRotation, TabletMath.RotationDegrees(sample.Rotation));
+        ev.SetValueField(CGEventField.TabletEventTiltX, TabletEventMath.Tilt(sample.TiltX));
+        ev.SetValueField(CGEventField.TabletEventTiltY, TabletEventMath.Tilt(sample.TiltY));
+        ev.SetValueField(CGEventField.TabletEventRotation, TabletEventMath.RotationDegrees(sample.Rotation));
         ev.SetValueField(CGEventField.TabletEventDeviceId, TabletConstants.DeviceId);
         ev.Timestamp = (ulong)timestampNs;
         CGEvent.Post(ev, CGEventTapLocation.HID);

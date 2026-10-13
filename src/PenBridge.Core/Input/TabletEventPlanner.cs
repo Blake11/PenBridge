@@ -1,9 +1,7 @@
-using PenBridge.Core.Input;
+namespace PenBridge.Core.Input;
 
-namespace PenBridge.Mac.Input;
-
-/// <summary>One CGEvent the injector should post.</summary>
-internal enum TabletAction : byte
+/// <summary>One host input event a tablet injector should post (macOS: a CGEvent; other hosts: their equivalent).</summary>
+public enum TabletAction : byte
 {
     ProximityEnter = 1,
     ProximityLeave = 2,
@@ -17,28 +15,35 @@ internal enum TabletAction : byte
 }
 
 /// <summary>A planned post: the action, the tool it belongs to, and whether the tip and side button are down after it.</summary>
-internal readonly record struct TabletStep(TabletAction Action, PenTool Tool, bool Contact, bool Side);
+public readonly record struct TabletStep(TabletAction Action, PenTool Tool, bool Contact, bool Side);
 
-/// <summary>What the injector has actually posted (not what the phone reports).</summary>
-internal struct PostedState
+/// <summary>What the injector has actually posted (not what the phone reports). Only the planner changes it.</summary>
+public struct TabletPostedState
 {
-    public bool InProximity;
-    public PenTool Tool;
-    public bool Left;
-    public bool Right;
+    /// <summary>A proximity enter was posted without its leave.</summary>
+    public bool InProximity { readonly get; internal set; }
+
+    /// <summary>The tool of the posted proximity.</summary>
+    public PenTool Tool { readonly get; internal set; }
+
+    /// <summary>A left (tip) down was posted without its up.</summary>
+    public bool Left { readonly get; internal set; }
+
+    /// <summary>A right (side button) down was posted without its up.</summary>
+    public bool Right { readonly get; internal set; }
 }
 
 /// <summary>
-/// Pure translation from Core <see cref="PenEvent"/> edges to the CGEvents to post, tracked against what was
+/// Pure translation from <see cref="PenEvent"/> edges to the host input events to post, tracked against what was
 /// actually posted so nothing can stay stuck.
 /// </summary>
 /// <remarks>
 /// <para>Why a separate planner: the rules (Wacom side-button semantics, proximity framing, release on leave) are
-/// the part that can be wrong; keeping them side-effect free makes them reviewable and testable without CoreGraphics.</para>
+/// the part that can be wrong; keeping them side-effect free in Core makes them testable without a host. Allocation-free.</para>
 /// <para>Rules:</para>
 /// <list type="bullet">
 /// <item>Any pointer event first ensures proximity for its tool (posts ProximityEnter when not in proximity, or
-/// leave/enter when the tool differs). This also recovers after a pause or a missing Accessibility grant.</item>
+/// leave/enter when the tool differs). This also recovers after a pause or a missing host permission (e.g. macOS Accessibility).</item>
 /// <item>Down posts LeftDown, Up posts LeftUp, only when the posted left state differs (no unmatched up/down).</item>
 /// <item>Side button (Primary): ButtonDown posts RightDown at the current point and ButtonUp posts RightUp, hovering or
 /// touching (ADR-0016). Secondary is reserved and ignored.</item>
@@ -48,13 +53,13 @@ internal struct PostedState
 /// ToolChanged then enters with the new tool, so apps switch pen/eraser.</item>
 /// </list>
 /// </remarks>
-internal static class TabletEventPlanner
+public static class TabletEventPlanner
 {
     /// <summary>Upper bound of steps for one event (tool mismatch on Down: LeftUp, RightUp, Leave, Enter, LeftDown).</summary>
     public const int MaxSteps = 6;
 
     /// <summary>Plans the posts for one pen event and updates <paramref name="state"/>. Returns the step count.</summary>
-    public static int Plan(ref PostedState state, PenEventKind kind, PenButtons button, PenTool tool, Span<TabletStep> steps)
+    public static int Plan(ref TabletPostedState state, PenEventKind kind, PenButtons button, PenTool tool, Span<TabletStep> steps)
     {
         int n = 0;
         switch (kind)
@@ -129,7 +134,7 @@ internal static class TabletEventPlanner
     }
 
     /// <summary>Plans LeftUp, RightUp and ProximityLeave for whatever is still posted. Returns the step count.</summary>
-    public static int Release(ref PostedState state, Span<TabletStep> steps)
+    public static int Release(ref TabletPostedState state, Span<TabletStep> steps)
     {
         int n = 0;
         ReleaseInto(ref state, steps, ref n);
@@ -140,7 +145,7 @@ internal static class TabletEventPlanner
     public static TabletAction MotionAction(bool left, bool right) =>
         left ? TabletAction.LeftDragged : right ? TabletAction.RightDragged : TabletAction.MouseMoved;
 
-    private static void EnsureProximity(ref PostedState state, PenTool tool, Span<TabletStep> steps, ref int n)
+    private static void EnsureProximity(ref TabletPostedState state, PenTool tool, Span<TabletStep> steps, ref int n)
     {
         if (state.InProximity && state.Tool == tool)
         {
@@ -153,7 +158,7 @@ internal static class TabletEventPlanner
         steps[n++] = new TabletStep(TabletAction.ProximityEnter, tool, false, state.Right);
     }
 
-    private static void ReleaseInto(ref PostedState state, Span<TabletStep> steps, ref int n)
+    private static void ReleaseInto(ref TabletPostedState state, Span<TabletStep> steps, ref int n)
     {
         if (state.Left)
         {

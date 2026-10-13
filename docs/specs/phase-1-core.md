@@ -82,7 +82,7 @@ Messages (C = phone → Mac, S = Mac → phone):
 **PenSample (16 B):**
 - Positions: `u16 x`, `u16 y` (normalized 0..65535 over the surface).
 - `u16 pressure` (0..65535).
-- Tilt: `i16 tiltX`, `i16 tiltY` (centi-degrees, −9000..9000).
+- Tilt: `i16 tiltX`, `i16 tiltY` (centi-degrees, −9000..9000). tiltX > 0 means the pen top leans toward +x (right on the surface) and tiltY > 0 toward +y (down, toward the user), the CGEvent tablet convention; the Android sampler converts `AXIS_TILT`/`AXIS_ORIENTATION` to it.
 - `u16 rotation` (centi-degrees 0..35999).
 - `u8 tool`: Pen = 1, Eraser = 2.
 - `u8 state` flags: InRange = 1, Contact = 2.
