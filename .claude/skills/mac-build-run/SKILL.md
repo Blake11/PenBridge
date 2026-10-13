@@ -57,6 +57,13 @@ scripts/mac-run.sh -- <dotnet build args>   # e.g. -- -p:ValidateXcodeVersion=fa
 - Hot path posts through raw handles (`CGEventCreateMouseEvent`/`CGEventSet*ValueField`/`CGEventSetTimestamp`/`CGEventPost`/`CFRelease`), not the `CGEvent` binding, which allocates a managed wrapper per event. The bound `CGEventField`/`CGEventType` enums give the field ids.
 - Headless injection check (no Screen Recording needed): another process polling `CGEventGetLocation(CGEventCreate(NULL))` sees the cursor follow a SimClient `draw circle`.
 
+## Menu-bar shell notes (`src/PenBridge.Mac/Shell`)
+- **Carbon P/Invoke types:** `ItemCount` and `ByteCount` are `unsigned long` → `nuint`; `UInt32`/`OSType`/`OptionBits` → `uint`; `OSStatus` → `int`. A `uint` passed for an `ItemCount` leaves the upper 32 bits of the 64-bit argument register undefined, so the callee may read a huge count.
+- **Global hotkey:** `RegisterEventHotKey` without `kEventHotKeyExclusive` can silently share a combination with another app (both fire). Register exclusively so a conflict fails with an error, and show the menu item as unavailable.
+- **Modal UI and the main queue:** distributed notifications and `DispatchQueue.MainQueue` blocks run inside the serial main-queue drain. An `NSAlert.RunModal` or menu tracking loop started from one stalls every other main-queue block (ServerHost events, `DispatchAfter`) until it closes. Start modals from menu actions or a run-loop perform (`BeginInvokeOnMainThread`), never from a GCD block or an `await` continuation that may run in one.
+- **Accessibility UX:** the system `AXIsProcessTrustedWithOptions(prompt)` dialog shows once, at first launch without the grant; "Grant Accessibility…" only opens the Settings pane, so the two never overlap.
+- **Agent testing without clicks:** `NSControl.PerformClick(null)` throws in the binding; a status button's `PerformClick` didn't open its menu on this macOS, but `menu.PopUpMenu(null, point, button)` did. Debug-level os_log lines exist only in memory: use `log stream --level debug`, not `log show`. `HOME=/tmp/x penbridge-sim …` keeps SimClient pairings separate from other agents'.
+
 ## Mac services notes (`src/PenBridge.Mac/Services`)
 - **Bonjour** uses the DNS-SD C API (`DNSServiceRegister` + `DNSServiceSetDispatchQueue` on the main queue, static `[UnmanagedCallersOnly]` reply callback; NativeAOT-clean). `NSNetService`/`NSHost` are obsoleted (CA1422 = build error). Check with `dns-sd -B _penbridge._tcp` and `dns-sd -L "<name>" _penbridge._tcp local`.
 - **Instance name ≤ 63 UTF-8 bytes** (one DNS label), cut on a code-point boundary (`Utf8Text.Truncate`); the TXT `name` may be up to 250 bytes. Non-ASCII computer names ("Paul’s MacBook Pro", CJK, emoji) hit the label limit fast.
