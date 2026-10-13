@@ -12,9 +12,10 @@
   Invariant this relies on: in the trimmed Microsoft.macOS.dll the only callers of that overload are
   NSObject's framework fields, whose values are never read. Libraries.*.Handle (field and constant
   lookups) and Dlfcn.dlopen(string, Dlfcn.Mode) go through the internal _dlopen and are unaffected.
-  Re-check after a macOS workload update: list the callers of
-  `ObjCRuntime.Dlfcn::dlopen(string, int32)` in obj/Release/net10.0-macos/<rid>/linked/Microsoft.macOS.dll
-  (skill mac-build-run, "How to measure memory").
+  Guarded automatically: scripts/check-bundle.sh with the Release flag (CI) runs
+  scripts/lib/check-aot-substitutions.cs on obj/Release/net10.0-macos/<rid>/linked/Microsoft.macOS.dll
+  and fails if the stub is missing, a caller is outside NSObject's .cctor, a result is not stored
+  straight into an NSObject field, or any of those fields is read.
 -->
 <linker>
   <assembly fullname="Microsoft.macOS">

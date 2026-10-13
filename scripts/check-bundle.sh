@@ -22,13 +22,17 @@
 # stripped, as the universal one is): managed code from PenBridge.Mac is there, and whenever
 # PairingSession code is compiled in, so is the J-PAKE code it calls (JPakeParticipant,
 # JPakePrimeOrderGroups, Sha256Digest, BigInteger). With --mac, the ILLink output that ILC
-# compiled (obj/<config>/net10.0-macos/<rid>/linked) also gets the reference-closure check.
-# Needs Xcode's nm and lipo.
+# compiled (obj/<config>/net10.0-macos/<rid>/linked) also gets the reference-closure check, and
+# for Release scripts/lib/check-aot-substitutions.cs re-validates Trimming.Substitutions.xml against
+# the linked Microsoft.macOS.dll (the stubbed dlopen overload is called only from NSObject's .cctor,
+# straight into NSObject fields nobody reads). A dSYM is used only if its UUIDs match the executable's.
+# Needs Xcode's nm, lipo and dwarfdump.
 # Exit: 0 all pass, 1 a check failed, 2 usage error / nothing found.
 set -euo pipefail
 source "$(dirname "$0")/lib/common.sh"
 
 checker="$REPO_ROOT/scripts/lib/check-bundle.cs"
+substitutions_checker="$REPO_ROOT/scripts/lib/check-aot-substitutions.cs"
 extra=()
 paths=()
 require_pairing=0
@@ -107,6 +111,16 @@ check_nativeaot_app() {
   if ! grep -q "^$AOT_HEAD_PREFIX" <<<"$names"; then
     symfile="$app.dSYM/Contents/Resources/DWARF/$exe"
     [[ -f "$symfile" ]] || { echo "FAIL $app: no PenBridge.Mac symbols in the executable (stripped, or not a PenBridge NativeAOT build) and no $(basename "$app").dSYM next to it; check the build output instead"; return 1; }
+    # A stale dSYM (from another build) would vouch for code this executable may not have.
+    local exe_uuids dsym_uuids
+    exe_uuids="$(dwarfdump --uuid "$app/Contents/MacOS/$exe" 2>/dev/null | awk '{print $2, $3}' | sort)"
+    dsym_uuids="$(dwarfdump --uuid "$symfile" 2>/dev/null | awk '{print $2, $3}' | sort)"
+    if [[ -z "$exe_uuids" || "$exe_uuids" != "$dsym_uuids" ]]; then
+      echo "FAIL $app: $(basename "$app").dSYM does not match the executable (UUIDs per architecture differ); rebuild"
+      printf '       executable: %s\n' "${exe_uuids//$'\n'/; }"
+      printf '       dSYM:       %s\n' "${dsym_uuids//$'\n'/; }"
+      return 1
+    fi
   fi
 
   local ok=1
@@ -153,10 +167,27 @@ fi
 status=0
 if (( ${#aot_apps[@]} )); then
   step "check-bundle (NativeAOT) ${aot_apps[*]#"$REPO_ROOT"/}"
-  { have nm && have lipo; } || die "nm/lipo not found: install the Xcode command line tools"
+  { have nm && have lipo && have dwarfdump; } || die "nm/lipo/dwarfdump not found: install the Xcode command line tools"
   for app in "${aot_apps[@]}"; do
     check_nativeaot_app "$app" || status=1
   done
+fi
+
+# Trimming.Substitutions.xml applies only to the NativeAOT Release publish.
+substitution_dlls=()
+if (( ${#aot_apps[@]} )) && [[ " ${mac_configs[*]-} " == *" Release "* ]]; then
+  shopt -s nullglob
+  substitution_dlls=("$REPO_ROOT"/src/PenBridge.Mac/obj/Release/net10.0-macos/*/linked/Microsoft.macOS.dll)
+  shopt -u nullglob
+  if (( ${#substitution_dlls[@]} == 0 )); then
+    echo "FAIL no obj/Release/net10.0-macos/<rid>/linked/Microsoft.macOS.dll: cannot re-validate Trimming.Substitutions.xml"
+    status=1
+  fi
+fi
+if (( ${#substitution_dlls[@]} )); then
+  require_dotnet
+  step "check-aot-substitutions ${substitution_dlls[*]#"$REPO_ROOT"/}"
+  dotnet run --file "$substitutions_checker" -c Release -- "${substitution_dlls[@]}" || status=1
 fi
 
 if (( ${#assembly_paths[@]} )); then

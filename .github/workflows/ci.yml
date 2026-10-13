@@ -160,8 +160,10 @@ jobs:
       - name: Build (Debug)
         run: dotnet build src/PenBridge.Mac/PenBridge.Mac.csproj -c Debug
 
-      # NativeAOT: J-PAKE code compiled into the executable (dSYM symbols) and the ILLink output's
-      # reference closure; Debug: the bundled assemblies. The head pairs, so pairing must be present.
+      # NativeAOT: J-PAKE code compiled into the executable (dSYM symbols, UUID-matched), the ILLink
+      # output's reference closure, and the Trimming.Substitutions.xml guard (dlopen stub still only
+      # hits NSObject's unread preload fields). Debug: the bundled assemblies. The head pairs, so
+      # pairing must be present.
       - name: Check app bundles
         run: scripts/check-bundle.sh --require-pairing --mac Release --mac Debug
 
