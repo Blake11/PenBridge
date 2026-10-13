@@ -136,9 +136,8 @@ jobs:
     # only Xcode 26.x. xcode-27 is the hosted image with Xcode 27 (preview label).
     runs-on: xcode-27
     timeout-minutes: 30
-    # The iOS head is a placeholder that is never released. A failure here is
-    # reported but does not block merges; see CONTRIBUTING.md ("CI jobs").
-    continue-on-error: true
+    # The iOS head is a placeholder that is never released, but it is a required
+    # check: a broken trim/build here once slipped onto main unnoticed.
     steps:
       - uses: actions/checkout@v4
 
