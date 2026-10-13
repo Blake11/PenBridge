@@ -110,6 +110,10 @@ jobs:
           -p:ApplicationDisplayVersion="$VERSION"
           -p:ApplicationVersion="$VERSION"
 
+      # Never ship a bundle missing code Core needs, e.g. BouncyCastle for pairing (issue #46).
+      - name: Check app bundle
+        run: scripts/check-bundle.sh --mac Release
+
       - name: Locate app bundle
         run: |
           app=$(find src/PenBridge.Mac/bin/Release -type d -name 'PenBridge.app' -prune | head -n1)
@@ -292,6 +296,9 @@ jobs:
             set -- "$@" -p:AndroidKeyStore=false
           fi
           dotnet publish src/PenBridge.Android/PenBridge.Android.csproj "$@"
+
+      - name: Check trimmed APK assemblies
+        run: scripts/check-bundle.sh --android Release
 
       - name: Collect APK
         run: |

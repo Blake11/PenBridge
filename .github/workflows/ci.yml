@@ -46,6 +46,11 @@ jobs:
       - name: Build SimClient
         run: dotnet build tools/PenBridge.SimClient -c Release
 
+      # Trimmed (partial + full) SimClient doing a real J-PAKE pairing and a stroke: the
+      # BouncyCastle code pairing reaches must survive trimming warning-free (issue #46).
+      - name: Trimmed pairing smoke test
+        run: scripts/smoke-trimmed-pairing.sh
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -90,6 +95,13 @@ jobs:
           -c Release
           -p:CreatePackage=false
 
+      # Debug runs ILLink too (copy mode) and once dropped BouncyCastle from the bundle (issue #46).
+      - name: Build (Debug)
+        run: dotnet build src/PenBridge.Mac/PenBridge.Mac.csproj -c Debug
+
+      - name: Check app bundles
+        run: scripts/check-bundle.sh --mac Release --mac Debug
+
   android-build:
     name: Android build
     runs-on: ubuntu-latest
@@ -130,6 +142,9 @@ jobs:
           -p:AndroidPackageFormat=apk
           -p:AndroidKeyStore=false
 
+      - name: Check trimmed APK assemblies
+        run: scripts/check-bundle.sh --android Release
+
   ios-build:
     name: iOS build (placeholder)
     # The .NET macos/ios workload packs require Xcode 27.0; macos-latest (macos-26) ships
@@ -169,3 +184,6 @@ jobs:
           -c Release
           -p:RuntimeIdentifier=iossimulator-arm64
           -p:EnableCodeSigning=false
+
+      - name: Check app bundle
+        run: scripts/check-bundle.sh --ios Release
