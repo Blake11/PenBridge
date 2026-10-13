@@ -42,7 +42,7 @@ Messages (C = phone → Mac, S = Mac → phone):
 | 0x20 | C | Auth | deviceId, `HMAC-SHA256(K_dev, "pb-auth-v1" ‖ challenge ‖ clientNonce(32) ‖ certFingerprint)`, clientNonce |
 | 0x21 | S | SessionStart | udpPort, sessionId (u32), serverNonce (32 B) |
 | 0x22 | C | SurfaceInfo | widthPx, heightPx, xdpi, ydpi (f32), orientation |
-| 0x23 | S | UdpAck | highest sequence received so far (sent once, after the first valid datagram) |
+| 0x23 | S | UdpAck | highest sequence received so far (sent after the first valid datagram, then at most once per second while datagrams arrive) |
 | 0x24 | C | InputFrame | same payload as a decrypted datagram. Used only in TLS fallback mode. |
 | 0x30 | both | Ping / 0x31 Pong | u64 timestamp µs |
 | 0x7E | S | Busy | — |
@@ -54,8 +54,10 @@ Messages (C = phone → Mac, S = Mac → phone):
 2. Unpaired: pairing rounds, then `PairResult(ok)`. The phone stores `K_dev` and the fingerprint. The flow continues on the same connection with Auth.
 3. Paired: Auth. A bad HMAC gets `Error(AuthFailed)` and the connection closes.
 4. SessionStart, then SurfaceInfo, then UDP input.
-5. Phone: if no `UdpAck` arrives within 1 s of the first datagram, switch to `InputFrame` over TLS.
+5. Phone: after sending UDP for 2 s without any `UdpAck`, switch to `InputFrame` over TLS. While in fallback, send one UDP probe datagram every 10 s and switch back to UDP when an ack covers it.
+   - The Mac pins the session's UDP source endpoint on the first authenticated datagram and re-pins it only to a new source whose datagram authenticates and carries a sequence above the highest seen (roaming).
 6. Heartbeat: Ping every 2 s. A peer silent for 6 s is dead.
+7. Pre-auth limits: at most 8 unauthenticated connections in total and 2 per remote IP; a connection must reach SessionStart within 10 s of accept; pairing runs under its own timeout, then Auth gets a fresh 10 s.
 
 **TLS identity:**
 - The server identity is a self-signed ECDSA P-256 certificate (CN = PenBridge-<random>), valid for 10 years, created with `CertificateRequest`. It's persisted as PFX bytes through `ISecretStore`.

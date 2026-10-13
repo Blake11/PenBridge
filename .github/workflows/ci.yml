@@ -43,6 +43,9 @@ jobs:
           -c Release
           --results-directory TestResults
 
+      - name: Build SimClient
+        run: dotnet build tools/PenBridge.SimClient -c Release
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
