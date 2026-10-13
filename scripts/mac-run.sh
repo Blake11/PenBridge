@@ -1,29 +1,32 @@
 #!/usr/bin/env bash
 # Build, sign and launch the PenBridge menu-bar app (src/PenBridge.Mac).
 #
-# Usage: scripts/mac-run.sh [--release] [--no-build] [--reset-tcc] [--reset-keychain] [--logs] [-- <dotnet build args>]
+# Usage: scripts/mac-run.sh [--release] [--no-build] [--reset-tcc] [--reset-keychain] [--reset-dev-secrets] [--logs] [-- <dotnet build args>]
 #   --release         build Release instead of Debug
 #   --no-build        launch the last build
 #   --reset-tcc       tccutil reset Accessibility com.blake11.penbridge (re-prompts for permission)
 #   --reset-keychain  delete every Keychain item of service com.blake11.penbridge (server identity
-#                     and paired devices: all phones must pair again); asks for confirmation
+#                     and paired devices of Release builds: phones must pair again); asks for confirmation
+#   --reset-dev-secrets  delete the Debug build's file secret store
+#                     (~/Library/Application Support/PenBridge-Dev/secrets); asks for confirmation
 #   --logs            after launching, stream unified logs: log stream --predicate 'process == "PenBridge"'
 #
 # The build itself signs (src/PenBridge.Mac/PenBridge.Mac.csproj): with the "PenBridge Dev" identity
 # if present (scripts/mac-dev-cert.sh), so the Accessibility grant survives rebuilds; otherwise ad-hoc
-# (grant lost on every rebuild). If the bundle is not signed with an existing "PenBridge Dev" identity
+# (grant lost on every rebuild). Debug builds store secrets in files, Release builds in the Keychain. If the bundle is not signed with an existing "PenBridge Dev" identity
 # (an older build, --no-build, or -- -p:EnableCodeSigning=false), it is re-signed with scripts/mac-sign.sh.
 # Requires the macos workload and Xcode (scripts/doctor.sh).
 set -euo pipefail
 source "$(dirname "$0")/lib/common.sh"
 
-CONFIG=Debug; BUILD=1; RESET_TCC=0; RESET_KEYCHAIN=0; LOGS=0; EXTRA=()
+CONFIG=Debug; BUILD=1; RESET_TCC=0; RESET_KEYCHAIN=0; RESET_DEV=0; LOGS=0; EXTRA=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --release) CONFIG=Release ;;
     --no-build) BUILD=0 ;;
     --reset-tcc) RESET_TCC=1 ;;
     --reset-keychain) RESET_KEYCHAIN=1 ;;
+    --reset-dev-secrets) RESET_DEV=1 ;;
     --logs) LOGS=1 ;;
     -h|--help) usage_from_header "$0"; exit 0 ;;
     --) shift; EXTRA=("$@"); break ;;
@@ -44,12 +47,31 @@ if pgrep -x PenBridge >/dev/null; then
   step "Stopping running PenBridge"; pkill -x PenBridge || true; sleep 1
 fi
 
+confirm() {
+  [[ -r /dev/tty ]] || die "$1 needs an interactive terminal to confirm"
+  local answer
+  read -r -p "    Type 'yes' to delete: " answer </dev/tty || die "cancelled"
+  [[ "$answer" == "yes" ]] || die "cancelled"
+}
+
+# Debug builds keep secrets here instead of the Keychain (src/PenBridge.Mac/Services/SecretStoreFactory.cs).
+DEV_SECRETS="$HOME/Library/Application Support/PenBridge-Dev/secrets"
+if [[ $RESET_DEV -eq 1 ]]; then
+  step "Deleting the Debug secret store ${DEV_SECRETS/#$HOME/~}"
+  if [[ -d "$DEV_SECRETS" ]]; then
+    warn "this removes the Debug server identity and its paired devices; phones must pair again with Debug builds"
+    confirm --reset-dev-secrets
+    rm -rf -- "$DEV_SECRETS"
+    ok "deleted — a Debug build creates a fresh identity on next start"
+  else
+    ok "nothing to delete"
+  fi
+fi
+
 if [[ $RESET_KEYCHAIN -eq 1 ]]; then
   step "Deleting Keychain items of service $APP_ID"
-  warn "this removes the server identity and every paired device; phones must pair again"
-  [[ -r /dev/tty ]] || die "--reset-keychain needs an interactive terminal to confirm"
-  read -r -p "    Type 'yes' to delete: " answer </dev/tty
-  [[ "$answer" == "yes" ]] || die "cancelled"
+  warn "this removes the Release server identity and every paired device; phones must pair again"
+  confirm --reset-keychain
   n=0
   # One item per call; exit 44 = no more items. Bounded in case an item cannot be deleted.
   while [[ $n -lt 1000 ]] && security delete-generic-password -s "$APP_ID" >/dev/null 2>&1; do n=$((n+1)); done
