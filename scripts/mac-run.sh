@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build, sign and launch the PenBridge menu-bar app (src/PenBridge.Mac).
 #
-# Usage: scripts/mac-run.sh [--release] [--no-build] [--reset-tcc] [--reset-keychain] [--reset-dev-secrets] [--logs] [-- <dotnet build args>]
-#   --release         build Release instead of Debug
+# Usage: scripts/mac-run.sh [--release] [--no-build] [--reset-tcc] [--reset-keychain] [--reset-dev-secrets] [--logs] [-- <dotnet build/publish args>]
+#   --release         publish Release (NativeAOT, universal) instead of building Debug (JIT)
 #   --no-build        launch the last build
 #   --reset-tcc       tccutil reset Accessibility com.blake11.penbridge (re-prompts for permission)
 #   --reset-keychain  delete every Keychain item of service com.blake11.penbridge (server identity
@@ -13,7 +13,10 @@
 #
 # The build itself signs (src/PenBridge.Mac/PenBridge.Mac.csproj): with the "PenBridge Dev" identity
 # if present (scripts/mac-dev-cert.sh), so the Accessibility grant survives rebuilds; otherwise ad-hoc
-# (grant lost on every rebuild). Debug builds store secrets in files, Release builds in the Keychain. If the bundle is not signed with an existing "PenBridge Dev" identity
+# (grant lost on every rebuild). Debug builds store secrets in files, Release builds in the Keychain
+# (expect one Keychain prompt per new Release build, ADR-0017). --release runs `dotnet publish`: the
+# NativeAOT app (issue #42); `-- <args>` go to dotnet build or publish.
+# If the bundle is not signed with an existing "PenBridge Dev" identity
 # (an older build, --no-build, or -- -p:EnableCodeSigning=false), it is re-signed with scripts/mac-sign.sh.
 # Requires the macos workload and Xcode (scripts/doctor.sh).
 set -euo pipefail
@@ -82,20 +85,37 @@ fi
 if [[ $BUILD -eq 1 ]]; then
   require_dotnet
   workload_installed macos || die "macos workload missing — run scripts/doctor.sh"
-  step "dotnet build src/PenBridge.Mac -c $CONFIG"
-  (cd "$REPO_ROOT" && dotnet build "$PROJ_DIR" -c "$CONFIG" ${EXTRA[@]+"${EXTRA[@]}"})
+  if [[ "$CONFIG" == Release ]]; then
+    # PublishAot applies only to `dotnet publish` (PenBridge.Mac.csproj); no .pkg for local runs.
+    step "dotnet publish src/PenBridge.Mac -c Release (NativeAOT)"
+    (cd "$REPO_ROOT" && dotnet publish "$PROJ_DIR" -c Release -p:CreatePackage=false ${EXTRA[@]+"${EXTRA[@]}"})
+  else
+    step "dotnet build src/PenBridge.Mac -c $CONFIG"
+    (cd "$REPO_ROOT" && dotnet build "$PROJ_DIR" -c "$CONFIG" ${EXTRA[@]+"${EXTRA[@]}"})
+  fi
 fi
 
-APP="$(find "$PROJ_DIR/bin/$CONFIG" -maxdepth 4 -type d -name '*.app' -prune -exec stat -f '%m %N' {} + 2>/dev/null \
+# Release: the universal bundle (the per-RID ones next to it are intermediates). Otherwise the newest .app.
+APP="$PROJ_DIR/bin/$CONFIG/net10.0-macos/PenBridge.app"
+[[ "$CONFIG" == Release && -d "$APP" ]] || APP="$(find "$PROJ_DIR/bin/$CONFIG" -maxdepth 4 -type d -name '*.app' -prune -exec stat -f '%m %N' {} + 2>/dev/null \
         | sort -rn | head -1 | cut -d' ' -f2-)"
 [[ -n "$APP" && -d "$APP" ]] || die "no .app under $PROJ_DIR/bin/$CONFIG — build first"
 
-if security find-identity -p codesigning 2>/dev/null | grep -qF "\"$DEV_CERT_NAME\""; then
-  if ! codesign -dvv "$APP" 2>&1 | grep -qxF "Authority=$DEV_CERT_NAME" \
-     || ! codesign --verify --strict "$APP/Contents/MonoBundle/libcoreclr.dylib" 2>/dev/null; then
+# Any MonoBundle dylib: libcoreclr.dylib in JIT bundles, only the System.*.Native libraries under NativeAOT.
+DYLIB="$(find "$APP/Contents/MonoBundle" -maxdepth 1 -name '*.dylib' -print -quit 2>/dev/null || true)"
+# Capture before grepping: under pipefail, `codesign | grep -q` fails with SIGPIPE (141) when grep exits on
+# the first match while codesign is still writing, which looked like "not signed" and forced a re-sign.
+SIGNATURE="$(codesign -dvv "$APP" 2>&1 || true)"
+IDENTITIES="$(security find-identity -p codesigning 2>/dev/null || true)"
+# NativeAOT bundles (no CoreCLR) are signed without entitlements: Entitlements.plist only grants allow-jit.
+SIGN_ARGS=()
+[[ -e "$APP/Contents/MonoBundle/libcoreclr.dylib" ]] || SIGN_ARGS=(--no-entitlements)
+if grep -qF "\"$DEV_CERT_NAME\"" <<<"$IDENTITIES"; then
+  if ! grep -qxF "Authority=$DEV_CERT_NAME" <<<"$SIGNATURE" \
+     || { [[ -n "$DYLIB" ]] && ! codesign --verify --strict "$DYLIB" 2>/dev/null; }; then
     step "Signing ${APP#"$REPO_ROOT"/} with \"$DEV_CERT_NAME\" (the build did not)"
     # Signs each MonoBundle dylib, then the bundle (see scripts/mac-sign.sh --help for why).
-    "$REPO_ROOT/scripts/mac-sign.sh" "$APP" "$DEV_CERT_NAME"
+    "$REPO_ROOT/scripts/mac-sign.sh" ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"} "$APP" "$DEV_CERT_NAME"
   fi
 else
   warn "no \"$DEV_CERT_NAME\" identity — ad-hoc signed; Accessibility and Keychain access must be re-granted after each rebuild"

@@ -100,9 +100,10 @@ jobs:
           dotnet --version
           dotnet workload list
 
-      - name: Build Release
+      # PublishAot applies only to `dotnet publish`: the universal NativeAOT app (issue #42).
+      - name: Publish Release (NativeAOT)
         run: >
-          dotnet build src/PenBridge.Mac/PenBridge.Mac.csproj
+          dotnet publish src/PenBridge.Mac/PenBridge.Mac.csproj
           -c Release
           -p:CreatePackage=false
           -p:EnableCodeSigning=false
@@ -110,15 +111,16 @@ jobs:
           -p:ApplicationDisplayVersion="$VERSION"
           -p:ApplicationVersion="$VERSION"
 
-      # Never ship a bundle missing code Core needs, e.g. BouncyCastle for pairing (issue #46).
+      # Never ship a bundle missing code Core needs, e.g. BouncyCastle for pairing (issues #46, #42).
       - name: Check app bundle
-        run: scripts/check-bundle.sh --mac Release
+        run: scripts/check-bundle.sh --require-pairing --mac Release
 
       - name: Locate app bundle
         run: |
-          app=$(find src/PenBridge.Mac/bin/Release -type d -name 'PenBridge.app' -prune | head -n1)
-          if [ -z "$app" ]; then
-            echo "::error::PenBridge.app not found under src/PenBridge.Mac/bin/Release"
+          # The universal bundle; the per-RID ones under osx-arm64/ and osx-x64/ are intermediates.
+          app=src/PenBridge.Mac/bin/Release/net10.0-macos/PenBridge.app
+          if [ ! -d "$app" ]; then
+            echo "::error::$app not found"
             exit 1
           fi
           mkdir -p dist/stage
@@ -154,18 +156,18 @@ jobs:
 
       # scripts/mac-sign.sh signs each Contents/MonoBundle native library before the bundle:
       # the build invalidates their vendor signature and `codesign --deep` skips MonoBundle.
-      # Uses src/PenBridge.Mac/Entitlements.plist for the main executable when present.
+      # No entitlements: Entitlements.plist only grants allow-jit for CoreCLR, and NativeAOT never JITs.
       - name: Sign (Developer ID, hardened runtime)
         if: env.NOTARIZE == 'true'
         run: |
-          scripts/mac-sign.sh --hardened "$APP" "$SIGN_IDENTITY"
+          scripts/mac-sign.sh --hardened --no-entitlements "$APP" "$SIGN_IDENTITY"
           codesign --verify --strict --verbose=2 "$APP"
 
       # ---- Default: ad-hoc signature (no paid Apple account) ----
       - name: Sign (ad-hoc)
         if: env.NOTARIZE != 'true'
         run: |
-          scripts/mac-sign.sh "$APP" -
+          scripts/mac-sign.sh --no-entitlements "$APP" -
           codesign --verify --strict --verbose=2 "$APP"
 
       - name: Create zip

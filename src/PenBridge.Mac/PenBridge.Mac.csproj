@@ -15,8 +15,53 @@
     <NoWarn>$(NoWarn);CA1711</NoWarn>
     <!-- [LibraryImport] (AXIsProcessTrusted) generates unsafe marshalling stubs. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <!--
+    NativeAOT + full trimming for Release (issue #42, ADR-0016). The macOS SDK applies PublishAot only
+    to `dotnet publish` (`_UseNativeAot` = PublishAot and _IsPublishing), and then defaults to full
+    trimming of every assembly (don't set LinkMode/TrimMode: the SDK warns under NativeAOT).
+    `dotnet publish -c Release` (CI, build-release.yml, scripts/mac-run.sh with the release flag)
+    produces the universal NativeAOT app. `dotnet build -c Release` still produces an untrimmed JIT
+    (CoreCLR) bundle, and Debug stays untrimmed JIT for fast iteration. IsAotCompatible turns on the
+    trim/AOT analyzers in every configuration, so warnings show up while editing too.
+  -->
+  <PropertyGroup>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <PublishAot>true</PublishAot>
+  </PropertyGroup>
+
+  <!--
+    Entitlements.plist only grants allow-jit, which CoreCLR needs under the hardened runtime; NativeAOT never
+    JITs, so its signature carries no entitlements. Same test as the SDK's _UseNativeAot, which is defined only
+    after this file is evaluated (the platform SDK is imported once TargetFramework is known). The SDK picks up
+    Entitlements.plist by itself when CodesignEntitlements is empty (hence EnableDefaultCodesignEntitlements),
+    and adds allow-jit to every desktop Release signature unless a CustomEntitlements item names it.
+  -->
+  <PropertyGroup Condition="'$(PublishAot)' == 'true' and '$(_IsPublishing)' == 'true'">
+    <EnableDefaultCodesignEntitlements>false</EnableDefaultCodesignEntitlements>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(PublishAot)' == 'true' and '$(_IsPublishing)' == 'true'">
+    <CustomEntitlements Include="com.apple.security.cs.allow-jit" Type="Remove" />
+  </ItemGroup>
+  <PropertyGroup Condition="!('$(PublishAot)' == 'true' and '$(_IsPublishing)' == 'true')">
     <CodesignEntitlements>Entitlements.plist</CodesignEntitlements>
   </PropertyGroup>
+
+  <!--
+    NativeAOT only: stop Foundation.NSObject's static constructor from dlopen-ing ~45 frameworks the
+    app never uses (about 28 MB of resident pages at idle; see Trimming.Substitutions.xml for the
+    invariant this relies on). _ExtraTrimmerArgs is the only way to pass substitutions to ILLink,
+    which runs before ILC in the macOS NativeAOT pipeline.
+  -->
+  <Target Name="PenBridgeAddTrimmingSubstitutions" AfterTargets="PrepareForILLink" Condition="'$(_UseNativeAot)' == 'true'">
+    <PropertyGroup>
+      <_ExtraTrimmerArgs>$(_ExtraTrimmerArgs) --substitutions "$(MSBuildThisFileDirectory)Trimming.Substitutions.xml"</_ExtraTrimmerArgs>
+    </PropertyGroup>
+  </Target>
 
   <ItemGroup>
     <!-- Direct reference so the [LoggerMessage] source generator runs here (analyzers don't flow through ProjectReference). -->
