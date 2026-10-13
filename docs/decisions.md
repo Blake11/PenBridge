@@ -144,3 +144,13 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
 - **Result:** idle RSS is 50–62 MB (target ≤ 60 MB), footprint about 20 MB, and launch time 168 ms (JIT: 205 MB / 164 MB / 771 ms).
 - **Signing:** the AOT signature carries no `allow-jit` entitlement.
 - **Revisit:** drop the substitution if the SDK stops eager-loading, or if the guard fires and re-validation isn't worth the effort.
+
+## ADR-0019 — Android client UX defaults for Phase 3
+**Status:** accepted (2026-10-13)
+- **Orientation:** a user toggle on the pad (lock landscape / lock portrait / auto), landscape-locked by default. Changes apply only between strokes and send a new SurfaceInfo.
+- **Ink echo:** a faint local trail of the last ~1 s that fades. It is not the real canvas; Mac screen mirroring is a later phase.
+- **Startup:** auto-connect to the most recently used paired Mac once it's discovered. Otherwise show the Mac list (discovered + paired + Pair new + Connect manually).
+- **Pad chrome:** a tiny dim status dot (connected / UDP or TLS / reconnecting). Tap it or swipe in from the edge for a small menu; system Back leaves the pad.
+- **QR scanning:** CameraX with Google ML Kit barcode scanning, **bundled** model (no Play Services dependency). CAMERA is requested only on "Scan QR".
+- **Secrets:** an AndroidKeyStore AES-GCM key encrypting a small file store (`ISecretStore`).
+- **Tilt conversion:** `Axis.Tilt` + `Axis.Orientation` → the Core convention (+x right, +y down, centi-degrees), as a pure function in Core with tests.
