@@ -58,6 +58,10 @@ fi
 # ---- Java -------------------------------------------------------------------
 if [[ $SKIP_ANDROID -eq 0 ]]; then
   step "Java (JDK ${JDK_MIN_MAJOR}–${JDK_MAX_MAJOR})"
+  if [[ -n "${JAVA_HOME:-}" ]] && ! jdk_ok "$JAVA_HOME"; then
+    warn "ignoring JAVA_HOME=$JAVA_HOME: not a JDK ${JDK_MIN_MAJOR}–${JDK_MAX_MAJOR} home (Android builds fail, e.g. XA5300)"
+    hint "$(jdk_fix_hint "$JAVA_HOME")"
+  fi
   JAVA_HOME="$(resolve_java_home)" || die "no supported JDK found even after installing $JDK_FORMULA"
   export JAVA_HOME
   ok "JDK $(jdk_major "$JAVA_HOME") at $JAVA_HOME"

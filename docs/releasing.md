@@ -16,7 +16,7 @@ All apps share one version. It lives in `Directory.Build.props`:
    - Before 1.0 (`bump-minor-pre-major`), a breaking change bumps the minor version instead.
    - Only `feat`, `fix`, `perf`, `revert`, `refactor` and `docs` appear in the changelog.
 3. Merging the release PR creates the tag `vX.Y.Z` and a GitHub release. The same workflow then calls `.github/workflows/build-release.yml`, which:
-   - builds `PenBridge.app` (Release), signs it ad-hoc (`codesign -s -`), and packages `PenBridge-X.Y.Z-macos.zip` and `PenBridge-X.Y.Z-macos.dmg` (`hdiutil`, with an Applications link)
+   - builds `PenBridge.app` (Release), signs it ad-hoc with `scripts/mac-sign.sh <app> -` (each `Contents/MonoBundle` native library, then the bundle), and packages `PenBridge-X.Y.Z-macos.zip` and `PenBridge-X.Y.Z-macos.dmg` (`hdiutil`, with an Applications link)
    - builds a release-signed `PenBridge-X.Y.Z-android.apk` with `ApplicationDisplayVersion=X.Y.Z` and `ApplicationVersion` (versionCode) `= major*1000000 + minor*1000 + patch`
    - writes `SHA256SUMS` and uploads everything to the release.
 
@@ -117,4 +117,4 @@ The steps already exist in `build-release.yml` but are skipped. To turn them on:
 3. Create an app-specific password at appleid.apple.com, then set `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD`.
 4. `gh variable set MACOS_NOTARIZE --body true`.
 
-The workflow then imports the certificate into a temporary keychain. It signs the app with the hardened runtime, using `src/PenBridge.Mac/Entitlements.plist` if present, and signs the dmg. It submits the dmg with `notarytool --wait` and staples both the dmg and the app. Update the "open the un-notarized app" instructions above once this is live.
+The workflow then imports the certificate into a temporary keychain. It signs the app with `scripts/mac-sign.sh --hardened` (hardened runtime and secure timestamp on every MonoBundle library and the bundle, `src/PenBridge.Mac/Entitlements.plist` on the main executable), and signs the dmg. Under the hardened runtime CoreCLR needs `com.apple.security.cs.allow-jit` in `Entitlements.plist`; without it the app aborts with "Failed to initialize the VM". It submits the dmg with `notarytool --wait` and staples both the dmg and the app. Update the "open the un-notarized app" instructions above once this is live.

@@ -142,21 +142,21 @@ jobs:
           fi
           echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
 
+      # scripts/mac-sign.sh signs each Contents/MonoBundle native library before the bundle:
+      # the build invalidates their vendor signature and `codesign --deep` skips MonoBundle.
+      # Uses src/PenBridge.Mac/Entitlements.plist for the main executable when present.
       - name: Sign (Developer ID, hardened runtime)
         if: env.NOTARIZE == 'true'
         run: |
-          entitlements=$(find src/PenBridge.Mac -maxdepth 1 -name 'Entitlements.plist' | head -n1)
-          codesign --force --deep --timestamp --options runtime \
-            ${entitlements:+--entitlements "$entitlements"} \
-            -s "$SIGN_IDENTITY" "$APP"
+          scripts/mac-sign.sh --hardened "$APP" "$SIGN_IDENTITY"
           codesign --verify --strict --verbose=2 "$APP"
 
       # ---- Default: ad-hoc signature (no paid Apple account) ----
       - name: Sign (ad-hoc)
         if: env.NOTARIZE != 'true'
         run: |
-          codesign --force --deep -s - "$APP"
-          codesign --verify --verbose=2 "$APP"
+          scripts/mac-sign.sh "$APP" -
+          codesign --verify --strict --verbose=2 "$APP"
 
       - name: Create zip
         run: |
@@ -289,15 +289,20 @@ jobs:
 
       - name: Collect APK
         run: |
+          # The build emits <package>.apk (unsigned) and <package>-Signed.apk (release keystore,
+          # or the debug keystore when AndroidKeyStore=false). Pick by name, never by file order.
           if [ "$HAS_KEYSTORE" = "true" ]; then
-            apk=$(find dist/android -name '*-Signed.apk' | head -n1)
+            apks=$(find dist/android -type f -name '*-Signed.apk' | sort)
           else
-            apk=$(find dist/android -name '*.apk' | head -n1)
+            apks=$(find dist/android -type f -name '*.apk' ! -name '*-Signed.apk' | sort)
           fi
-          if [ -z "$apk" ]; then
-            echo "::error::No APK found in dist/android"
+          count=$(printf '%s' "$apks" | grep -c . || true)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::Expected exactly one matching APK in dist/android, found $count:"
+            find dist/android -type f -name '*.apk'
             exit 1
           fi
+          apk=$apks
           suffix=""
           [ "$HAS_KEYSTORE" = "true" ] || suffix="-unsigned"
           mkdir -p dist/out

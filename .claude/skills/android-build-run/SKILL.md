@@ -45,7 +45,10 @@ scripts/android-run.sh --release | --apk             # --apk: standalone APK + a
 scripts/android-run.sh --device <serial> --logs-only # attach logcat, no build
 scripts/android-run.sh ... -- <dotnet build args>
 ```
-Default deploy is `dotnet build -t:Run` (fast deployment). `--logs` = `adb logcat -v color,time --pid=<app pid>`; if the app isn't running it falls back to `AndroidRuntime:E DOTNET monodroid mono-rt PenBridge` tags.
+Default deploy is `dotnet build -t:Run` (fast deployment). It builds, installs and launches but prints nothing after `Build succeeded` — confirm the launch with `adb -s <serial> logcat -d | grep "Displayed com.blake11.penbridge"` (and `adb shell pidof com.blake11.penbridge`); screenshot with `adb -s <serial> exec-out screencap -p > /tmp/x.png`. The activity class name is a `crc64…` hash (`com.blake11.penbridge/crc64….MainActivity`) unless `[Activity(Name = …)]` is set — use `monkey -p <pkg> -c android.intent.category.LAUNCHER 1` to launch, not `am start -n`. `--logs` = `adb logcat -v color,time --pid=<app pid>`; if the app isn't running it falls back to `AndroidRuntime:E DOTNET monodroid mono-rt PenBridge` tags.
+
+## Release APK (what CI does)
+`dotnet publish src/PenBridge.Android/PenBridge.Android.csproj -c Release -p:AndroidPackageFormat=apk -p:AndroidKeyStore=false -o <dir>` (+ SDK/JDK dirs locally) → `<dir>/com.blake11.penbridge.apk` (**unsigned**, `apksigner` says "DOES NOT VERIFY") **and** `com.blake11.penbridge-Signed.apk` (signed with the **debug** key, installable). Release trims (ILLink "Optimizing assemblies for size" notice is informational, not a warning). Check version fields: `$ANDROID_HOME/build-tools/36.0.0/aapt2 dump badging <apk> | head -3`.
 
 ## S Pen testing notes
 - `GetToolType(i)` = `Stylus`/`Eraser`; side button via `ButtonState` (`StylusPrimary`) on touch and hover events.

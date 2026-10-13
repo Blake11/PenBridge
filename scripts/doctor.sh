@@ -53,7 +53,7 @@ step "Java"
 if jh="$(resolve_java_home)"; then ok "JDK $(jdk_major "$jh") at $jh"
 else bad "no JDK ${JDK_MIN_MAJOR}–${JDK_MAX_MAJOR}" "brew install $JDK_FORMULA"; fi
 if [[ -n "${JAVA_HOME:-}" ]] && ! jdk_ok "$JAVA_HOME"; then
-  soft "JAVA_HOME=$JAVA_HOME is not JDK ${JDK_MIN_MAJOR}–${JDK_MAX_MAJOR}" "unset it or point it at $(brew_prefix)/opt/$JDK_FORMULA/libexec/openjdk.jdk/Contents/Home"
+  soft "JAVA_HOME=$JAVA_HOME is not a JDK ${JDK_MIN_MAJOR}–${JDK_MAX_MAJOR} home (Android builds fail, e.g. XA5300)" "$(jdk_fix_hint "$JAVA_HOME")"
 fi
 
 step "Android SDK"

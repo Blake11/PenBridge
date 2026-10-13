@@ -6,5 +6,8 @@
 -->
 <plist version="1.0">
 <dict>
+    <!-- The .NET runtime JITs; under the hardened runtime (notarization) the VM fails to start without this. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
 </dict>
 </plist>

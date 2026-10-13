@@ -68,9 +68,31 @@ jdk_major() {  # $1 = JAVA_HOME; prints major version or nothing
   v="${v#1.}"; echo "${v%%.*}"
 }
 
+# A real JDK home has a `release` file and the JVM library. A Homebrew keg root
+# (…/opt/openjdk@17) has a working bin/java but neither, and MSBuild rejects it with
+# XA5300 "Could not find required file `jvm`".
+jdk_home_layout_ok() {  # $1 = JAVA_HOME
+  [[ -f "$1/release" ]] && { [[ -f "$1/lib/server/libjvm.dylib" ]] || [[ -f "$1/lib/server/libjvm.so" ]]; }
+}
+
 jdk_ok() {
+  jdk_home_layout_ok "$1" || return 1
   local m; m="$(jdk_major "$1" 2>/dev/null)" || return 1
   [[ -n "$m" && "$m" -ge $JDK_MIN_MAJOR && "$m" -le $JDK_MAX_MAJOR ]]
+}
+
+# Fix hint for a JAVA_HOME that jdk_ok rejects.
+jdk_fix_hint() {  # $1 = JAVA_HOME
+  local brew_home; brew_home="$(brew_prefix)/opt/$JDK_FORMULA/libexec/openjdk.jdk/Contents/Home"
+  if [[ -x "$1/bin/java" ]] && ! jdk_home_layout_ok "$1"; then
+    if [[ -d "$1/libexec/openjdk.jdk/Contents/Home" ]]; then
+      echo "that is a Homebrew keg root, not a JDK home — export JAVA_HOME=\"$1/libexec/openjdk.jdk/Contents/Home\""
+    else
+      echo "not a JDK home (no release / lib/server/libjvm.dylib) — unset it or export JAVA_HOME=\"$brew_home\""
+    fi
+  else
+    echo "unset it or export JAVA_HOME=\"$brew_home\""
+  fi
 }
 
 # Resolve a supported JDK: $JAVA_HOME if supported, else Homebrew openjdk@17, else java_home -v 17/21.

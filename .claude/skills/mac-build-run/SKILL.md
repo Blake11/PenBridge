@@ -26,14 +26,20 @@ scripts/mac-run.sh --reset-tcc     # tccutil reset Accessibility com.blake11.pen
 scripts/mac-run.sh --logs          # + log stream --style compact --level debug --predicate 'process == "PenBridge"'
 scripts/mac-run.sh -- <dotnet build args>   # e.g. -- -p:ValidateXcodeVersion=false
 ```
-- Builds with `-p:EnableCodeSigning=false`, then `codesign --force --deep --identifier com.blake11.penbridge` with "PenBridge Dev" (else ad-hoc + warning), using `src/PenBridge.Mac/Entitlements.plist` if present.
-- Check the signature: `codesign -dr - <app>` must show `certificate leaf`, not `cdhash`.
-- Process name `PenBridge`; bundle id `com.blake11.penbridge`.
+- Builds with `-p:EnableCodeSigning=false`, then `scripts/mac-sign.sh <app> <identity>` (shared with `build-release.yml`) with "PenBridge Dev" (else ad-hoc + warning): each MonoBundle Mach-O, then `codesign --force --deep --identifier com.blake11.penbridge`, using `src/PenBridge.Mac/Entitlements.plist` if present; `--hardened` = `--options runtime --timestamp`.
+- Check the signature: `codesign -dr - <app>` must show a certificate hash (`certificate root = H"…"` for our self-signed cert — root == leaf), not `cdhash`. `codesign -dvv` (two v) shows `Authority=PenBridge Dev`.
+- **MonoBundle dylibs**: the build rewrites the Microsoft-signed runtime dylibs in `Contents/MonoBundle` (signature becomes invalid) and with `EnableCodeSigning=false` nothing re-signs them; `codesign --deep` treats MonoBundle as resources, so `codesign --verify --deep` still passes. Result: instant `SIGKILL (Code Signature Invalid)`, "Invalid Page" in dyld, crash report in `~/Library/Logs/DiagnosticReports/PenBridge-*.ips`. `mac-sign.sh` signs (and verifies) each MonoBundle library before the bundle; check one with `codesign -v <app>/Contents/MonoBundle/libcoreclr.dylib`.
+- **Hardened runtime** (`mac-sign.sh --hardened`): CoreCLR needs `com.apple.security.cs.allow-jit` (else "Failed to initialize the VM", exit 134). Testing it with the self-signed dev cert also needs `com.apple.security.cs.disable-library-validation` (no Team ID → dyld "different Team IDs"); a Developer ID cert doesn't.
+- Process name `PenBridge` comes from `<AssemblyName>PenBridge</AssemblyName>` (default would be `PenBridge.Mac`); bundle id `com.blake11.penbridge`.
+- Output: Debug → `bin/Debug/net10.0-macos/osx-arm64/PenBridge.app`; Release builds osx-arm64 + osx-x64 and a universal `bin/Release/net10.0-macos/PenBridge.app` (the newest, which the script picks).
+- No GNU `timeout` on macOS: run the binary with `&`, `sleep`, then `kill`; exit 137 = killed by the system (signing), 143 = your SIGTERM.
 
 ## LSUIElement / menu bar
 - `LSUIElement=true` + `ActivationPolicy.Accessory`: no Dock icon, no app menu, no Cmd-Tab; only the `NSStatusItem`. Nothing visible → check `--logs` for a crash, or run the binary in `<app>/Contents/MacOS/` from a terminal for stdout.
 - Windows (pairing PIN/QR) must activate the app to come to front.
 - On notched displays a crowded menu bar can hide the icon.
+- Verify headless: `lsappinfo info "$(lsappinfo find bundleid=com.blake11.penbridge)"` shows `type="UIElement"` (no Dock icon). Agents can't confirm the status item: `screencapture` needs Screen Recording ("could not create image from display") and `osascript`/System Events needs Accessibility for the terminal — ask the user to look.
+- Baseline idle (skeleton): 0.0% CPU, RSS ~110 MB Debug / ~185 MB Release universal.
 
 ## Accessibility (TCC)
 - `AXIsProcessTrusted()` false → posted CGEvents are dropped silently. The app prompts and links to System Settings ▸ Privacy & Security ▸ Accessibility.

@@ -85,9 +85,11 @@ scripts/mac-run.sh --no-build      # relaunch the last build
 scripts/mac-run.sh --reset-tcc     # tccutil reset Accessibility com.blake11.penbridge, then run
 ```
 
-`mac-run.sh` builds with `EnableCodeSigning=false` and then re-signs the bundle with `codesign --force --deep --identifier com.blake11.penbridge`:
+`mac-run.sh` builds with `EnableCodeSigning=false` and then signs with `scripts/mac-sign.sh <app> <identity>` (also used by the release workflow):
 - With the `PenBridge Dev` identity when it exists, otherwise ad-hoc.
+- It first signs every native library in `Contents/MonoBundle`, then the bundle with `codesign --force --deep --identifier com.blake11.penbridge`. The build rewrites the Microsoft-signed runtime dylibs there, and `--deep` treats MonoBundle as resources, so without this step the app is killed at launch with "Code Signature Invalid".
 - With `src/PenBridge.Mac/Entitlements.plist` when that file is present.
+- `--hardened` adds `--options runtime --timestamp` (notarization). See `scripts/mac-sign.sh --help`.
 
 It kills a running instance before it launches the new one.
 
@@ -154,7 +156,7 @@ scripts/android-run.sh --device 192.168.1.23:41234 --logs
 ## Troubleshooting
 
 - **`sdkmanager` "deprecated, Android CLI will be used instead".** Since cmdline-tools 23, `sdkmanager` delegates to the new `android` CLI and prints a different `--list_installed` format: paths like `platforms/android-36` instead of `platforms;android-36`. The scripts detect installed packages from `<sdk>/<path>/package.xml` rather than parsing that output. On first use, the `android` binary downloads and unpacks itself and shows a metrics notice; `--no-metrics` disables the metrics.
-- **No Java runtime / wrong JDK.** The Homebrew `openjdk@17` is keg-only and is not registered in `/usr/libexec/java_home`, because registering it needs a sudo symlink. The scripts find it under `$(brew --prefix)/opt/openjdk@17`. If `JAVA_HOME` points at a JDK newer than 21, Android builds fail, and `doctor.sh` warns about it.
+- **No Java runtime / wrong JDK.** The Homebrew `openjdk@17` is keg-only and is not registered in `/usr/libexec/java_home`, because registering it needs a sudo symlink. The scripts find it under `$(brew --prefix)/opt/openjdk@17`. The JDK home is `…/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home`; the keg root `…/opt/openjdk@17` has a working `bin/java` but MSBuild rejects it with `XA5300 … Could not find required file 'jvm'`, so `doctor.sh` warns when `JAVA_HOME` lacks `release` or `lib/server/libjvm.dylib`. If `JAVA_HOME` points at a JDK newer than 21, Android builds fail, and `doctor.sh` warns about it.
 - **Workload install "permission denied" / "access to the path is denied".** The dotnet root is root-owned, so use the `sudo` command above. Don't `chown` `/usr/local/share/dotnet`, because the official installer would fight it.
 - **Android build can't find the SDK in Rider or with raw `dotnet build`.** Export `ANDROID_HOME` and `JAVA_HOME`, or pass `-p:AndroidSdkDirectory=… -p:JavaSdkDirectory=…`.
 - **Emulator won't boot.** Check `$TMPDIR/penbridge-emulator.log`. Try `--cold-boot`, then `--wipe`. `--recreate` rebuilds the AVD after you change `AVD_DEVICE` or `ANDROID_API_LEVEL`.

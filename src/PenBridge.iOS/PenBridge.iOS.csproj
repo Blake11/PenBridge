@@ -9,6 +9,8 @@
     <ApplicationDisplayVersion>$(Version)</ApplicationDisplayVersion>
     <ApplicationVersion>1</ApplicationVersion>
     <RootNamespace>PenBridge.iOS</RootNamespace>
+    <!-- Apple delegate types (AppDelegate, SceneDelegate) end in "Delegate" by convention. -->
+    <NoWarn>$(NoWarn);CA1711</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

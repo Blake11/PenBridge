@@ -8,7 +8,11 @@
     <ApplicationTitle>PenBridge</ApplicationTitle>
     <ApplicationDisplayVersion>$(Version)</ApplicationDisplayVersion>
     <ApplicationVersion>1</ApplicationVersion>
+    <!-- Executable/process name "PenBridge" (scripts/mac-run.sh, log predicate). -->
+    <AssemblyName>PenBridge</AssemblyName>
     <RootNamespace>PenBridge.Mac</RootNamespace>
+    <!-- Apple delegate types (AppDelegate, SceneDelegate) end in "Delegate" by convention. -->
+    <NoWarn>$(NoWarn);CA1711</NoWarn>
     <CodesignEntitlements>Entitlements.plist</CodesignEntitlements>
   </PropertyGroup>
 
