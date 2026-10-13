@@ -54,7 +54,9 @@ Default deploy is `dotnet build -t:Run` (fast deployment). It builds, installs a
 - `GetToolType(i)` = `Stylus`/`Eraser`; side button via `ButtonState` (`StylusPrimary`) on touch and hover events.
 - Hover arrives via `OnHoverEvent` (`HoverEnter/Move/Exit`), not `OnTouchEvent`. If Samsung Air view/Air command swallows hover, disable them.
 - Consume **historical samples** (`HistorySize`, `GetHistoricalX/Y/AxisValue`) or you drop well below 240 Hz; `RequestUnbufferedDispatch` for latency.
-- `Axis.Tilt` + `Axis.Orientation` → tilt X/Y conversion lives in Core (tested there).
+- `Axis.Tilt` + `Axis.Orientation` → tilt X/Y conversion lives in Core (`Input/TiltConverter`, tested there). Android's input reader builds both axes from the digitizer's per-axis HID tilt (tx > 0 = pen top toward +x/right, ty > 0 = toward +y/the user): `orientation = atan2(-sin tx, sin ty)`, `tilt = acos(cos tx · cos ty)`. So orientation is where the **tip** points (0 = up, π/2 = right): a top leaning right gives −π/2. Exact inverse (φ = orientation, T = tilt, k = sin²φ·cos²φ): `r² = 2·sin²T / (1 + √(1 − 4k·sin²T))`, `tx = asin(−r·sin φ)`, `ty = asin(r·cos φ)`. `AXIS_ORIENTATION` is the tilt azimuth, not barrel twist (S Pen has none): send `Rotation = 0`.
+- Emulator: `adb shell input stylus swipe x1 y1 x2 y2 ms` injects `ToolType.Stylus` (pressure 1, no tilt/hover) — enough to exercise the stylus code path, not to verify it.
+- API 36 on large screens (sw ≥ 600dp, e.g. the `PenBridge_Tablet` AVD) ignores `RequestedOrientation`; test orientation locks there with `adb shell wm set-ignore-orientation-request false` (restore with `true`). Phones (S23) honour it.
 - Ignore fingers/palm while the pen is in proximity; drop `FLAG_CANCELED` pointers.
 - Raw values: Developer options ▸ Pointer location. No per-sample logging in release builds.
 - Acceptance: draw in Krita on the Mac — light vs hard pressure, tilt, hover cursor without clicking, side-button action.

@@ -1,8 +1,10 @@
+using PenBridge.Core.Protocol;
+
 namespace PenBridge.Core.Input;
 
 /// <summary>
-/// Converts Android stylus axes (<c>AXIS_TILT</c> + <c>AXIS_ORIENTATION</c>) to the <see cref="PenSample"/> tilt and
-/// rotation conventions. Pure and allocation-free.
+/// Converts Android stylus axes (<c>AXIS_TILT</c> + <c>AXIS_ORIENTATION</c>) to the <see cref="PenSample"/> tilt
+/// convention. Pure and allocation-free.
 /// </summary>
 /// <remarks>
 /// <para><b>Android input.</b> <c>AXIS_TILT</c> is the angle from the surface normal in radians (0 = perpendicular,
@@ -15,14 +17,13 @@ namespace PenBridge.Core.Input;
 /// leans right points its tip left (orientation −π/2), and a pen whose top leans toward the user points up
 /// (orientation 0).</para>
 /// <para><b>Output.</b> <see cref="ToTilt"/> inverts that formula exactly, recovering the per-axis angles in the Core
-/// convention (+x = top leans right, +y = top leans down/toward the user, centi-degrees, clamped to ±9000).
-/// <see cref="ToRotation"/> maps the orientation to 0..35999 centi-degrees clockwise from "up".</para>
+/// convention (+x = top leans right, +y = top leans down/toward the user, centi-degrees, clamped to ±9000).</para>
+/// <para><b>Rotation.</b> <c>AXIS_ORIENTATION</c> is the tilt <i>azimuth</i>, already encoded in tiltX/tiltY; it is
+/// not barrel rotation (twist about the pen's own axis), which the S Pen doesn't report. Samplers send
+/// <see cref="PenSample.Rotation"/> = 0 and use the orientation only for this conversion.</para>
 /// </remarks>
 public static class TiltConverter
 {
-    /// <summary>Largest tilt magnitude per axis, in centi-degrees.</summary>
-    public const short MaxTilt = 9000;
-
     private const double CentiDegreesPerRadian = 18000.0 / Math.PI;
 
     /// <summary>Converts <c>AXIS_TILT</c> and <c>AXIS_ORIENTATION</c> (radians) to tilt X/Y in centi-degrees.</summary>
@@ -55,23 +56,6 @@ public static class TiltConverter
         tiltY = ToCentiDegrees(Math.Asin(Math.Clamp(r * c, -1, 1)));
     }
 
-    /// <summary>Converts <c>AXIS_ORIENTATION</c> (radians, 0 = up, clockwise) to rotation centi-degrees 0..35999.</summary>
-    public static ushort ToRotation(float orientationRadians)
-    {
-        if (!float.IsFinite(orientationRadians))
-        {
-            return 0;
-        }
-
-        double centi = Math.Round(orientationRadians * CentiDegreesPerRadian) % 36000;
-        if (centi < 0)
-        {
-            centi += 36000;
-        }
-
-        return centi >= 36000 ? (ushort)0 : (ushort)centi;
-    }
-
     private static short ToCentiDegrees(double radians) =>
-        (short)Math.Clamp(Math.Round(radians * CentiDegreesPerRadian), -MaxTilt, MaxTilt);
+        (short)Math.Clamp(Math.Round(radians * CentiDegreesPerRadian), -InputSampleCodec.MaxTilt, InputSampleCodec.MaxTilt);
 }

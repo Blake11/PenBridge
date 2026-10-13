@@ -36,13 +36,14 @@ public sealed class PadController : IDisposable
     private readonly InkEchoView? _ink;
     private readonly StatusDotView _dot;
     private readonly Java.Lang.Runnable _stateRunnable;
+    private readonly Lock _postLock = new();
     private PadOrientationMode _orientation;
     private PadOrientationMode? _pendingOrientation;
     private bool _fingerFallbackEnabled;
     private ushort _fingerFallbackPressure;
     private ScreenOrientation _hostOrientation;
     private bool _started;
-    private bool _disposed;
+    private volatile bool _disposed;
 
     public PadController(Activity activity, IPadOutput output, PadOptions? options = null)
     {
@@ -66,7 +67,9 @@ public sealed class PadController : IDisposable
         _dot = new StatusDotView(activity, _surface);
         _dot.Tapped += OnDotActivated;
 
-        _root = new FrameLayout(activity);
+        // No splitting: every pointer of a gesture goes to the view its first pointer landed on, so a second finger
+        // on the status dot during a stroke stays on the surface.
+        _root = new FrameLayout(activity) { MotionEventSplittingEnabled = false };
         _root.SetBackgroundColor(global::Android.Graphics.Color.Black);
         var match = ViewGroup.LayoutParams.MatchParent;
         _root.AddView(_surface, new FrameLayout.LayoutParams(match, match));
@@ -164,8 +167,12 @@ public sealed class PadController : IDisposable
         }
 
         Stop();
-        _disposed = true;
         _output.ConnectionStateChanged -= OnConnectionStateChanged;
+        lock (_postLock)
+        {
+            _disposed = true; // a concurrent ConnectionStateChanged can no longer post the runnable
+        }
+
         _dot.Tapped -= OnDotActivated;
         _root.RemoveCallbacks(_stateRunnable);
         _queue.Dispose();
@@ -180,7 +187,16 @@ public sealed class PadController : IDisposable
 
     private int Dp(float dp) => (int)((dp * (_activity.Resources?.DisplayMetrics?.Density ?? 1f)) + 0.5f);
 
-    private void OnConnectionStateChanged(object? sender, EventArgs e) => _root.Post(_stateRunnable);
+    private void OnConnectionStateChanged(object? sender, EventArgs e)
+    {
+        lock (_postLock)
+        {
+            if (!_disposed)
+            {
+                _root.Post(_stateRunnable);
+            }
+        }
+    }
 
     private void RefreshConnectionState()
     {
@@ -198,12 +214,10 @@ public sealed class PadController : IDisposable
     {
         if (active)
         {
-            if (_orientation == PadOrientationMode.Auto)
-            {
-                ApplyOrientation(locked: true); // never rotate mid-stroke
-            }
+            // Lock the current rotation in every mode: sensorLandscape/-Portrait may otherwise flip 180° mid-stroke.
+            ApplyOrientation(locked: true);
         }
-        else if (!ApplyPendingOrientation() && _orientation == PadOrientationMode.Auto)
+        else if (!ApplyPendingOrientation())
         {
             ApplyOrientation(locked: false);
         }
@@ -229,10 +243,10 @@ public sealed class PadController : IDisposable
             return;
         }
 
-        ScreenOrientation requested = _orientation switch
+        ScreenOrientation requested = locked ? ScreenOrientation.Locked : _orientation switch
         {
             PadOrientationMode.Portrait => ScreenOrientation.SensorPortrait,
-            PadOrientationMode.Auto => locked ? ScreenOrientation.Locked : ScreenOrientation.FullSensor,
+            PadOrientationMode.Auto => ScreenOrientation.FullSensor,
             _ => ScreenOrientation.SensorLandscape,
         };
 

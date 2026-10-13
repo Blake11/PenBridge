@@ -8,7 +8,9 @@ namespace PenBridge.Android.Pad;
 /// <summary>
 /// Tiny dim status dot in a corner (ADR-0019): green = connected over UDP, amber = TLS fallback, connecting or
 /// reconnecting, red = disconnected. A finger tap, or a swipe that starts on it, raises <see cref="Tapped"/>.
-/// Stylus input (and fingers while the pen is near, i.e. a palm) pass through to the surface underneath.
+/// Stylus input (and fingers while the pen is near, i.e. a palm) pass through to the surface underneath. Only a
+/// gesture's first pointer can activate it: the pad root doesn't split motion events, so a later pointer landing on
+/// the dot goes to the surface that owns the gesture (and a DOWN while the surface is active is declined too).
 /// </summary>
 internal sealed class StatusDotView : View
 {
@@ -55,7 +57,7 @@ internal sealed class StatusDotView : View
         {
             case MotionEventActions.Down:
                 MotionEventToolType tool = e.GetToolType(0);
-                if (tool is MotionEventToolType.Stylus or MotionEventToolType.Eraser || _surface.IsPenNear)
+                if (tool is MotionEventToolType.Stylus or MotionEventToolType.Eraser || _surface.IsPenNear || _surface.IsActive)
                 {
                     return false; // not consumed: the surface below gets this gesture
                 }

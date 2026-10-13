@@ -17,8 +17,8 @@ public interface IPadOutput
 
     /// <summary>
     /// Sends the complete current input state. Same contract as <c>PenBridgeClient.SendState</c>: earlier batched pen
-    /// samples in <paramref name="history"/> (oldest first, at most 8). Called only from the pad's sender thread, never
-    /// from the UI thread. Returns false when not connected (the pad keeps going).
+    /// samples in <paramref name="history"/> (oldest first, at most 8). Called from the pad's sender thread only: never
+    /// on the UI thread and never concurrently. Returns false when not connected (the pad keeps going).
     /// </summary>
     bool SendState(in PenSample? pen, ReadOnlySpan<TouchSample> touches, ReadOnlySpan<PenSample> history);
 

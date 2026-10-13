@@ -29,6 +29,7 @@ internal sealed class DrawSurfaceView : View
     private readonly PadSendQueue _queue;
     private readonly InkEchoView? _ink;
     private readonly RawTouch[] _fingers = new RawTouch[MaxRawTouches];
+    private readonly int[] _fingerIndex = new int[MaxRawTouches]; // pointer index in the current touch event
     private readonly TouchSample[] _touchOut = new TouchSample[InputFilter.MaxTouches];
     private readonly PenSample[] _samples = new PenSample[MaxSamplesPerEvent];
     private readonly Java.Lang.Runnable _penLeaveRunnable;
@@ -41,7 +42,6 @@ internal sealed class DrawSurfaceView : View
     private long _lastPenMs = long.MinValue / 2;
     private bool _active;
     private bool _inkContact;
-    private bool _unbufferedRequested;
 
     public DrawSurfaceView(Context context, PadSendQueue queue, InkEchoView? ink, InputFilterOptions filterOptions)
         : base(context)
@@ -145,6 +145,7 @@ internal sealed class DrawSurfaceView : View
                 liftedCanceledId = id;
             }
 
+            _fingerIndex[_fingerCount] = i;
             _fingers[_fingerCount++] = new RawTouch((byte)id, true, canceled, Normalize(e.GetX(i), Width), Normalize(e.GetY(i), Height));
         }
 
@@ -163,7 +164,7 @@ internal sealed class DrawSurfaceView : View
             }
         }
 
-        Emit(e.EventTime, history);
+        Emit(e, e.EventTime, history);
 
         // Canceled pointers were reported once (so the filter suppresses them); they are gone afterwards.
         if (cancelAll || action == MotionEventActions.Up)
@@ -207,7 +208,7 @@ internal sealed class DrawSurfaceView : View
             CancelPenLeave();
         }
 
-        Emit(e.EventTime, history);
+        Emit(null, e.EventTime, history);
         return true;
     }
 
@@ -223,7 +224,7 @@ internal sealed class DrawSurfaceView : View
         {
             _pen = _pen with { Buttons = MapButtons(e.ButtonState) };
             _lastPenMs = e.EventTime;
-            Emit(e.EventTime, 0);
+            Emit(null, e.EventTime, 0);
             return true;
         }
 
@@ -309,19 +310,16 @@ internal sealed class DrawSurfaceView : View
         return pressure >= 1f ? ushort.MaxValue : (ushort)((pressure * 65535f) + 0.5f);
     }
 
+    /// <summary>Called on every stylus hover-enter and every first-pointer down.</summary>
     private void RequestUnbuffered(MotionEvent e)
     {
         if (OperatingSystem.IsAndroidVersionAtLeast(30))
         {
-            if (!_unbufferedRequested)
-            {
-                _unbufferedRequested = true;
-                RequestUnbufferedDispatch((int)InputSourceType.ClassPointer);
-            }
+            RequestUnbufferedDispatch((int)InputSourceType.ClassPointer);
         }
-        else if (e.ActionMasked == MotionEventActions.Down)
+        else
         {
-            RequestUnbufferedDispatch(e); // per gesture on API 29
+            RequestUnbufferedDispatch(e);
         }
     }
 
@@ -380,15 +378,16 @@ internal sealed class DrawSurfaceView : View
             NormalizePressure(pressure),
             tiltX,
             tiltY,
-            TiltConverter.ToRotation(orientation),
+            0, // AXIS_ORIENTATION is the tilt azimuth (in tiltX/tiltY), not barrel rotation
             tool,
             state,
             buttons);
     }
 
     /// <summary>Runs the filter over the current state and queues the frame(s). <paramref name="historyCount"/>
-    /// samples in <see cref="_samples"/> precede the current pen sample.</summary>
-    private void Emit(long eventTimeMs, int historyCount)
+    /// samples in <see cref="_samples"/> precede the current pen sample. <paramref name="touchEvent"/> (touch stream
+    /// only) supplies the historical positions of a finger-fallback pointer.</summary>
+    private void Emit(MotionEvent? touchEvent, long eventTimeMs, int historyCount)
     {
         PenSample? pen = _penPresent ? _pen : null;
         InputFilterResult result = _filter.Process(
@@ -400,7 +399,12 @@ internal sealed class DrawSurfaceView : View
             PenSample current = result.Pen;
             bool contact = (current.State & PenState.Contact) != 0;
             active = contact;
-            if (current.Tool == PenTool.FingerFallback || historyCount == 0)
+            if (current.Tool == PenTool.FingerFallback)
+            {
+                historyCount = touchEvent is null ? 0 : CollectFallbackHistory(touchEvent, current);
+            }
+
+            if (historyCount == 0)
             {
                 _queue.Enqueue(current, true, default, default);
             }
@@ -417,7 +421,7 @@ internal sealed class DrawSurfaceView : View
                 _queue.Enqueue(current, true, default, _samples.AsSpan(i, historyCount - i));
             }
 
-            EchoInk(current, contact, current.Tool == PenTool.FingerFallback ? 0 : historyCount, eventTimeMs);
+            EchoInk(current, contact, historyCount, eventTimeMs);
         }
         else
         {
@@ -427,6 +431,43 @@ internal sealed class DrawSurfaceView : View
         }
 
         SetActive(active);
+    }
+
+    /// <summary>Writes the fallback finger's historical positions into <see cref="_samples"/> (oldest first) as
+    /// finger-fallback samples with the filter's pressure. Returns their count (0 if the finger isn't found).</summary>
+    private int CollectFallbackHistory(MotionEvent e, in PenSample current)
+    {
+        int index = -1;
+        for (int i = 0; i < _fingerCount; i++)
+        {
+            RawTouch t = _fingers[i];
+            if (!t.Canceled && t.X == current.X && t.Y == current.Y)
+            {
+                index = _fingerIndex[i];
+                break;
+            }
+        }
+
+        int historySize = e.HistorySize;
+        if (index < 0 || historySize == 0)
+        {
+            return 0;
+        }
+
+        int width = Width;
+        int height = Height;
+        int first = Math.Max(0, historySize - (_samples.Length - 1));
+        int n = 0;
+        for (int h = first; h < historySize; h++)
+        {
+            _samples[n++] = current with
+            {
+                X = Normalize(e.GetHistoricalX(index, h), width),
+                Y = Normalize(e.GetHistoricalY(index, h), height),
+            };
+        }
+
+        return n;
     }
 
     private void EchoInk(in PenSample current, bool contact, int historyCount, long timeMs)
@@ -502,7 +543,7 @@ internal sealed class DrawSurfaceView : View
         _penLeavePending = false;
         _penPresent = false;
         _lastPenMs = SystemClock.UptimeMillis();
-        Emit(_lastPenMs, 0);
+        Emit(null, _lastPenMs, 0);
         TryApplyPendingFilter();
     }
 

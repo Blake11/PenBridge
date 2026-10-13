@@ -10,6 +10,9 @@ namespace PenBridge.Android.Pad;
 /// Every frame is the complete current state, so when the ring is full the newest slot is overwritten (latest state
 /// wins; only that slot's batched history is lost). Frames enqueued while stopped are dropped. <see cref="Stop"/>
 /// drains what is queued before the thread exits.
+/// <para>Single sender: each <see cref="Start"/> begins a new generation, and a thread only dequeues and sends while
+/// holding the send gate with its own generation current. If <see cref="Stop"/> times out waiting for a thread stuck
+/// in SendState, that thread exits at its next gate check, so two threads never call SendState concurrently.</para>
 /// </remarks>
 internal sealed class PadSendQueue : IDisposable
 {
@@ -20,6 +23,7 @@ internal sealed class PadSendQueue : IDisposable
 
     private readonly IPadOutput _output;
     private readonly Lock _lock = new();
+    private readonly Lock _sendGate = new();
     private readonly AutoResetEvent _signal = new(false);
     private readonly PenSample[] _pens = new PenSample[Capacity];
     private readonly bool[] _hasPen = new bool[Capacity];
@@ -32,6 +36,7 @@ internal sealed class PadSendQueue : IDisposable
     private readonly TouchSample[] _sendTouches = new TouchSample[InputFilter.MaxTouches];
     private readonly PenSample[] _sendHistory = new PenSample[MaxHistory];
 
+    private int _generation;
     private int _head;
     private int _count;
     private volatile bool _running;
@@ -53,8 +58,9 @@ internal sealed class PadSendQueue : IDisposable
             return;
         }
 
+        int generation = Interlocked.Increment(ref _generation);
         _running = true;
-        _thread = new Thread(Run)
+        _thread = new Thread(() => Run(generation))
         {
             IsBackground = true,
             Name = "PenBridge.PadSender",
@@ -74,6 +80,7 @@ internal sealed class PadSendQueue : IDisposable
         _running = false;
         _signal.Set();
         thread.Join(TimeSpan.FromSeconds(1));
+        Interlocked.Increment(ref _generation); // a thread still stuck in SendState retires at its next gate check
         _thread = null;
         lock (_lock)
         {
@@ -130,23 +137,37 @@ internal sealed class PadSendQueue : IDisposable
         _signal.Dispose();
     }
 
-    private void Run()
+    private void Run(int generation)
     {
         while (true)
         {
             _signal.WaitOne();
-            while (TryDequeue(out PenSample pen, out bool hasPen, out int touchCount, out int historyCount))
+            while (true)
             {
-                PenSample? p = hasPen ? pen : null;
-                try
+                lock (_sendGate)
                 {
-                    _output.SendState(p, _sendTouches.AsSpan(0, touchCount), _sendHistory.AsSpan(0, historyCount));
-                }
+                    if (Volatile.Read(ref _generation) != generation)
+                    {
+                        _signal.Set(); // pass on a wake-up this stale thread may have taken from the current one
+                        return;
+                    }
+
+                    if (!TryDequeue(out PenSample pen, out bool hasPen, out int touchCount, out int historyCount))
+                    {
+                        break;
+                    }
+
+                    PenSample? p = hasPen ? pen : null;
+                    try
+                    {
+                        _output.SendState(p, _sendTouches.AsSpan(0, touchCount), _sendHistory.AsSpan(0, historyCount));
+                    }
 #pragma warning disable CA1031 // The sender thread must survive a faulty output; failures are counted, not logged per frame.
-                catch (Exception)
+                    catch (Exception)
 #pragma warning restore CA1031
-                {
-                    Interlocked.Increment(ref _sendErrors);
+                    {
+                        Interlocked.Increment(ref _sendErrors);
+                    }
                 }
             }
 

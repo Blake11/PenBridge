@@ -1,4 +1,5 @@
 using PenBridge.Core.Input;
+using PenBridge.Core.Protocol;
 
 namespace PenBridge.Core.Tests.Input;
 
@@ -78,9 +79,8 @@ public class TiltConverterTests
             foreach (float o in values)
             {
                 TiltConverter.ToTilt(t, o, out short x, out short y);
-                Assert.InRange(x, -TiltConverter.MaxTilt, TiltConverter.MaxTilt);
-                Assert.InRange(y, -TiltConverter.MaxTilt, TiltConverter.MaxTilt);
-                Assert.True(TiltConverter.ToRotation(o) <= 35999);
+                Assert.InRange(x, -InputSampleCodec.MaxTilt, InputSampleCodec.MaxTilt);
+                Assert.InRange(y, -InputSampleCodec.MaxTilt, InputSampleCodec.MaxTilt);
             }
         }
     }
@@ -91,21 +91,6 @@ public class TiltConverterTests
         TiltConverter.ToTilt(Rad(120), Rad(-90), out short x, out short y);
         Assert.Equal(9000, x);
         Assert.Equal(0, y);
-    }
-
-    [Theory]
-    [InlineData(0, 0)]
-    [InlineData(90, 9000)]
-    [InlineData(-90, 27000)]
-    [InlineData(180, 18000)]
-    [InlineData(-180, 18000)]
-    [InlineData(45.5, 4550)]
-    [InlineData(-0.001, 0)]
-    [InlineData(359.999, 0)]
-    [InlineData(720, 0)]
-    public void Rotation_is_clockwise_centi_degrees_from_up(double orientationDeg, int expected)
-    {
-        Assert.Equal(expected, TiltConverter.ToRotation(Rad(orientationDeg)));
     }
 
     [Fact]
@@ -119,7 +104,7 @@ public class TiltConverterTests
         {
             float o = orientations[i % orientations.Length];
             TiltConverter.ToTilt(tilts[i % tilts.Length], o, out short x, out short y);
-            sum += x + y + TiltConverter.ToRotation(o);
+            sum += x + y;
             ran++;
         }, () => ran);
         Assert.NotEqual(long.MinValue, sum);
