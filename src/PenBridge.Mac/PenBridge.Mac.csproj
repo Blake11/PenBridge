@@ -13,11 +13,33 @@
     <RootNamespace>PenBridge.Mac</RootNamespace>
     <!-- Apple delegate types (AppDelegate, SceneDelegate) end in "Delegate" by convention. -->
     <NoWarn>$(NoWarn);CA1711</NoWarn>
+    <!-- [LibraryImport] (AXIsProcessTrusted) generates unsafe marshalling stubs. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <CodesignEntitlements>Entitlements.plist</CodesignEntitlements>
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Direct reference so the [LoggerMessage] source generator runs here (analyzers don't flow through ProjectReference). -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\PenBridge.Core\PenBridge.Core.csproj" />
   </ItemGroup>
+
+  <!--
+    Debug builds run ILLink (trim-mode copy, Debug=true) without marking anything inside copied assemblies
+    (PenBridge.Core), so the link action that Directory.Build.targets (PenBridgeTrimBouncyCastle) puts on
+    BouncyCastle.Cryptography leaves it unmarked and ILLink deletes it: the Debug bundle has no BouncyCastle and
+    pairing fails with FileNotFoundException. Release marks through and keeps the trimmed assembly. In Debug, copy it
+    like every other assembly.
+  -->
+  <Target Name="PenBridgeMacKeepBouncyCastle" AfterTargets="PenBridgeTrimBouncyCastle" Condition="'$(Configuration)' == 'Debug'">
+    <ItemGroup>
+      <ManagedAssemblyToLink Condition="'%(Filename)' == 'BouncyCastle.Cryptography'">
+        <TrimMode>copy</TrimMode>
+      </ManagedAssemblyToLink>
+    </ItemGroup>
+  </Target>
 
 </Project>
