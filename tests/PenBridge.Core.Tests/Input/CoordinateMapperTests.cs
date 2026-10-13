@@ -119,14 +119,15 @@ public class CoordinateMapperTests
     public void Map_is_allocation_free()
     {
         var m = new CoordinateMapper(1440, 3088, new DisplayRect(0, 0, 1920, 1080));
-        double sink = 0;
-        long bytes = Alloc.Measure(10_000, i =>
+        long mapped = 0;
+        Alloc.AssertZero(10_000, i =>
         {
             DisplayPoint p = m.Map((ushort)i, (ushort)(i * 3));
-            sink += p.X + p.Y;
-        });
-        Assert.Equal(0, bytes);
-        Assert.True(sink > 0);
+            if (p.X >= 0 && p.Y >= 0)
+            {
+                mapped++;
+            }
+        }, () => mapped);
     }
 
     private static void AssertRect(DisplayRect expected, DisplayRect actual)

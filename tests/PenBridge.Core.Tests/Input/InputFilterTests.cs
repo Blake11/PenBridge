@@ -170,15 +170,13 @@ public class InputFilterTests
         RawTouch[] one = [Finger(1)];
         RawTouch[] none = [];
         TouchSample[] dest = _out;
-        int touches = 0;
-        long bytes = Alloc.Measure(5_000, i =>
+        long touches = 0;
+        Alloc.AssertZero(5_000, i =>
         {
             var t = TimeSpan.FromMilliseconds(i * 5);
             PenSample? pen = (i % 200) < 50 ? Samples.Touch((ushort)i, 1) : null;
             RawTouch[] fingers = (i % 10) == 0 ? none : (i & 1) == 0 ? two : one;
             touches += f.Process(t, pen, fingers, dest).TouchCount;
-        });
-        Assert.Equal(0, bytes);
-        Assert.True(touches > 0);
+        }, () => touches);
     }
 }

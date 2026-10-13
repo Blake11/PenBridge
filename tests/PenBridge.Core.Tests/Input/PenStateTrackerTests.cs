@@ -365,7 +365,7 @@ public class PenStateTrackerTests
         PenSample[] history = [Samples.Touch(1, 1), Samples.Touch(2, 2)];
         TouchSample[] touches = new TouchSample[2];
 
-        long bytes = Alloc.Measure(5_000, i =>
+        Alloc.AssertZero(5_000, i =>
         {
             int phase = i % 100;
             if (phase < 40)
@@ -391,11 +391,7 @@ public class PenStateTrackerTests
                 _ = tracker.WatchdogDueIn;
                 tracker.CheckWatchdog();
             }
-        });
-
-        Assert.Equal(0, bytes);
-        Assert.True(sink.Pen > 0);
-        Assert.True(sink.Gestures > 0);
+        }, () => sink.Pen, () => sink.Gestures);
     }
 
     private sealed class CountingSink : IInputSink
