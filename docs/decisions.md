@@ -114,3 +114,13 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
   - **TLS:** SChannel supports TLS 1.3, so ADR-0013's concession is macOS-only.
   - **Release:** an MSIX or zip on GitHub Releases, plus a `windows-latest` CI build job. Code signing is deferred, like macOS notarization.
 - **Consequence:** platform heads must keep Core free of macOS assumptions: no Apple-specific coordinate conventions in Core, and the display model stays generic.
+
+## ADR-0016 — Mac server UX defaults for Phase 2
+**Status:** accepted (2026-10-13)
+- **S Pen side button:** right-click, following the Wacom side-switch default. Pressing it posts right-down at the current point and releasing posts right-up, both while hovering and while touching. The mapping becomes configurable in Phase 5.
+- **Eraser:** the eraser tool is reported as the eraser pointer type in tablet proximity events, so drawing apps switch tools themselves.
+- **Pairing UI:** a floating panel. Opening it opens the pairing window (ADR-0009), and it closes on success.
+- **Menu:** includes pause input with the global hotkey ⌃⌥⌘P (Carbon `RegisterEventHotKey`, which needs no extra permission), connection stats and Open logs.
+- **Target display:** the main display by default. The user's choice is remembered by display UUID and falls back to main.
+- **Memory:** NativeAOT plus full trimming; accept ≤ 60 MB idle RSS.
+- **Phase boundary:** gesture events are ignored until Phase 4.
