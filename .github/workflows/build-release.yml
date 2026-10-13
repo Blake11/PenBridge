@@ -38,7 +38,7 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       version_code: ${{ steps.v.outputs.version_code }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
 
@@ -75,17 +75,17 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       NOTARIZE: ${{ vars.MACOS_NOTARIZE == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
 
       - uses: ./.github/actions/select-xcode
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ${{ env.NUGET_PACKAGES }}
           key: nuget-${{ runner.os }}-mac-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.Build.props', '**/Directory.Packages.props') }}
@@ -205,7 +205,7 @@ jobs:
         if: always() && env.NOTARIZE == 'true'
         run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-mac
           path: |
@@ -223,20 +223,20 @@ jobs:
       VERSION_CODE: ${{ needs.version.outputs.version_code }}
       HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ${{ env.NUGET_PACKAGES }}
           key: nuget-${{ runner.os }}-android-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.Build.props', '**/Directory.Packages.props') }}
@@ -327,7 +327,7 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/penbridge.keystore"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-android
           path: dist/out/*.apk
@@ -342,7 +342,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: assets
