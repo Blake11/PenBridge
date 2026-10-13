@@ -141,6 +141,57 @@ public static class TabletEventPlanner
         return n;
     }
 
+    /// <summary>
+    /// Plans an unconditional LeftUp, RightUp and ProximityLeave (with the last tool) and resets
+    /// <paramref name="state"/>. Use it when the host's real button state is unknown, e.g. after posts were dropped
+    /// because a permission was missing: a press posted before the drop may still be held by the host even though the
+    /// planner has since seen its release. An unmatched up or leave is harmless; a stuck button is not.
+    /// </summary>
+    public static int Repair(ref TabletPostedState state, Span<TabletStep> steps)
+    {
+        PenTool tool = state.Tool;
+        state.Left = false;
+        state.Right = false;
+        state.InProximity = false;
+        steps[0] = new TabletStep(TabletAction.LeftUp, tool, false, false);
+        steps[1] = new TabletStep(TabletAction.RightUp, tool, false, false);
+        steps[2] = new TabletStep(TabletAction.ProximityLeave, tool, false, false);
+        return 3;
+    }
+
+    /// <summary>
+    /// Undoes the state change of one planned step that could not be posted, so <paramref name="state"/> keeps
+    /// matching what the host actually received (a failed LeftUp leaves the left button down, to be released later).
+    /// </summary>
+    public static void Revert(ref TabletPostedState state, in TabletStep step)
+    {
+        switch (step.Action)
+        {
+            case TabletAction.LeftDown:
+                state.Left = false;
+                break;
+            case TabletAction.LeftUp:
+                state.Left = true;
+                break;
+            case TabletAction.RightDown:
+                state.Right = false;
+                break;
+            case TabletAction.RightUp:
+                state.Right = true;
+                break;
+            case TabletAction.ProximityEnter:
+                state.InProximity = false;
+                break;
+            case TabletAction.ProximityLeave:
+                state.InProximity = true;
+                state.Tool = step.Tool;
+                break;
+            default:
+                // Motion changes no state.
+                break;
+        }
+    }
+
     /// <summary>The mouse event for motion given the posted button state.</summary>
     public static TabletAction MotionAction(bool left, bool right) =>
         left ? TabletAction.LeftDragged : right ? TabletAction.RightDragged : TabletAction.MouseMoved;

@@ -9,15 +9,17 @@ public static class TabletEventMath
     /// <summary>The largest wire pressure.</summary>
     public const double MaxPressure = 65535.0;
 
-    /// <summary>Wire tilt magnitude that means 90°.</summary>
-    public const double TiltFullScale = 9000.0;
+    /// <summary>
+    /// Wire tilt (centi-degrees) that maps to ±1: 60°, the Wacom/Qt convention and about the S Pen's physical range.
+    /// </summary>
+    public const double TiltFullScale = 6000.0;
 
     /// <summary>Wire pressure 0..65535 to 0..1 (0 = none, 65535 = full).</summary>
     public static double Pressure(ushort pressure) => pressure / MaxPressure;
 
     /// <summary>
-    /// Wire tilt in centi-degrees to −1..1 (±90° = ±1), clamped. tiltX &gt; 0 leans the pen top toward +x (right
-    /// on the surface), tiltY &gt; 0 toward +y (down, toward the user): the CGEvent tablet convention, so no sign flip.
+    /// Wire tilt in centi-degrees to −1..1 (±60° = ±1, steeper angles clamp). tiltX &gt; 0 leans the pen top toward
+    /// +x (right on the surface), tiltY &gt; 0 toward +y (down, toward the user), the CGEvent tablet convention.
     /// </summary>
     public static double Tilt(short centiDegrees)
     {
@@ -28,7 +30,7 @@ public static class TabletEventMath
     /// <summary>Barrel rotation in centi-degrees (0..35999) to degrees.</summary>
     public static double RotationDegrees(ushort centiDegrees) => centiDegrees / 100.0;
 
-    /// <summary>Converts stopwatch-style ticks at <paramref name="frequency"/> Hz to nanoseconds.</summary>
+    /// <summary>Converts ticks of a clock running at <paramref name="frequency"/> Hz (its timebase) to nanoseconds.</summary>
     /// <remarks>
     /// Integer math (128-bit intermediate, rounded down), so no floating-point error at any uptime; the identity when
     /// the frequency is 1 GHz, the macOS <c>Stopwatch</c> frequency.

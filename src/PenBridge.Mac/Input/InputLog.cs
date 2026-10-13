@@ -18,6 +18,6 @@ internal static partial class InputLog
     [LoggerMessage(103, LogLevel.Debug, "Displays reconfigured: {Count} active")]
     public static partial void DisplaysReconfigured(ILogger logger, int count);
 
-    [LoggerMessage(104, LogLevel.Warning, "No active display found; keeping the previous target")]
+    [LoggerMessage(104, LogLevel.Warning, "No active display: pen input is dropped until a display is available")]
     public static partial void NoDisplays(ILogger logger);
 }

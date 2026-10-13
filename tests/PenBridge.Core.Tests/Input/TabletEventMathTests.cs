@@ -18,14 +18,17 @@ public class TabletEventMathTests
 
     [Theory]
     [InlineData((short)0, 0.0)]
+    [InlineData((short)6000, 1.0)]
+    [InlineData((short)-6000, -1.0)]
+    [InlineData((short)3000, 0.5)]
+    [InlineData((short)-1, -1 / 6000.0)]
+    [InlineData((short)5999, 5999 / 6000.0)]
+    [InlineData((short)6001, 1.0)]
     [InlineData((short)9000, 1.0)]
     [InlineData((short)-9000, -1.0)]
-    [InlineData((short)4500, 0.5)]
-    [InlineData((short)-1, -1 / 9000.0)]
-    [InlineData((short)9001, 1.0)]
     [InlineData(short.MaxValue, 1.0)]
     [InlineData(short.MinValue, -1.0)]
-    public void Tilt_scales_90_degrees_to_one_and_clamps(short wire, double expected)
+    public void Tilt_scales_60_degrees_to_one_and_clamps(short wire, double expected)
     {
         Assert.Equal(expected, TabletEventMath.Tilt(wire), 12);
     }

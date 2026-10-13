@@ -146,6 +146,72 @@ public class TabletEventPlannerTests
     }
 
     [Fact]
+    public void Dropped_posts_then_repair_releases_everything_the_host_may_hold()
+    {
+        // Posted for real: enter + left down. Then the permission is revoked: the planner keeps running but its
+        // posts are dropped, so the host still holds the left button although the planner saw the Up.
+        Plan(PenEventKind.ProximityEnter);
+        Plan(PenEventKind.Down);
+        Plan(PenEventKind.Up);       // dropped
+        Plan(PenEventKind.Move);     // dropped
+        Assert.False(_state.Left);
+
+        int n = TabletEventPlanner.Repair(ref _state, _buffer);
+        Assert.Equal([TabletAction.LeftUp, TabletAction.RightUp, TabletAction.ProximityLeave], Actions(n));
+        Assert.Equal(PenTool.Pen, _buffer[2].Tool);
+        AssertNothingPosted();
+
+        // Input resumes cleanly: the next event re-enters proximity.
+        Assert.Equal([TabletAction.ProximityEnter, TabletAction.MouseMoved], Plan(PenEventKind.Move));
+    }
+
+    [Fact]
+    public void Revert_keeps_state_matching_what_was_actually_posted()
+    {
+        Plan(PenEventKind.ProximityEnter);
+        Plan(PenEventKind.Down);
+        Plan(PenEventKind.ButtonDown, PenButtons.Primary);
+
+        // Leave plans LeftUp, RightUp, ProximityLeave; the LeftUp post fails, the others succeed.
+        int n = TabletEventPlanner.Plan(ref _state, PenEventKind.ProximityLeave, PenButtons.None, PenTool.Pen, _buffer);
+        Assert.Equal(3, n);
+        TabletEventPlanner.Revert(ref _state, _buffer[0]);
+        Assert.True(_state.Left);
+        Assert.False(_state.Right);
+        Assert.False(_state.InProximity);
+
+        // A later release retries the outstanding LeftUp.
+        Assert.Equal(1, TabletEventPlanner.Release(ref _state, _buffer));
+        Assert.Equal(TabletAction.LeftUp, _buffer[0].Action);
+    }
+
+    [Theory]
+    [InlineData(TabletAction.LeftDown)]
+    [InlineData(TabletAction.RightDown)]
+    [InlineData(TabletAction.ProximityEnter)]
+    public void Reverting_a_failed_press_or_enter_forgets_it(TabletAction failed)
+    {
+        Assert.Equal(2, TabletEventPlanner.Plan(ref _state, failed == TabletAction.RightDown ? PenEventKind.ButtonDown : PenEventKind.Down,
+            PenButtons.Primary, PenTool.Pen, _buffer));
+        TabletStep step = failed == TabletAction.ProximityEnter ? _buffer[0] : _buffer[1];
+        Assert.Equal(failed, step.Action);
+        TabletEventPlanner.Revert(ref _state, step);
+        Assert.Equal(failed != TabletAction.ProximityEnter, _state.InProximity);
+        Assert.False(failed == TabletAction.LeftDown && _state.Left);
+        Assert.False(failed == TabletAction.RightDown && _state.Right);
+    }
+
+    [Fact]
+    public void Reverting_a_failed_leave_keeps_proximity_and_tool()
+    {
+        Plan(PenEventKind.ProximityEnter, tool: PenTool.Eraser);
+        int n = TabletEventPlanner.Release(ref _state, _buffer);
+        TabletEventPlanner.Revert(ref _state, _buffer[n - 1]);
+        Assert.True(_state.InProximity);
+        Assert.Equal(PenTool.Eraser, _state.Tool);
+    }
+
+    [Fact]
     public void Planning_is_allocation_free()
     {
         var buffer = new TabletStep[TabletEventPlanner.MaxSteps];
@@ -164,6 +230,12 @@ public class TabletEventPlannerTests
             if (i % 7 == 0)
             {
                 posted += TabletEventPlanner.Release(ref state, buffer);
+            }
+
+            if (i % 11 == 0)
+            {
+                posted += TabletEventPlanner.Repair(ref state, buffer);
+                TabletEventPlanner.Revert(ref state, buffer[i % 3]);
             }
         }, () => posted);
     }

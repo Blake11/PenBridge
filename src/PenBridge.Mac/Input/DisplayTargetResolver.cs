@@ -29,9 +29,12 @@ public sealed record DisplayInfo(uint Id, string Uuid, string Name, DisplayRect 
 /// the main thread once a CoreGraphics display reconfiguration has completed (the same source as
 /// <c>CGDisplayRegisterReconfigurationCallback</c>, already coalesced and with NSScreen updated). It requires a running
 /// NSApplication, which the menu-bar app has.</para>
-/// <para>Wiring (ServerHost): create it with the saved UUID, pass <see cref="Target"/>'s bounds as
-/// <c>PenBridgeServerOptions.TargetDisplay</c> (or call <see cref="Bind"/> after creating the server), persist
-/// <see cref="PreferredUuid"/> after <see cref="SetTarget"/>, and list <see cref="Displays"/> in the menu.</para>
+/// <para>Wiring (ServerHost): create it with the saved UUID, call <see cref="Bind"/> with the server and the injector
+/// right after creating the server, persist <see cref="PreferredUuid"/> after <see cref="SetTarget"/>, and list
+/// <see cref="Displays"/> in the menu. <c>PenBridgeServerOptions.TargetDisplay</c> may be anything valid: the binding
+/// overrides it before any input can arrive.</para>
+/// <para>No display (e.g. lid closed, nothing attached): <see cref="HasDisplay"/> is false, the binding stops input
+/// at the injector instead of mapping to a placeholder, and it is logged once until a display returns.</para>
 /// </remarks>
 public sealed class DisplayTargetResolver : IDisposable
 {
@@ -41,6 +44,7 @@ public sealed class DisplayTargetResolver : IDisposable
     private readonly NSObject _observer;
     private DisplayInfo[] _displays = [];
     private bool _disposed;
+    private bool _loggedNoDisplay;
 
     /// <param name="preferredUuid">The remembered display UUID, or null for the main display.</param>
     /// <param name="logger">Diagnostics (target changes only).</param>
@@ -64,8 +68,14 @@ public sealed class DisplayTargetResolver : IDisposable
     /// <summary>Active displays, main first as CoreGraphics reports them. Snapshot; replaced on change.</summary>
     public IReadOnlyList<DisplayInfo> Displays => _displays;
 
-    /// <summary>The resolved target. Before any display is found, the main display id with placeholder 1×1 bounds.</summary>
+    /// <summary>
+    /// The resolved target. While <see cref="HasDisplay"/> is false it is the last display seen (or a 1×1 placeholder
+    /// before any); never map input to it then.
+    /// </summary>
     public DisplayInfo Target { get; private set; }
+
+    /// <summary>True when at least one active display exists and <see cref="Target"/> is real.</summary>
+    public bool HasDisplay { get; private set; }
 
     /// <summary>The user's choice (persist this), or null for "main display". Kept while that display is missing.</summary>
     public string? PreferredUuid { get; private set; }
@@ -103,15 +113,19 @@ public sealed class DisplayTargetResolver : IDisposable
 
     /// <summary>
     /// Applies <see cref="Target"/> to <paramref name="server"/> now and on every change, until the returned handle is
-    /// disposed. This is the reconfiguration path that updates the server's coordinate mapper.
+    /// disposed. This is the reconfiguration path that updates the server's coordinate mapper. While no display exists
+    /// the server keeps its last target and <paramref name="injector"/> drops input
+    /// (<see cref="CGEventTabletInjector.IsTargetAvailable"/>).
     /// </summary>
     /// <param name="server">The server whose target display to drive.</param>
+    /// <param name="injector">The server's sink, gated while no display exists.</param>
     /// <param name="region">Sub-region of the display (ADR-0005); the whole display by default.</param>
-    public IDisposable Bind(PenBridgeServer server, NormalizedRect? region = null)
+    public IDisposable Bind(PenBridgeServer server, CGEventTabletInjector injector, NormalizedRect? region = null)
     {
         ArgumentNullException.ThrowIfNull(server);
+        ArgumentNullException.ThrowIfNull(injector);
         RequireMainThread();
-        return new Binding(this, server, region ?? NormalizedRect.Full);
+        return new Binding(this, server, injector, region ?? NormalizedRect.Full);
     }
 
     public void Dispose()
@@ -234,14 +248,24 @@ public sealed class DisplayTargetResolver : IDisposable
         DisplayInfo? next = chosen ?? main ?? (_displays.Length > 0 ? _displays[0] : null);
         if (next is null)
         {
-            InputLog.NoDisplays(_logger);
+            if (HasDisplay || !_loggedNoDisplay)
+            {
+                _loggedNoDisplay = true;
+                HasDisplay = false;
+                InputLog.NoDisplays(_logger);
+                TargetChanged?.Invoke(this, EventArgs.Empty);
+            }
+
             return;
         }
 
-        if (next == Target)
+        _loggedNoDisplay = false;
+        if (next == Target && HasDisplay)
         {
             return;
         }
+
+        HasDisplay = true;
 
         Target = next;
         DisplayRect r = next.Bounds;
@@ -253,13 +277,15 @@ public sealed class DisplayTargetResolver : IDisposable
     {
         private readonly DisplayTargetResolver _resolver;
         private readonly PenBridgeServer _server;
+        private readonly CGEventTabletInjector _injector;
         private readonly NormalizedRect _region;
         private bool _disposed;
 
-        public Binding(DisplayTargetResolver resolver, PenBridgeServer server, NormalizedRect region)
+        public Binding(DisplayTargetResolver resolver, PenBridgeServer server, CGEventTabletInjector injector, NormalizedRect region)
         {
             _resolver = resolver;
             _server = server;
+            _injector = injector;
             _region = region;
             resolver.TargetChanged += OnTargetChanged;
             Apply();
@@ -276,6 +302,16 @@ public sealed class DisplayTargetResolver : IDisposable
 
         private void OnTargetChanged(object? sender, EventArgs e) => Apply();
 
-        private void Apply() => _server.SetTarget(_resolver.Target.Bounds, _region);
+        private void Apply()
+        {
+            if (!_resolver.HasDisplay)
+            {
+                _injector.IsTargetAvailable = false;
+                return;
+            }
+
+            _server.SetTarget(_resolver.Target.Bounds, _region);
+            _injector.IsTargetAvailable = true;
+        }
     }
 }

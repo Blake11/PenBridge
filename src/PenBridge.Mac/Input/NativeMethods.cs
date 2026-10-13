@@ -3,8 +3,10 @@ using System.Runtime.InteropServices;
 namespace PenBridge.Mac.Input;
 
 /// <summary>
-/// The few CoreGraphics/ApplicationServices functions .NET for macOS does not bind. Everything else (CGEvent,
-/// CGEventSource, CGEventField, CGDisplay bounds/main id, NSScreen) uses the bindings.
+/// CoreGraphics/ApplicationServices functions used directly: the ones .NET for macOS does not bind (display list and
+/// UUID, Accessibility), and the CGEvent calls of the per-sample hot path, which go through raw handles so no managed
+/// wrapper is allocated per event. Off the hot path the bindings are used (CGEventSource, the CGEventField/CGEventType
+/// enums for field and type ids, CGDisplay bounds and main id, NSScreen).
 /// </summary>
 /// <remarks>
 /// Signatures are blittable only (IntPtr, uint, byte, blittable arrays/byrefs; C <c>Boolean</c> is returned as
@@ -21,6 +23,34 @@ internal static class NativeMethods
     private const string ApplicationServices = "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices";
 
     private const string CoreFoundation = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation";
+
+    /// <summary><c>CGEventRef CGEventCreate(CGEventSourceRef)</c>; +1 retained, NULL on failure. Timestamp left at 0.</summary>
+    [DllImport(CoreGraphics)]
+    internal static extern IntPtr CGEventCreate(IntPtr source);
+
+    /// <summary><c>CGEventRef CGEventCreateMouseEvent(source, CGEventType, CGPoint, CGMouseButton)</c>; +1 retained, NULL on failure.</summary>
+    [DllImport(CoreGraphics)]
+    internal static extern IntPtr CGEventCreateMouseEvent(IntPtr source, uint mouseType, NativePoint position, uint mouseButton);
+
+    [DllImport(CoreGraphics)]
+    internal static extern void CGEventSetType(IntPtr ev, uint type);
+
+    [DllImport(CoreGraphics)]
+    internal static extern void CGEventSetLocation(IntPtr ev, NativePoint location);
+
+    [DllImport(CoreGraphics)]
+    internal static extern void CGEventSetIntegerValueField(IntPtr ev, uint field, long value);
+
+    [DllImport(CoreGraphics)]
+    internal static extern void CGEventSetDoubleValueField(IntPtr ev, uint field, double value);
+
+    /// <summary>Nanoseconds on CLOCK_UPTIME_RAW (measured; see the mac-build-run skill).</summary>
+    [DllImport(CoreGraphics)]
+    internal static extern void CGEventSetTimestamp(IntPtr ev, ulong timestamp);
+
+    /// <summary><c>void CGEventPost(CGEventTapLocation, CGEventRef)</c>; thread-safe.</summary>
+    [DllImport(CoreGraphics)]
+    internal static extern void CGEventPost(uint tap, IntPtr ev);
 
     /// <summary><c>CGError CGGetActiveDisplayList(uint32_t max, CGDirectDisplayID *displays, uint32_t *count)</c>; 0 = success.</summary>
     [DllImport(CoreGraphics)]
@@ -44,4 +74,12 @@ internal static class NativeMethods
     /// <summary><c>Boolean AXIsProcessTrustedWithOptions(CFDictionaryRef)</c>; with the prompt option it shows the system prompt.</summary>
     [DllImport(ApplicationServices)]
     internal static extern byte AXIsProcessTrustedWithOptions(IntPtr options);
+}
+
+/// <summary>C <c>CGPoint</c> on 64-bit macOS (two <c>CGFloat</c> = double), blittable.</summary>
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+internal readonly struct NativePoint(double x, double y)
+{
+    public readonly double X = x;
+    public readonly double Y = y;
 }
