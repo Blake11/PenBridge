@@ -93,7 +93,7 @@ Messages (C = phone → Mac, S = Mac → phone):
 - Every datagram carries the **complete current state**: the pen if it's in range, plus all active touches.
 - While the pen is in contact or touches are active, the phone sends at least every 50 ms, even when nothing moves.
 - While the pen is only hovering (in range, no contact), the phone sends a keepalive at least every 250 ms.
-- **Receiver watchdog:** with contact or active touches, after 150 ms with no valid datagram, synthesize pen-up and touches-up (active gestures end as `Cancelled`). While only hovering, synthesize pen-out-of-range after 1 s with no valid datagram.
+- **Receiver watchdog:** with contact or active touches, after 150 ms with no valid datagram, synthesize the full release in this order: pen-up (and button-ups), touches-up (active gestures end as `Cancelled`), then pen-out-of-range. While only hovering, synthesize pen-out-of-range after 1 s with no valid datagram.
 
 ## Input processing (Core, used by the heads)
 

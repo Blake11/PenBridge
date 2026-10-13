@@ -17,7 +17,7 @@ public class GestureRecognizerTests
     private static ushort N(double points) => (ushort)Math.Round(points * 65535.0 / 1000.0);
 
     private void Two(double ax, double ay, double bx, double by, bool pen = false) =>
-        _rec.Process([new TouchSample(1, true, N(ax), N(ay)), new TouchSample(2, true, N(bx), N(by))], pen);
+        _rec.Process([new TouchSample(1, true, N(ax), N(ay)), new TouchSample(2, true, N(bx), N(by))], pen, 0);
 
     private GesturePhase[] Phases() => _sink.Gestures.Select(g => g.Phase).ToArray();
 
@@ -37,7 +37,7 @@ public class GestureRecognizerTests
         Two(400, 500, 600, 500);
         Two(400, 550, 600, 550);
         Two(400, 570, 600, 570);
-        _rec.Process([new TouchSample(1, true, N(400), N(570))], false);
+        _rec.Process([new TouchSample(1, true, N(400), N(570))], false, 0);
 
         Assert.Equal([GesturePhase.Began, GesturePhase.Changed, GesturePhase.Ended], Phases());
         Assert.All(_sink.Gestures, g => Assert.Equal(GestureKind.Scroll, g.Kind));
@@ -54,7 +54,7 @@ public class GestureRecognizerTests
         Two(400, 500, 600, 500); // spread 200
         Two(350, 500, 650, 500); // spread 300
         Two(300, 500, 700, 500); // spread 400
-        _rec.Process([], false);
+        _rec.Process([], false, 0);
 
         Assert.Equal([GesturePhase.Began, GesturePhase.Changed, GesturePhase.Ended], Phases());
         Assert.All(_sink.Gestures, g => Assert.Equal(GestureKind.Pinch, g.Kind));
@@ -105,7 +105,7 @@ public class GestureRecognizerTests
         Assert.Equal(GestureKind.Scroll, Assert.Single(_sink.Gestures).Kind);
 
         _sink.Clear();
-        _rec.Process([], false);
+        _rec.Process([], false, 0);
         _sink.Clear();
 
         // Travel 20, spread change 60 -> pinch.
@@ -119,8 +119,8 @@ public class GestureRecognizerTests
     {
         // 4% of a 2000 pt short side is 80 pt, so a 50 pt pan is still undecided.
         _rec.Mapper = new CoordinateMapper(1000, 1000, new DisplayRect(0, 0, 2000, 2000));
-        _rec.Process([new TouchSample(1, true, 20000, 20000), new TouchSample(2, true, 30000, 20000)], false);
-        _rec.Process([new TouchSample(1, true, 20000, 21638), new TouchSample(2, true, 30000, 21638)], false); // ~50 pt
+        _rec.Process([new TouchSample(1, true, 20000, 20000), new TouchSample(2, true, 30000, 20000)], false, 0);
+        _rec.Process([new TouchSample(1, true, 20000, 21638), new TouchSample(2, true, 30000, 21638)], false, 0); // ~50 pt
         Assert.Empty(_sink.Gestures);
     }
 
@@ -128,8 +128,8 @@ public class GestureRecognizerTests
     public void Thresholds_are_configurable()
     {
         var rec = new GestureRecognizer(_sink, new GestureRecognizerOptions { ScrollThreshold = 0.005 }) { Mapper = Square };
-        rec.Process([new TouchSample(1, true, N(400), N(500)), new TouchSample(2, true, N(600), N(500))], false);
-        rec.Process([new TouchSample(1, true, N(400), N(510)), new TouchSample(2, true, N(600), N(510))], false);
+        rec.Process([new TouchSample(1, true, N(400), N(500)), new TouchSample(2, true, N(600), N(500))], false, 0);
+        rec.Process([new TouchSample(1, true, N(400), N(510)), new TouchSample(2, true, N(600), N(510))], false, 0);
         Assert.Equal(GestureKind.Scroll, Assert.Single(_sink.Gestures).Kind);
     }
 
@@ -147,7 +147,7 @@ public class GestureRecognizerTests
         Two(400, 900, 600, 900);
         Assert.Equal(2, _sink.Gestures.Count);
 
-        _rec.Process([], false);
+        _rec.Process([], false, 0);
         Two(400, 500, 600, 500);
         Two(400, 560, 600, 560);
         Assert.Equal(GesturePhase.Began, _sink.Gestures[^1].Phase);
@@ -165,21 +165,45 @@ public class GestureRecognizerTests
     public void Third_finger_is_ignored_and_lifting_a_tracked_finger_ends()
     {
         Two(400, 500, 600, 500);
-        _rec.Process([new TouchSample(1, true, N(400), N(560)), new TouchSample(2, true, N(600), N(560)), new TouchSample(3, true, N(100), N(100))], false);
+        _rec.Process([new TouchSample(1, true, N(400), N(560)), new TouchSample(2, true, N(600), N(560)), new TouchSample(3, true, N(100), N(100))], false, 0);
         Assert.Equal(GestureKind.Scroll, Assert.Single(_sink.Gestures).Kind);
         Assert.Equal(60, _sink.Gestures[0].DeltaY, 0.1);
 
         // Finger 2 lifts; 1 and 3 remain -> Ended, then a new undecided gesture on (1, 3).
-        _rec.Process([new TouchSample(1, true, N(400), N(560)), new TouchSample(3, true, N(100), N(100))], false);
+        _rec.Process([new TouchSample(1, true, N(400), N(560)), new TouchSample(3, true, N(100), N(100))], false, 0);
         Assert.Equal(GesturePhase.Ended, _sink.Gestures[^1].Phase);
         Assert.False(_rec.IsActive);
         Assert.Equal(2, _rec.ContactCount);
     }
 
     [Fact]
+    public void Tracks_first_two_contacts_by_landing_order_not_span_order()
+    {
+        _rec.Process([new TouchSample(5, true, N(400), N(500))], false, 0);
+        // Fingers 2 and 9 land together after 5; span order puts 2 and 9 first.
+        _rec.Process([new TouchSample(2, true, N(600), N(500)), new TouchSample(9, true, N(900), N(900)), new TouchSample(5, true, N(400), N(500))], false, 0);
+        _rec.Process([new TouchSample(2, true, N(600), N(560)), new TouchSample(9, true, N(900), N(900)), new TouchSample(5, true, N(400), N(560))], false, 0);
+
+        GestureEvent began = Assert.Single(_sink.Gestures);
+        Assert.Equal(GestureKind.Scroll, began.Kind);
+        Assert.Equal(60, began.DeltaY, 0.1);
+        Assert.Equal(500, began.Center.X, 0.1);
+    }
+
+    [Fact]
+    public void Unconfigured_mapper_ignores_frames()
+    {
+        var rec = new GestureRecognizer(_sink);
+        rec.Process([new TouchSample(1, true, 0, 0), new TouchSample(2, true, 9000, 0)], false, 0);
+        rec.Process([new TouchSample(1, true, 0, 30000), new TouchSample(2, true, 9000, 30000)], false, 0);
+        Assert.Empty(_sink.Gestures);
+        Assert.Equal(0, rec.ContactCount);
+    }
+
+    [Fact]
     public void Non_contact_touches_do_not_count()
     {
-        _rec.Process([new TouchSample(1, true, 1, 1), new TouchSample(2, false, 9, 9)], false);
+        _rec.Process([new TouchSample(1, true, 1, 1), new TouchSample(2, false, 9, 9)], false, 0);
         Assert.Equal(1, _rec.ContactCount);
     }
 
@@ -197,7 +221,7 @@ public class GestureRecognizerTests
     public void Cancel_without_active_gesture_emits_nothing()
     {
         Two(400, 500, 600, 500);
-        _rec.Cancel();
+        _rec.Cancel(0);
         Assert.Empty(_sink.Gestures);
         Assert.Equal(0, _rec.ContactCount);
     }

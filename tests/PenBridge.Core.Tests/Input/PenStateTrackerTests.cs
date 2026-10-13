@@ -7,14 +7,20 @@ public class PenStateTrackerTests
 {
     private readonly RecordingSink _sink = new();
     private readonly ManualTimeProvider _time = new();
+    private static readonly CoordinateMapper Square = new(1, 1, new DisplayRect(0, 0, 65535, 65535));
     private readonly PenStateTracker _tracker;
+    private uint _timeUs = 10_000;
 
     public PenStateTrackerTests()
     {
-        _tracker = new PenStateTracker(_sink, _time);
+        _tracker = new PenStateTracker(_sink, _time) { Mapper = Square };
     }
 
-    private void Frame(PenSample? pen, params TouchSample[] touches) => _tracker.ProcessFrame(pen, [], touches);
+    private void Frame(PenSample? pen, params TouchSample[] touches)
+    {
+        _tracker.ProcessFrame(_timeUs, pen, [], touches);
+        _timeUs += 5_000;
+    }
 
     [Fact]
     public void Hover_enter_move_leave()
@@ -120,7 +126,7 @@ public class PenStateTrackerTests
     {
         Frame(Samples.Hover(0, 0));
         _sink.Clear();
-        _tracker.ProcessFrame(Samples.Touch(4, 0), [Samples.Touch(1, 0), Samples.Touch(2, 0), Samples.Touch(3, 0)], []);
+        _tracker.ProcessFrame(_timeUs, Samples.Touch(4, 0), [Samples.Touch(1, 0), Samples.Touch(2, 0), Samples.Touch(3, 0)], []);
         Assert.Equal([Down, Drag, Drag, Drag], _sink.PenKinds());
         Assert.Equal([1, 2, 3, 4], _sink.Pen.Select(e => (int)e.Sample.X));
     }
@@ -238,10 +244,103 @@ public class PenStateTrackerTests
     }
 
     [Fact]
-    public void Unconfigured_mapper_falls_back_to_identity()
+    public void Frames_are_dropped_until_a_mapper_is_configured()
     {
-        _tracker.Mapper = default;
-        Assert.True(_tracker.Mapper.IsConfigured);
+        var tracker = new PenStateTracker(_sink, _time);
+        Assert.False(tracker.IsMapperConfigured);
+        tracker.ProcessFrame(0, Samples.Touch(1, 1), [], [new TouchSample(1, true, 1, 1), new TouchSample(2, true, 9, 9)]);
+        Assert.Empty(_sink.Pen);
+        Assert.False(tracker.IsInRange);
+        Assert.Null(tracker.WatchdogDueIn);
+
+        tracker.Mapper = Square;
+        Assert.True(tracker.IsMapperConfigured);
+        tracker.ProcessFrame(1, Samples.Touch(1, 1), [], []);
+        Assert.Equal([ProximityEnter, Down], _sink.PenKinds());
+    }
+
+    [Fact]
+    public void In_range_sample_with_unknown_tool_is_ignored()
+    {
+        Frame(Samples.Hover(1, 1, tool: PenTool.None));
+        Frame(Samples.Touch(1, 1, tool: (PenTool)42));
+        Assert.Empty(_sink.Pen);
+        Assert.False(_tracker.IsInRange);
+
+        Frame(Samples.Touch(1, 1));
+        Frame(Samples.Touch(9, 9, tool: PenTool.None));
+        _tracker.ProcessFrame(_timeUs, Samples.Touch(1, 1), [Samples.Hover(5, 5, tool: PenTool.None)], []);
+        Assert.Equal([ProximityEnter, Down], _sink.PenKinds());
+        Assert.True(_tracker.IsInContact);
+        Assert.Equal(PenTool.Pen, _tracker.Tool);
+    }
+
+    [Fact]
+    public void Finger_fallback_tool_is_accepted()
+    {
+        Frame(Samples.Touch(1, 1, tool: PenTool.FingerFallback));
+        Assert.Equal([ProximityEnter, Down], _sink.PenKinds());
+    }
+
+    [Fact]
+    public void Events_carry_frame_time()
+    {
+        _tracker.ProcessFrame(1234, Samples.Hover(1, 1), [], []);
+        _tracker.ProcessFrame(2000, Samples.Hover(2, 1), [], []);
+        Assert.Equal([1234L, 2000L], _sink.Pen.Select(e => e.TimestampUs));
+    }
+
+    [Fact]
+    public void Time_unwraps_across_u32_overflow()
+    {
+        _tracker.ProcessFrame(uint.MaxValue - 99, Samples.Hover(1, 1), [], []);
+        _tracker.ProcessFrame(100, Samples.Hover(2, 1), [], []);
+        Assert.Equal((long)uint.MaxValue - 99 + 200, _sink.Pen[1].TimestampUs);
+    }
+
+    [Fact]
+    public void Backwards_time_step_holds_the_clock()
+    {
+        _tracker.ProcessFrame(5000, Samples.Hover(1, 1), [], []);
+        _tracker.ProcessFrame(4000, Samples.Hover(2, 1), [], []);
+        _tracker.ProcessFrame(4500, Samples.Hover(3, 1), [], []);
+        Assert.Equal([5000L, 5000L, 5500L], _sink.Pen.Select(e => e.TimestampUs));
+    }
+
+    [Fact]
+    public void History_samples_are_spaced_at_nominal_interval_before_frame_time()
+    {
+        _tracker.ProcessFrame(100_000, Samples.Hover(0, 0), [], []);
+        _sink.Clear();
+        _tracker.ProcessFrame(120_000, Samples.Hover(4, 0), [Samples.Hover(1, 0), Samples.Hover(2, 0), Samples.Hover(3, 0)], []);
+        Assert.Equal([120_000L - (3 * 4167), 120_000L - (2 * 4167), 120_000L - 4167, 120_000L], _sink.Pen.Select(e => e.TimestampUs));
+    }
+
+    [Fact]
+    public void History_spacing_is_compressed_when_frames_are_close()
+    {
+        _tracker.ProcessFrame(100_000, Samples.Hover(0, 0), [], []);
+        _sink.Clear();
+        _tracker.ProcessFrame(108_000, Samples.Hover(4, 0), [Samples.Hover(1, 0), Samples.Hover(2, 0), Samples.Hover(3, 0)], []);
+        Assert.Equal([102_000L, 104_000L, 106_000L, 108_000L], _sink.Pen.Select(e => e.TimestampUs));
+    }
+
+    [Fact]
+    public void Watchdog_events_are_stamped_at_frame_time_plus_elapsed()
+    {
+        _tracker.ProcessFrame(50_000, Samples.Touch(1, 1), [], []);
+        _sink.Clear();
+        _time.Advance(TimeSpan.FromMilliseconds(150));
+        _tracker.CheckWatchdog();
+        Assert.All(_sink.Pen, e => Assert.Equal(200_000, e.TimestampUs));
+    }
+
+    [Fact]
+    public void Gesture_events_share_the_frame_clock()
+    {
+        _tracker.ProcessFrame(7_000, null, [], [new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 20000, 10000)]);
+        _tracker.ProcessFrame(9_000, null, [], [new TouchSample(1, true, 10000, 20000), new TouchSample(2, true, 20000, 20000)]);
+        Assert.Equal(9_000, Assert.Single(_sink.Gestures).TimestampUs);
     }
 
     [Fact]
@@ -274,17 +373,17 @@ public class PenStateTrackerTests
                 PenSample? pen = phase < 5 ? Samples.Hover((ushort)i, 3)
                     : Samples.Touch((ushort)i, 3, (ushort)(i * 7), buttons: (phase & 8) != 0 ? PenButtons.Primary : PenButtons.None,
                         tool: phase > 30 ? PenTool.Eraser : PenTool.Pen);
-                tracker.ProcessFrame(pen, history, []);
+                tracker.ProcessFrame((uint)(i * 5000), pen, history, []);
             }
             else if (phase == 40)
             {
-                tracker.ProcessFrame(null, [], []);
+                tracker.ProcessFrame((uint)(i * 5000), null, [], []);
             }
             else if (phase < 90)
             {
                 touches[0] = new TouchSample(1, true, 10000, (ushort)(10000 + (phase * 200)));
                 touches[1] = new TouchSample(2, true, (ushort)(20000 + (phase * 100)), (ushort)(10000 + (phase * 200)));
-                tracker.ProcessFrame(null, [], touches);
+                tracker.ProcessFrame((uint)(i * 5000), null, [], touches);
             }
             else
             {

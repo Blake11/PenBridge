@@ -47,6 +47,8 @@ public sealed class InputFilter
     private readonly InputFilterOptions _options;
     private readonly bool[] _suppressed = new bool[256];
     private readonly bool[] _present = new bool[256];
+    private readonly byte[] _previousIds = new byte[256];
+    private int _previousCount;
     private bool _penSeen;
     private TimeSpan _lastPenTime;
     private bool _multiTouch;
@@ -141,11 +143,13 @@ public sealed class InputFilter
     public void Reset()
     {
         Array.Clear(_suppressed);
+        _previousCount = 0;
         _penSeen = false;
         _lastPenTime = default;
         _multiTouch = false;
     }
 
+    /// <summary>Un-suppresses ids that were present in the previous call but are gone now (the finger lifted).</summary>
     private void ForgetLiftedPointers(ReadOnlySpan<RawTouch> touches)
     {
         for (int i = 0; i < touches.Length; i++)
@@ -153,14 +157,25 @@ public sealed class InputFilter
             _present[touches[i].PointerId] = true;
         }
 
-        for (int id = 0; id < _suppressed.Length; id++)
+        for (int i = 0; i < _previousCount; i++)
         {
+            byte id = _previousIds[i];
             if (!_present[id])
             {
                 _suppressed[id] = false;
             }
+        }
 
-            _present[id] = false;
+        // Record this call's distinct ids and clear the presence marks again.
+        _previousCount = 0;
+        for (int i = 0; i < touches.Length; i++)
+        {
+            byte id = touches[i].PointerId;
+            if (_present[id])
+            {
+                _present[id] = false;
+                _previousIds[_previousCount++] = id;
+            }
         }
     }
 

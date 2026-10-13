@@ -33,13 +33,15 @@ public enum PenEventKind : byte
 /// <param name="Button">For ButtonDown/ButtonUp: the single button that changed; otherwise <see cref="PenButtons.None"/>.</param>
 /// <param name="PreviousTool">For ToolChanged: the tool before the change; otherwise <see cref="PenTool.None"/>.</param>
 /// <param name="Synthetic">True when the event was synthesized by the watchdog or a reset rather than received.</param>
+/// <param name="TimestampUs">Monotonic µs since session start (the datagram <c>timeUs</c> unwrapped to 64 bits; history samples are spaced before it).</param>
 public readonly record struct PenEvent(
     PenEventKind Kind,
     PenSample Sample,
     DisplayPoint Position,
     PenButtons Button,
     PenTool PreviousTool,
-    bool Synthetic);
+    bool Synthetic,
+    long TimestampUs);
 
 /// <summary>Gesture kinds produced by <see cref="GestureRecognizer"/>.</summary>
 public enum GestureKind : byte
@@ -70,6 +72,7 @@ public enum GesturePhase : byte
 /// <param name="ScaleDelta">Pinch: multiplicative finger-spread change since the previous event (Began: since landing). 1 otherwise.</param>
 /// <param name="Center">Current centroid of the two tracked fingers in display points.</param>
 /// <param name="Synthetic">True when synthesized by the watchdog or a reset.</param>
+/// <param name="TimestampUs">Monotonic µs since session start, same clock as <see cref="PenEvent.TimestampUs"/>.</param>
 public readonly record struct GestureEvent(
     GestureKind Kind,
     GesturePhase Phase,
@@ -77,7 +80,8 @@ public readonly record struct GestureEvent(
     double DeltaY,
     double ScaleDelta,
     DisplayPoint Center,
-    bool Synthetic);
+    bool Synthetic,
+    long TimestampUs);
 
 /// <summary>
 /// Receives Mac-side input events from <see cref="PenStateTracker"/> and <see cref="GestureRecognizer"/>.

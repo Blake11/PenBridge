@@ -14,17 +14,24 @@ public sealed record GestureRecognizerOptions
 /// Mac-side two-finger gesture recognizer over raw touch state (one call per received datagram).
 /// </summary>
 /// <remarks>
-/// The first two contacts to land are tracked. Until a threshold is crossed nothing is emitted; then the gesture
-/// locks to Scroll or Pinch (pinch wins when the spread change is at least the centroid travel) and stays that kind
-/// until a tracked finger lifts (Ended). When the pen comes into range an active gesture is Cancelled and no new
-/// gesture starts until all fingers have lifted. Not thread-safe; allocation-free per call.
+/// The first two contacts by landing order are tracked (later fingers are ignored). Until a threshold is crossed
+/// nothing is emitted; then the gesture locks to Scroll or Pinch (pinch wins when the spread change is at least the
+/// centroid travel) and stays that kind until a tracked finger lifts (Ended). When the pen comes into range an
+/// active gesture is Cancelled and no new gesture starts until all fingers have lifted. Frames are ignored until a
+/// configured <see cref="Mapper"/> is set (apply SurfaceInfo first). Not thread-safe; allocation-free per call.
 /// </remarks>
 public sealed class GestureRecognizer
 {
+    /// <summary>Maximum contacts whose landing order is tracked.</summary>
+    public const int MaxTrackedContacts = 10;
+
     private const double MinSpread = 1e-6;
 
     private readonly IInputSink _sink;
     private readonly GestureRecognizerOptions _options;
+    private readonly byte[] _order = new byte[MaxTrackedContacts];
+    private readonly byte[] _scratch = new byte[MaxTrackedContacts];
+    private int _orderCount;
     private State _state;
     private byte _idA;
     private byte _idB;
@@ -49,8 +56,8 @@ public sealed class GestureRecognizer
         Blocked,
     }
 
-    /// <summary>Maps touch positions to display points; thresholds scale with its content size.</summary>
-    public CoordinateMapper Mapper { get; set; } = CoordinateMapper.Identity;
+    /// <summary>Maps touch positions to display points; thresholds scale with its content size. Unset by default.</summary>
+    public CoordinateMapper Mapper { get; set; }
 
     /// <summary>Number of contacts in the last processed frame.</summary>
     public int ContactCount { get; private set; }
@@ -61,48 +68,22 @@ public sealed class GestureRecognizer
     /// <summary>Processes the complete current touch state.</summary>
     /// <param name="touches">All active touches from the datagram.</param>
     /// <param name="penInRange">True when the pen is in range or in contact in this frame.</param>
-    public void Process(ReadOnlySpan<TouchSample> touches, bool penInRange)
+    /// <param name="timestampUs">Monotonic frame time in µs, copied into emitted events.</param>
+    public void Process(ReadOnlySpan<TouchSample> touches, bool penInRange, long timestampUs)
     {
-        int count = 0;
-        TouchSample first = default, second = default, a = default, b = default;
-        bool foundA = false, foundB = false;
-        for (int i = 0; i < touches.Length; i++)
+        if (!Mapper.IsConfigured)
         {
-            TouchSample t = touches[i];
-            if (!t.Contact)
-            {
-                continue;
-            }
-
-            count++;
-            if (count == 1)
-            {
-                first = t;
-            }
-            else if (count == 2)
-            {
-                second = t;
-            }
-
-            if (t.PointerId == _idA && !foundA)
-            {
-                a = t;
-                foundA = true;
-            }
-            else if (t.PointerId == _idB && !foundB)
-            {
-                b = t;
-                foundB = true;
-            }
+            return;
         }
 
+        int count = UpdateLandingOrder(touches);
         ContactCount = count;
 
         if (penInRange)
         {
             if (IsActive)
             {
-                Emit(GesturePhase.Cancelled, 0, 0, 1, _prevCenter, synthetic: false);
+                Emit(GesturePhase.Cancelled, 0, 0, 1, _prevCenter, synthetic: false, timestampUs);
             }
 
             _state = State.Blocked;
@@ -120,27 +101,19 @@ public sealed class GestureRecognizer
                 return;
 
             case State.Idle:
-                if (count >= 2)
-                {
-                    Start(first, second);
-                }
-
+                TryStart(touches);
                 return;
         }
 
-        if (!foundA || !foundB)
+        if (!TryFind(touches, _idA, out TouchSample a) || !TryFind(touches, _idB, out TouchSample b))
         {
             if (IsActive)
             {
-                Emit(GesturePhase.Ended, 0, 0, 1, _prevCenter, synthetic: false);
+                Emit(GesturePhase.Ended, 0, 0, 1, _prevCenter, synthetic: false, timestampUs);
             }
 
             _state = State.Idle;
-            if (count >= 2)
-            {
-                Start(first, second);
-            }
-
+            TryStart(touches);
             return;
         }
 
@@ -148,7 +121,7 @@ public sealed class GestureRecognizer
         switch (_state)
         {
             case State.Possible:
-                Decide(center, spread);
+                Decide(center, spread, timestampUs);
                 break;
 
             case State.Scrolling:
@@ -157,7 +130,7 @@ public sealed class GestureRecognizer
                 double dy = center.Y - _prevCenter.Y;
                 if (dx != 0 || dy != 0)
                 {
-                    Emit(GesturePhase.Changed, dx, dy, 1, center, synthetic: false);
+                    Emit(GesturePhase.Changed, dx, dy, 1, center, synthetic: false, timestampUs);
                 }
 
                 break;
@@ -168,7 +141,7 @@ public sealed class GestureRecognizer
                 double scale = spread / Math.Max(_prevSpread, MinSpread);
                 if (scale != 1 || center != _prevCenter)
                 {
-                    Emit(GesturePhase.Changed, 0, 0, scale, center, synthetic: false);
+                    Emit(GesturePhase.Changed, 0, 0, scale, center, synthetic: false, timestampUs);
                 }
 
                 break;
@@ -180,19 +153,75 @@ public sealed class GestureRecognizer
     }
 
     /// <summary>Aborts any gesture as if all fingers lifted (watchdog / session end). Emits Cancelled if active.</summary>
-    public void Cancel(bool synthetic = true)
+    public void Cancel(long timestampUs, bool synthetic = true)
     {
         if (IsActive)
         {
-            Emit(GesturePhase.Cancelled, 0, 0, 1, _prevCenter, synthetic);
+            Emit(GesturePhase.Cancelled, 0, 0, 1, _prevCenter, synthetic, timestampUs);
         }
 
         _state = State.Idle;
+        _orderCount = 0;
         ContactCount = 0;
     }
 
-    private void Start(TouchSample first, TouchSample second)
+    private static bool TryFind(ReadOnlySpan<TouchSample> touches, byte id, out TouchSample found)
     {
+        for (int i = 0; i < touches.Length; i++)
+        {
+            if (touches[i].Contact && touches[i].PointerId == id)
+            {
+                found = touches[i];
+                return true;
+            }
+        }
+
+        found = default;
+        return false;
+    }
+
+    /// <summary>Keeps still-present contacts in landing order and appends new ones; returns the contact count.</summary>
+    private int UpdateLandingOrder(ReadOnlySpan<TouchSample> touches)
+    {
+        int kept = 0;
+        for (int i = 0; i < _orderCount; i++)
+        {
+            if (TryFind(touches, _order[i], out _))
+            {
+                _scratch[kept++] = _order[i];
+            }
+        }
+
+        int count = 0;
+        for (int i = 0; i < touches.Length; i++)
+        {
+            TouchSample t = touches[i];
+            if (!t.Contact)
+            {
+                continue;
+            }
+
+            count++;
+            if (kept < MaxTrackedContacts && Array.IndexOf(_scratch, t.PointerId, 0, kept) < 0)
+            {
+                _scratch[kept++] = t.PointerId;
+            }
+        }
+
+        Array.Copy(_scratch, _order, kept);
+        _orderCount = kept;
+        return count;
+    }
+
+    private void TryStart(ReadOnlySpan<TouchSample> touches)
+    {
+        if (_orderCount < 2
+            || !TryFind(touches, _order[0], out TouchSample first)
+            || !TryFind(touches, _order[1], out TouchSample second))
+        {
+            return;
+        }
+
         _idA = first.PointerId;
         _idB = second.PointerId;
         Measure(first, second, out _startCenter, out _startSpread);
@@ -201,7 +230,7 @@ public sealed class GestureRecognizer
         _state = State.Possible;
     }
 
-    private void Decide(DisplayPoint center, double spread)
+    private void Decide(DisplayPoint center, double spread, long timestampUs)
     {
         double reference = Mapper.ShortSide;
         double dx = center.X - _startCenter.X;
@@ -212,12 +241,12 @@ public sealed class GestureRecognizer
         if (spreadChange >= _options.PinchThreshold * reference && spreadChange >= travel)
         {
             _state = State.Pinching;
-            Emit(GesturePhase.Began, 0, 0, spread / Math.Max(_startSpread, MinSpread), center, synthetic: false);
+            Emit(GesturePhase.Began, 0, 0, spread / Math.Max(_startSpread, MinSpread), center, synthetic: false, timestampUs);
         }
         else if (travel >= _options.ScrollThreshold * reference)
         {
             _state = State.Scrolling;
-            Emit(GesturePhase.Began, dx, dy, 1, center, synthetic: false);
+            Emit(GesturePhase.Began, dx, dy, 1, center, synthetic: false, timestampUs);
         }
     }
 
@@ -231,9 +260,9 @@ public sealed class GestureRecognizer
         spread = Math.Sqrt((sx * sx) + (sy * sy));
     }
 
-    private void Emit(GesturePhase phase, double dx, double dy, double scale, DisplayPoint center, bool synthetic)
+    private void Emit(GesturePhase phase, double dx, double dy, double scale, DisplayPoint center, bool synthetic, long timestampUs)
     {
         GestureKind kind = _state == State.Pinching ? GestureKind.Pinch : GestureKind.Scroll;
-        _sink.OnGestureEvent(new GestureEvent(kind, phase, dx, dy, scale, center, synthetic));
+        _sink.OnGestureEvent(new GestureEvent(kind, phase, dx, dy, scale, center, synthetic, timestampUs));
     }
 }
