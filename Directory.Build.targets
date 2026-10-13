@@ -1,5 +1,22 @@
 <Project>
   <!--
+    Local Android toolchain defaults (issue #33). The Android workload does not find Homebrew's
+    keg-only openjdk@17 (it is not registered with /usr/libexec/java_home), so a build without
+    JAVA_HOME fails with XA5300. Fill in the locations scripts/bootstrap.sh installs to, so a plain
+    `dotnet build` and IDE builds (Rider) work with no shell profile changes.
+    Precedence: an explicit -p:JavaSdkDirectory / -p:AndroidSdkDirectory (or one set by the IDE)
+    and the JAVA_HOME / ANDROID_HOME / ANDROID_SDK_ROOT environment variables always win; these
+    defaults apply only on macOS, only to Android projects, and only when the directory exists.
+    CI (Linux, setup-java sets JAVA_HOME, the runner sets ANDROID_HOME) never takes these branches.
+    scripts/lib/common.sh (resolve_java_home / resolve_android_home) mirrors this order for doctor.sh.
+  -->
+  <PropertyGroup Condition="'$(TargetPlatformIdentifier)' == 'android' and $([MSBuild]::IsOSPlatform('OSX'))">
+    <JavaSdkDirectory Condition="'$(JavaSdkDirectory)' == '' and '$(JAVA_HOME)' == '' and Exists('/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/release')">/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home</JavaSdkDirectory>
+    <JavaSdkDirectory Condition="'$(JavaSdkDirectory)' == '' and '$(JAVA_HOME)' == '' and Exists('/usr/local/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/release')">/usr/local/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home</JavaSdkDirectory>
+    <AndroidSdkDirectory Condition="'$(AndroidSdkDirectory)' == '' and '$(ANDROID_HOME)' == '' and '$(ANDROID_SDK_ROOT)' == '' and '$(HOME)' != '' and Exists('$(HOME)/Library/Android/sdk')">$(HOME)/Library/Android/sdk</AndroidSdkDirectory>
+  </PropertyGroup>
+
+  <!--
     BouncyCastle.Cryptography (J-PAKE, ADR-0009) is not marked IsTrimmable. Under the heads' default
     partial trim mode ILLink therefore copies the whole assembly and analyses every type in it,
     including unused OpenPGP code (Org.BouncyCastle.Bcpg) that reports IL2045, which fails the build

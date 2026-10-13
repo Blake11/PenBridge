@@ -42,7 +42,16 @@ export ANDROID_HOME="$HOME/Library/Android/sdk"
 export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
 ```
 
-The `scripts/android-*` helpers set these per process and pass `-p:AndroidSdkDirectory` / `-p:JavaSdkDirectory` to MSBuild. You only need the variables in your profile for raw `dotnet build` / `adb` use or for an IDE (Rider: Settings → Build → Android).
+You don't need them for builds. On macOS, `Directory.Build.targets` fills in `JavaSdkDirectory` and `AndroidSdkDirectory` for the Android head from the locations bootstrap installs to, so a plain `dotnet build PenBridge.slnx` and Rider builds work with no profile changes:
+
+| Property | Auto-detected value (first that exists) | Used only when |
+|---|---|---|
+| `JavaSdkDirectory` | `/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home`, then the `/usr/local` equivalent | `JavaSdkDirectory` and `JAVA_HOME` are both unset |
+| `AndroidSdkDirectory` | `$HOME/Library/Android/sdk` | `AndroidSdkDirectory`, `ANDROID_HOME` and `ANDROID_SDK_ROOT` are all unset |
+
+An explicit `-p:` property (or one Rider passes) and the environment variables always win, and CI (Linux, `setup-java`) never reaches the defaults. Check what a build will use with `scripts/doctor.sh` (section "Android build resolution") or `dotnet msbuild src/PenBridge.Android -getProperty:JavaSdkDirectory -getProperty:AndroidSdkDirectory` (empty = taken from the env var). The `scripts/android-*` helpers still set the variables per process and pass both properties explicitly. Export them in your profile only if you want `adb`/`emulator` on your `PATH`.
+
+**Rider** evaluates projects with the same MSBuild, so it picks up the defaults; nothing needs setting. Leave Settings → Build, Execution, Deployment → Android → Android SDK/JDK location empty (or set them to the paths above). A path set there is passed to MSBuild and overrides the defaults.
 
 ### Manual steps (sudo / GUI)
 
@@ -158,7 +167,8 @@ scripts/android-run.sh --device 192.168.1.23:41234 --logs
 - **`sdkmanager` "deprecated, Android CLI will be used instead".** Since cmdline-tools 23, `sdkmanager` delegates to the new `android` CLI and prints a different `--list_installed` format: paths like `platforms/android-36` instead of `platforms;android-36`. The scripts detect installed packages from `<sdk>/<path>/package.xml` rather than parsing that output. On first use, the `android` binary downloads and unpacks itself and shows a metrics notice; `--no-metrics` disables the metrics.
 - **No Java runtime / wrong JDK.** The Homebrew `openjdk@17` is keg-only and is not registered in `/usr/libexec/java_home`, because registering it needs a sudo symlink. The scripts find it under `$(brew --prefix)/opt/openjdk@17`. The JDK home is `…/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home`; the keg root `…/opt/openjdk@17` has a working `bin/java` but MSBuild rejects it with `XA5300 … Could not find required file 'jvm'`, so `doctor.sh` warns when `JAVA_HOME` lacks `release` or `lib/server/libjvm.dylib`. If `JAVA_HOME` points at a JDK newer than 21, Android builds fail, and `doctor.sh` warns about it.
 - **Workload install "permission denied" / "access to the path is denied".** The dotnet root is root-owned, so use the `sudo` command above. Don't `chown` `/usr/local/share/dotnet`, because the official installer would fight it.
-- **Android build can't find the SDK in Rider or with raw `dotnet build`.** Export `ANDROID_HOME` and `JAVA_HOME`, or pass `-p:AndroidSdkDirectory=… -p:JavaSdkDirectory=…`.
+- **Android build can't find the JDK/SDK (`XA5300`) in Rider or with raw `dotnet build`.** Run `scripts/doctor.sh` and read "Android build resolution". The usual causes are a stale `JAVA_HOME`/`ANDROID_HOME` (they beat the auto-detection), a wrong JDK/SDK path in Rider's Android settings, or a JDK/SDK outside the default locations. Fix or unset the variable, or pass `-p:AndroidSdkDirectory=… -p:JavaSdkDirectory=…`. The workload's `warning … reading the output of '/usr/libexec/java_home -X' … Root element is missing` means no JDK is registered with `java_home` (true for the keg-only Homebrew JDK). It doesn't appear once a JDK is resolved, and it would not fail the build anyway because `TreatWarningsAsErrors` only covers compiler warnings.
+- **`Unable to obtain lock file access on '/tmp/NuGetScratch/…'`.** A `sudo dotnet workload install` left a root-owned `/tmp/NuGetScratch`, and NuGet falls back to it when `TMPDIR` is unset (e.g. under `env -i`). Keep `TMPDIR` set, or run `sudo rm -rf /tmp/NuGetScratch`.
 - **Emulator won't boot.** Check `$TMPDIR/penbridge-emulator.log`. Try `--cold-boot`, then `--wipe`. `--recreate` rebuilds the AVD after you change `AVD_DEVICE` or `ANDROID_API_LEVEL`.
 - **`adb pair` fails.** The code and the pairing port expire when the dialog closes; reopen it. Use the pairing port for `pair` and the connect port for `connect`. VPNs and guest Wi-Fi with client isolation block wireless adb.
 - **Accessibility granted, but nothing happens.** The signature changed. Check `codesign -dr - <app>`: it should show `certificate leaf`, not `cdhash`. Then run `--reset-tcc`.
