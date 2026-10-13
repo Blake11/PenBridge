@@ -24,7 +24,7 @@ Protocol lives in `src/PenBridge.Core` (ADR-0004). Mac server and phone clients 
 - **Golden bytes**: fixed byte arrays for each message version so accidental layout changes fail.
 - Compatibility: new reader ← old bytes, old-shaped reader ← new bytes (minor), major mismatch → refusal path.
 - Fuzz-ish: truncated/oversized/garbage input never throws unhandled or over-reads.
-- Allocation check for the hot path (`GC.GetAllocatedBytesForCurrentThread` delta == 0) where applicable.
+- Allocation check for the hot path with `Alloc.AssertZero` (skill `core-testing`), never a one-shot counter delta.
 
 ## Pairing security (must hold for any change to pairing, auth or the input channel)
 - **Pairing window:** `PinIssuer` accepts PIN/QR attempts only between `OpenPairingWindow()` (Mac "Pair new device…") and its close (success, `ClosePairingWindow()`, or 2 min expiry). Outside it → `WindowClosed`, no strike; send `PairResult(expired)`.
@@ -43,6 +43,9 @@ Protocol lives in `src/PenBridge.Core` (ADR-0004). Mac server and phone clients 
 `scripts/test.sh`; SimClient ↔ Mac server; S23 ↔ Mac for input-path changes. PR notes state the version change and compatibility.
 
 ## Gotchas
-- Untrusted base64url (TXT `fp`, QR `fp`/`t`): use `Base64Url.DecodeFromChars` (`OperationStatus` overload). `TryDecodeFromChars` still throws `FormatException` on malformed or non-canonical input, because "Try" only covers destination size.
+- Untrusted base64url (TXT `fp`, QR `fp`/`t`): go through `Base64UrlBytes.TryDecode32` (Protocol), which uses the `OperationStatus` overload of `Base64Url.DecodeFromChars`. `TryDecodeFromChars` still throws `FormatException` on malformed or non-canonical input, because "Try" only covers destination size.
+- `PairingQrPayload` keeps a **reference** to the token array (`Token` is `ReadOnlyMemory<byte>` over it). Don't zero or reuse that array after building the payload, or the QR/URI carries zeros; zero it when the payload is no longer needed.
+- BouncyCastle J-PAKE: a participant must create its **own** Round2 before it can validate the peer's (`PairingSession.EnsureOwnRound2` generates and caches it). Keep that ordering if you touch the round handling.
+- Network-side rules (deadlines, endpoint pinning, per-IP limits, forged-datagram budget): skill `net-engine`.
 - Readers ignore trailing bytes in known messages (minor-version extension point). Unknown enum values in *input samples* are rejected; unknown Error codes, Bye reasons and capability bits are accepted.
 - Control-stream reads have no built-in timeout: callers pass a per-read deadline (`CancellationTokenSource.CancelAfter`) and a pre-auth handshake timeout. Reserved (`0xF0–0xFF`) frames are skipped but count toward a cap (`ControlFrameReader.MaxConsecutiveReservedFrames`), so they can't keep a dead or hostile peer "alive". Any read failure or cancellation desyncs the stream: dispose and close.

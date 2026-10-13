@@ -12,6 +12,9 @@ Skills are living documents. Reality wins: if a skill was wrong, fix it in the s
 - A repeatable procedure emerged (a checklist, a command sequence).
 - A subagent flagged a learning in its report.
 
+## End of a phase
+Sources: `.claude/progress/<feature>/progress.md`, `progress.log.md`, every `ws-*.md` ("Learnings", "Follow-ups"), merged PR bodies (`gh pr list -R Blake11/PenBridge --state merged`, `gh pr view <n> --json body`), reviewer reports. Dedupe against existing skills, put each learning in the skill whose trigger matches, and fix skills the phase proved wrong. Commit `docs: capture <phase> learnings into skills`.
+
 ## Don't capture
 - One-off facts about a single change (→ commit/PR message).
 - Decisions (→ ADR, skill `adr`). Design (→ `docs/architecture.md`). Human setup docs (→ `docs/development.md`).

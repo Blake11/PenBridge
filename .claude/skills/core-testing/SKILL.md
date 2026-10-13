@@ -53,11 +53,16 @@ DOTNET_TC_QuickJitForLoops=1 DOTNET_OSR_HitLimit=1 scripts/test.sh -c Release   
 - `Net/NetTestSupport.cs` has `FakeTime` (a TimeProvider whose timers fire only inside `Advance`, in due order, on the
   calling thread) plus `Wait.Until` / `Wait.AdvanceUntil` / `Wait.Step` (bounded real-time polling).
 - Never jump past a deadline in one `Advance` while I/O must happen in between (pings, acks): every timer that comes
-  due fires before any socket I/O runs. Step at or below the interval (e.g. 100 ms) with a short real pause.
+  due fires before any socket I/O runs. Advance at most one ping interval per step (e.g. 100 ms) with a tiny real
+  pause between steps: use `Wait.Step(time, total)`.
 - **Test the moment the stream stops, right after an ack.** Rate-limited or batched protocol messages (UdpAck at most
   1/s) leave the tail unanswered unless something flushes it (a trailing ack). Steady streaming hides that bug;
   "stream, stop right after an ack, step 6 s, assert still on UDP" catches it.
 - A deadline counts from when its operation *started*, which may be later than the test thinks (a writer drains
   asynchronously). Wait for a real-time condition first (e.g. `ControlWriteInFlightFor > 300 ms`), then advance.
+- Share one `ServerIdentity`: use `NetTestSupport`'s `SharedServerIdentity` (lazy, process-wide). Creating/loading a
+  PKCS#12 costs about 1 s on macOS, so a fresh identity per test makes the suite slow and pushes timing tests
+  past their real-time waits.
+- TLS version: assert `Tls12 or Tls13`, never 1.3 only (macOS servers negotiate 1.2, ADR-0013).
 - To stall a TCP writer quickly, shrink both buffers (`PausableProxy` listener receive buffer, client
   `TcpSendBufferSize`) and keep sending until a write is really in flight.
