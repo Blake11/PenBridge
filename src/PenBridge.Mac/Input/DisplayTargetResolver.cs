@@ -5,7 +5,7 @@ using Foundation;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using PenBridge.Core.Input;
-using PenBridge.Core.Net;
+using PenBridge.Mac.Services;
 
 namespace PenBridge.Mac.Input;
 
@@ -29,10 +29,10 @@ public sealed record DisplayInfo(uint Id, string Uuid, string Name, DisplayRect 
 /// the main thread once a CoreGraphics display reconfiguration has completed (the same source as
 /// <c>CGDisplayRegisterReconfigurationCallback</c>, already coalesced and with NSScreen updated). It requires a running
 /// NSApplication, which the menu-bar app has.</para>
-/// <para>Wiring (ServerHost): create it with the saved UUID, call <see cref="Bind"/> with the server and the injector
-/// right after creating the server, persist <see cref="PreferredUuid"/> after <see cref="SetTarget"/>, and list
-/// <see cref="Displays"/> in the menu. <c>PenBridgeServerOptions.TargetDisplay</c> may be anything valid: the binding
-/// overrides it before any input can arrive.</para>
+/// <para>Wiring (shell): create it with the saved UUID (<see cref="SettingsStore"/>), call <see cref="Bind"/> with the
+/// <see cref="ServerHost"/> and the injector before <c>ServerHost.StartAsync</c>, persist <see cref="PreferredUuid"/>
+/// after <see cref="SetTarget"/>, and list <see cref="Displays"/> in the menu. <c>ServerHost.SetTarget</c> keeps the
+/// target across server restarts (sleep/wake).</para>
 /// <para>No display (e.g. lid closed, nothing attached): <see cref="HasDisplay"/> is false, the binding stops input
 /// at the injector instead of mapping to a placeholder, and it is logged once until a display returns.</para>
 /// </remarks>
@@ -112,20 +112,20 @@ public sealed class DisplayTargetResolver : IDisposable
     }
 
     /// <summary>
-    /// Applies <see cref="Target"/> to <paramref name="server"/> now and on every change, until the returned handle is
-    /// disposed. This is the reconfiguration path that updates the server's coordinate mapper. While no display exists
-    /// the server keeps its last target and <paramref name="injector"/> drops input
+    /// Applies <see cref="Target"/> through <see cref="ServerHost.SetTarget"/> now and on every change, until the
+    /// returned handle is disposed. This is the reconfiguration path that updates the server's coordinate mapper.
+    /// While no display exists the host keeps its last target and <paramref name="injector"/> drops input
     /// (<see cref="CGEventTabletInjector.IsTargetAvailable"/>).
     /// </summary>
-    /// <param name="server">The server whose target display to drive.</param>
-    /// <param name="injector">The server's sink, gated while no display exists.</param>
+    /// <param name="host">The host whose target display to drive (main thread, like this resolver).</param>
+    /// <param name="injector">The host's injector, gated while no display exists.</param>
     /// <param name="region">Sub-region of the display (ADR-0005); the whole display by default.</param>
-    public IDisposable Bind(PenBridgeServer server, CGEventTabletInjector injector, NormalizedRect? region = null)
+    public IDisposable Bind(ServerHost host, CGEventTabletInjector injector, NormalizedRect? region = null)
     {
-        ArgumentNullException.ThrowIfNull(server);
+        ArgumentNullException.ThrowIfNull(host);
         ArgumentNullException.ThrowIfNull(injector);
         RequireMainThread();
-        return new Binding(this, server, injector, region ?? NormalizedRect.Full);
+        return new Binding(this, host, injector, region ?? NormalizedRect.Full);
     }
 
     public void Dispose()
@@ -276,15 +276,15 @@ public sealed class DisplayTargetResolver : IDisposable
     private sealed class Binding : IDisposable
     {
         private readonly DisplayTargetResolver _resolver;
-        private readonly PenBridgeServer _server;
+        private readonly ServerHost _host;
         private readonly CGEventTabletInjector _injector;
         private readonly NormalizedRect _region;
         private bool _disposed;
 
-        public Binding(DisplayTargetResolver resolver, PenBridgeServer server, CGEventTabletInjector injector, NormalizedRect region)
+        public Binding(DisplayTargetResolver resolver, ServerHost host, CGEventTabletInjector injector, NormalizedRect region)
         {
             _resolver = resolver;
-            _server = server;
+            _host = host;
             _injector = injector;
             _region = region;
             resolver.TargetChanged += OnTargetChanged;
@@ -310,7 +310,7 @@ public sealed class DisplayTargetResolver : IDisposable
                 return;
             }
 
-            _server.SetTarget(_resolver.Target.Bounds, _region);
+            _host.SetTarget(_resolver.Target.Bounds, _region);
             _injector.IsTargetAvailable = true;
         }
     }

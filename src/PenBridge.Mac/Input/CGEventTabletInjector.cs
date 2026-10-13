@@ -7,6 +7,7 @@ using Foundation;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using PenBridge.Core.Input;
+using PenBridge.Mac.Services;
 
 namespace PenBridge.Mac.Input;
 
@@ -16,11 +17,12 @@ namespace PenBridge.Mac.Input;
 /// right-click (ADR-0016). Gesture events are accepted and ignored until Phase 4.
 /// </summary>
 /// <remarks>
-/// <para><b>Threading.</b> <see cref="OnPenEvent"/>/<see cref="OnGestureEvent"/> are called by
-/// <c>PenBridgeServer</c> on thread-pool threads (UDP loop, TLS handler, watchdog timer), serialized by the server's
-/// input lock. <see cref="ReleaseAll"/>, <see cref="IsPaused"/>, <see cref="IsTargetAvailable"/> and the Accessibility
-/// members may be called from any thread (typically the main thread). An internal lock serializes planning and
-/// posting, so the posted button state is never torn; it is uncontended on the hot path. CGEventPost is thread-safe
+/// <para><b>Threading.</b> <see cref="ServerHost"/> wraps the injector in a <see cref="PausableInputSink"/>, so
+/// <see cref="OnPenEvent"/>/<see cref="OnGestureEvent"/> (thread-pool threads: UDP loop, TLS handler, watchdog timer)
+/// and the pause path's <see cref="ReleaseAll"/> arrive serialized under that sink's lock. <see cref="IsTargetAvailable"/>
+/// (main thread, from <see cref="DisplayTargetResolver.Bind"/>) and the Accessibility repair are not under that lock,
+/// so an internal lock also serializes planning and posting; it is always taken last and never calls out, so the
+/// lock order is fixed (pause gate, then injector) and it is uncontended on the hot path. CGEventPost is thread-safe
 /// and never touches AppKit. <see cref="AccessibilityChanged"/> is always raised on the main thread.</para>
 /// <para><b>Split.</b> The translation rules (<see cref="TabletEventPlanner"/>) and unit math
 /// (<see cref="TabletEventMath"/>) are platform-free and tested in Core; this class only builds and posts CGEvents.</para>
@@ -36,11 +38,13 @@ namespace PenBridge.Mac.Input;
 /// window server's real button state (which may still hold a press from before the revoke) is released. The grant is
 /// re-checked on every proximity enter, on the system's Accessibility broadcast and on
 /// <see cref="RefreshAccessibility"/> (for example when the menu opens) — never by polling.</para>
+/// <para><b>Pause</b> is <see cref="PausableInputSink"/>'s job (it calls <see cref="ReleaseAll"/>, then drops input
+/// until a resync point); the injector has no pause state of its own.</para>
 /// <para><b>Safety.</b> Leave, pause, a missing display, disconnect (the server's synthesized release) and
 /// <see cref="ReleaseAll"/> post every outstanding up and the proximity leave. Each post stands alone: a failure
 /// does not skip the remaining releases, and the failed step is reverted in the planner state so it is retried.</para>
 /// </remarks>
-public sealed class CGEventTabletInjector : IInputSink, IDisposable
+public sealed class CGEventTabletInjector : IReleasableInputSink, IDisposable
 {
     /// <summary>The System Settings pane where the user grants Accessibility.</summary>
     public const string AccessibilitySettingsUrl = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
@@ -81,7 +85,6 @@ public sealed class CGEventTabletInjector : IInputSink, IDisposable
     private long _mouseEventNumber;
     private DisplayPoint _lastPoint;
     private PenSample _lastSample;
-    private bool _paused;
     private bool _targetAvailable = true;
     private bool _postsDropped;
     private bool _disposed;
@@ -115,36 +118,6 @@ public sealed class CGEventTabletInjector : IInputSink, IDisposable
 
     /// <summary>True when the Accessibility grant is missing: pen events are not posted. Show "Grant Accessibility…".</summary>
     public bool AccessibilityMissing => !_trusted;
-
-    /// <summary>
-    /// When true, everything posted is released and pen events are dropped (the session stays connected). Resuming
-    /// re-enters proximity on the next event; a stroke in progress continues as hover until the next pen-down.
-    /// </summary>
-    public bool IsPaused
-    {
-        get
-        {
-            lock (_gate)
-            {
-                return _paused;
-            }
-        }
-
-        set
-        {
-            lock (_gate)
-            {
-                if (_paused != value)
-                {
-                    _paused = value;
-                    if (value)
-                    {
-                        ReleaseLocked();
-                    }
-                }
-            }
-        }
-    }
 
     /// <summary>
     /// False while no display is available to map to (set by <see cref="DisplayTargetResolver.Bind"/>): everything
@@ -228,10 +201,11 @@ public sealed class CGEventTabletInjector : IInputSink, IDisposable
         return RefreshAccessibility();
     }
 
-    /// <summary>
-    /// Posts left-up, right-up and proximity-leave for anything still posted (pause, disconnect, quit). Idempotent and
-    /// safe from any thread.
-    /// </summary>
+    /// <inheritdoc />
+    /// <remarks>
+    /// Posts left-up, right-up and proximity-leave for anything still posted (pause, quit). Idempotent and safe from
+    /// any thread. The next event re-enters proximity first (the planner ensures it even without a resync).
+    /// </remarks>
     public void ReleaseAll()
     {
         lock (_gate)
@@ -246,7 +220,7 @@ public sealed class CGEventTabletInjector : IInputSink, IDisposable
         bool trusted = e.Kind == PenEventKind.ProximityEnter ? RefreshAccessibility() : _trusted;
         lock (_gate)
         {
-            if (_paused || !_targetAvailable || _disposed)
+            if (!_targetAvailable || _disposed)
             {
                 return;
             }
