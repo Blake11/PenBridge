@@ -16,6 +16,13 @@
   <string>public.app-category.graphics-design</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
+  <!-- Local-network privacy (macOS 15+): shown when PenBridge first uses the LAN (Bonjour advert, phone connections). -->
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>PenBridge listens on your local network so your phone can connect and draw on this Mac.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_penbridge._tcp</string>
+  </array>
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © 2026 Paul Ciurea. MIT License.</string>
 </dict>

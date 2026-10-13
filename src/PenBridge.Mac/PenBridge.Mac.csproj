@@ -13,8 +13,15 @@
     <RootNamespace>PenBridge.Mac</RootNamespace>
     <!-- Apple delegate types (AppDelegate, SceneDelegate) end in "Delegate" by convention. -->
     <NoWarn>$(NoWarn);CA1711</NoWarn>
+    <!-- [LibraryImport] (AXIsProcessTrusted) generates unsafe marshalling stubs. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <CodesignEntitlements>Entitlements.plist</CodesignEntitlements>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Direct reference so the [LoggerMessage] source generator runs here (analyzers don't flow through ProjectReference). -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\PenBridge.Core\PenBridge.Core.csproj" />

@@ -53,3 +53,11 @@ scripts/mac-run.sh -- <dotnet build args>   # e.g. -- -p:ValidateXcodeVersion=fa
 - Pressure 0..1 in `kCGTabletEventPointPressure` (subtype `TabletPoint`) and `kCGMouseEventPressure`; tilt −1..1.
 - While down use `LeftMouseDragged`, not `MouseMoved`; unmatched down/up leaves apps stuck (150 ms pen-up watchdog covers packet loss).
 - Sanity-check in Preview/Notes (mouse behaviour) and on multiple displays/regions.
+
+## Mac services notes (`src/PenBridge.Mac/Services`)
+- **Bonjour** uses the DNS-SD C API (`DNSServiceRegister` + `DNSServiceSetDispatchQueue` on the main queue, static `[UnmanagedCallersOnly]` reply callback; NativeAOT-clean). `NSNetService`/`NSHost` are obsoleted (CA1422 = build error). Check with `dns-sd -B _penbridge._tcp` and `dns-sd -L "<name>" _penbridge._tcp local`.
+- **Instance name ≤ 63 UTF-8 bytes** (one DNS label), cut on a code-point boundary (`Utf8Text.Truncate`); the TXT `name` may be up to 250 bytes. Non-ASCII computer names ("Paul’s MacBook Pro", CJK, emoji) hit the label limit fast.
+- Reply errors (mDNSResponder restart) → deallocate + re-register with 1→30 s backoff (one-shot `DispatchAfter`, no polling). Computer-name changes come from an `SCDynamicStore` notification on the computer-name key.
+- **Keychain**: login (file-based) keychain; `kSecAttrAccessible` is ignored there. The first access by a newly signed/copied bundle can block for 10–50 s (securityd re-validates the signature, maybe a hidden "wants to use confidential information" prompt) → keep Keychain I/O off the main thread.
+- **os_log**: `OSLogLevel.Info` entries aren't persisted by default; map Information → Default. Use `/usr/bin/log` in scripts (zsh has a `log` builtin).
+- Parallel agents: `mac-run.sh` does `pkill -x PenBridge`; to test alongside another worktree's build, copy the .app, rename `Contents/MacOS/PenBridge` + `CFBundleExecutable`, and re-sign with `scripts/mac-sign.sh`.
