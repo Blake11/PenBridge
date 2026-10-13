@@ -28,9 +28,13 @@ public enum PairingState
 /// <para><b>Message order</b> (the protocol layer carries the blobs opaquely):
 /// C→S Round1 (+ secretKind) · S→C Round1 · C→S Round2 · S→C Round2 · C→S Confirm · S→C Confirm.
 /// The server verifies the client's confirmation before it may create its own.</para>
-/// <para><b>Server:</b> on the client's Round1, get the secret from <see cref="PinIssuer.TryBeginAttempt"/>,
-/// construct the session, call <see cref="CreateRound1"/> then <see cref="TryProcessPeerRound1"/>, and so on.
-/// Report the result with <see cref="PinAttempt.Complete"/>.</para>
+/// <para><b>Server:</b> on the client's Round1, get a <see cref="PinAttempt"/> from
+/// <see cref="PinIssuer.TryBeginAttempt"/> (map a refusal to <c>PairResult</c>), create the session with
+/// <see cref="ForServer"/>, which takes ownership of the attempt, then call <see cref="CreateRound1"/>,
+/// <see cref="TryProcessPeerRound1"/>, and so on. <see cref="TryVerifyPeerConfirm"/> completes the attempt
+/// and succeeds only if the issuer returns <see cref="PairingOutcome.Ok"/>, so a late (expired) or
+/// invalidated attempt can never produce a server confirmation. Send <see cref="AttemptResult"/> as
+/// <c>PairResult</c>. Any failure or <see cref="Dispose"/> completes the attempt as failed.</para>
 /// <para><b>Wire encoding</b> (all integers unsigned big-endian, fixed width; E = 384, S = 32):
 /// Round1 = gx1(E) ‖ gx2(E) ‖ zkp1.gv(E) ‖ zkp1.r(S) ‖ zkp2.gv(E) ‖ zkp2.r(S) = 1600 B.
 /// Round2 = A(E) ‖ zkp.gv(E) ‖ zkp.r(S) = 800 B. Confirm = 32 B. Any other length is rejected.
@@ -67,6 +71,7 @@ public sealed class PairingSession : IDisposable
     public static int Round2Length { get; } = (2 * ElementLength) + ScalarLength;
 
     private readonly PairingRole _role;
+    private readonly PinAttempt? _attempt;
     private readonly PairingSecretKind _kind;
     private readonly JPakeParticipant _participant;
     private readonly string _peerId;
@@ -84,14 +89,13 @@ public sealed class PairingSession : IDisposable
     private bool _ownConfirmSent;
     private bool _peerConfirmChecked;
 
-    /// <summary>Creates a session.</summary>
-    /// <param name="role">This side's role.</param>
+    /// <summary>Creates a client session. Server sessions must use <see cref="ForServer"/>.</summary>
+    /// <param name="role">Must be <see cref="PairingRole.Client"/>.</param>
     /// <param name="kind">Secret kind; the client sends it with its Round1.</param>
     /// <param name="secret">Pin: the 6 ASCII digits. QrToken: the raw 32-byte token.</param>
     /// <param name="deviceId">The phone's id from Hello.</param>
     /// <param name="challenge">The 32-byte challenge from HelloAck.</param>
-    /// <param name="certificateFingerprint">Server: its own certificate fingerprint. Client: the fingerprint
-    /// of the certificate presented on this TLS connection.</param>
+    /// <param name="certificateFingerprint">The fingerprint of the certificate presented on this TLS connection.</param>
     /// <param name="random">Randomness source; defaults to the OS CSPRNG.</param>
     public PairingSession(
         PairingRole role,
@@ -101,11 +105,48 @@ public sealed class PairingSession : IDisposable
         ReadOnlySpan<byte> challenge,
         ReadOnlySpan<byte> certificateFingerprint,
         SecureRandom? random = null)
+        : this(role == PairingRole.Client ? role : throw new ArgumentOutOfRangeException(nameof(role), "Use ForServer for the server role."),
+               kind, secret, deviceId, challenge, certificateFingerprint, random, attempt: null)
     {
-        if (role is not (PairingRole.Client or PairingRole.Server))
+    }
+
+    /// <summary>
+    /// Creates a server session that owns <paramref name="attempt"/> (its secret and kind), completing it
+    /// at key confirmation, on failure, or on dispose.
+    /// </summary>
+    /// <param name="attempt">The attempt from <see cref="PinIssuer.TryBeginAttempt"/>; must not be completed.</param>
+    /// <param name="deviceId">The phone's id from Hello.</param>
+    /// <param name="challenge">The 32-byte challenge sent in HelloAck.</param>
+    /// <param name="ownCertificateFingerprint">The server's own certificate fingerprint.</param>
+    /// <param name="random">Randomness source; defaults to the OS CSPRNG.</param>
+    public static PairingSession ForServer(
+        PinAttempt attempt,
+        Guid deviceId,
+        ReadOnlySpan<byte> challenge,
+        ReadOnlySpan<byte> ownCertificateFingerprint,
+        SecureRandom? random = null)
+    {
+        ArgumentNullException.ThrowIfNull(attempt);
+        if (attempt.Result is not null)
         {
-            throw new ArgumentOutOfRangeException(nameof(role));
+            throw new ArgumentException("Attempt already completed.", nameof(attempt));
         }
+
+        return new PairingSession(
+            PairingRole.Server, attempt.Kind, attempt.Secret, deviceId, challenge, ownCertificateFingerprint, random, attempt);
+    }
+
+    private PairingSession(
+        PairingRole role,
+        PairingSecretKind kind,
+        ReadOnlySpan<byte> secret,
+        Guid deviceId,
+        ReadOnlySpan<byte> challenge,
+        ReadOnlySpan<byte> certificateFingerprint,
+        SecureRandom? random,
+        PinAttempt? attempt)
+    {
+        _attempt = attempt;
 
         KeySchedule.RequireLength(challenge, ChallengeLength, nameof(challenge));
         KeySchedule.RequireLength(certificateFingerprint, CertificateFingerprint.Length, nameof(certificateFingerprint));
@@ -144,6 +185,9 @@ public sealed class PairingSession : IDisposable
 
     /// <summary>Current state.</summary>
     public PairingState State { get; private set; }
+
+    /// <summary>Server: the issuer's verdict once the attempt has completed (send as <c>PairResult</c>).</summary>
+    public PairingResult? AttemptResult => _attempt?.Result;
 
     /// <summary>Creates this side's Round1 blob.</summary>
     public byte[] CreateRound1()
@@ -307,6 +351,12 @@ public sealed class PairingSession : IDisposable
             return Fail();
         }
 
+        // Complete before confirming: the issuer may still say Expired (late) or the window may have closed.
+        if (_attempt is not null && _attempt.Complete(true).Outcome != PairingOutcome.Ok)
+        {
+            return Fail();
+        }
+
         State = PairingState.Confirmed;
         ZeroConfirmKeyIfDone();
         return true;
@@ -324,9 +374,10 @@ public sealed class PairingSession : IDisposable
         _deviceKey.CopyTo(destination);
     }
 
-    /// <summary>Zeroes key material.</summary>
+    /// <summary>Zeroes key material; a server attempt still open completes as failed.</summary>
     public void Dispose()
     {
+        _attempt?.Complete(false);
         CryptographicOperations.ZeroMemory(_deviceKey);
         CryptographicOperations.ZeroMemory(_confirmKey);
     }
@@ -429,6 +480,7 @@ public sealed class PairingSession : IDisposable
     private bool Fail()
     {
         State = PairingState.Failed;
+        _attempt?.Complete(false);
         CryptographicOperations.ZeroMemory(_deviceKey);
         CryptographicOperations.ZeroMemory(_confirmKey);
         return false;
@@ -470,6 +522,7 @@ public sealed class PairingSession : IDisposable
             Span<byte> slot = _buffer.Slice(_offset, width);
             slot[..(width - bytes.Length)].Clear();
             bytes.CopyTo(slot[(width - bytes.Length)..]);
+            CryptographicOperations.ZeroMemory(bytes);
             _offset += width;
         }
     }

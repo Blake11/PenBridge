@@ -14,15 +14,16 @@ public class PairingTests
         PinIssuer issuer,
         PairingSecretKind kind,
         byte[] clientSecret,
-        byte[]? clientSeesFingerprint = null)
+        byte[]? clientSeesFingerprint = null,
+        Action? beforeServerVerify = null)
     {
         var client = new PairingSession(PairingRole.Client, kind, clientSecret, DeviceId, _challenge, clientSeesFingerprint ?? _serverFp);
         byte[] c1 = client.CreateRound1();
 
         Assert.Equal(PairingAttemptStart.Started, issuer.TryBeginAttempt(kind, out PinAttempt? attempt));
-        using (attempt)
+        var server = PairingSession.ForServer(attempt!, DeviceId, _challenge, _serverFp);
+        // Not disposed here: tests read K_dev afterwards. Verify/Fail already completed the attempt.
         {
-            var server = new PairingSession(PairingRole.Server, kind, attempt!.Secret, DeviceId, _challenge, _serverFp);
             byte[] s1 = server.CreateRound1();
             Assert.True(server.TryProcessPeerRound1(c1));
             Assert.True(client.TryProcessPeerRound1(s1));
@@ -33,29 +34,39 @@ public class PairingTests
             Assert.True(client.TryProcessPeerRound2(s2));
 
             byte[] cConfirm = client.CreateConfirm();
+            beforeServerVerify?.Invoke();
             if (!server.TryVerifyPeerConfirm(cConfirm))
             {
                 Assert.Equal(PairingState.Failed, server.State);
-                return (attempt.Complete(false), client, server);
+                Assert.Throws<InvalidOperationException>(() => server.CreateConfirm()); // never confirms
+                return (server.AttemptResult!.Value, client, server);
             }
 
             byte[] sConfirm = server.CreateConfirm();
             Assert.True(client.TryVerifyPeerConfirm(sConfirm));
-            return (attempt.Complete(true), client, server);
+            return (server.AttemptResult!.Value, client, server);
         }
     }
 
     private static byte[] Ascii(string s) => Encoding.ASCII.GetBytes(s);
 
-    private static string WrongPin(string pin) => pin == "000000" ? "000001" : "000000";
+    private static string WrongPin(string? pin) => pin == "000000" ? "000001" : "000000";
+
+    private static PinIssuer Open(ManualTimeProvider time, Func<int>? pins = null)
+    {
+        int n = 0;
+        var issuer = new PinIssuer(time, pins ?? (() => (++n * 135791) % 1_000_000));
+        issuer.OpenPairingWindow();
+        return issuer;
+    }
 
     [Fact]
     public void Pin_pairing_succeeds_and_both_sides_derive_the_same_device_key()
     {
-        var issuer = new PinIssuer(new ManualTimeProvider());
-        string pin = issuer.CurrentPin;
+        var issuer = Open(new ManualTimeProvider());
+        string pin = issuer.CurrentPin!;
 
-        var (result, client, server) = Run(issuer, PairingSecretKind.Pin, Ascii(pin));
+        var (result, client, server) = Run(issuer, PairingSecretKind.Pin, Ascii(pin!));
 
         Assert.Equal(PairingOutcome.Ok, result.Outcome);
         Assert.Equal(PairingState.Confirmed, client.State);
@@ -65,14 +76,16 @@ public class PairingTests
         server.CopyDeviceKey(ks);
         Assert.Equal(kc, ks);
         Assert.NotEqual(new byte[32], kc);
-        Assert.NotEqual(pin, issuer.CurrentPin); // one-time: consumed on success
+        Assert.Null(issuer.CurrentPin); // one-time: consumed, window closed
+        Assert.False(issuer.IsWindowOpen);
+        Assert.Equal(PairingAttemptStart.WindowClosed, issuer.TryBeginAttempt(PairingSecretKind.Pin, out _));
     }
 
     [Fact]
     public void Qr_token_pairing_succeeds()
     {
-        var issuer = new PinIssuer(new ManualTimeProvider());
-        byte[] token = System.Buffers.Text.Base64Url.DecodeFromChars(issuer.CurrentQrTokenBase64Url);
+        var issuer = Open(new ManualTimeProvider());
+        byte[] token = System.Buffers.Text.Base64Url.DecodeFromChars(issuer.CurrentQrTokenBase64Url!);
         Assert.Equal(32, token.Length);
 
         var (result, client, _) = Run(issuer, PairingSecretKind.QrToken, token);
@@ -84,7 +97,7 @@ public class PairingTests
     [Fact]
     public void Wrong_qr_token_fails()
     {
-        var issuer = new PinIssuer(new ManualTimeProvider());
+        var issuer = Open(new ManualTimeProvider());
         var (result, _, server) = Run(issuer, PairingSecretKind.QrToken, new byte[32]);
         Assert.Equal(PairingOutcome.Failed, result.Outcome);
         Assert.Equal(PairingState.Failed, server.State);
@@ -94,9 +107,9 @@ public class PairingTests
     public void Pin_digits_do_not_work_as_a_qr_secret_kind()
     {
         // Same kind on both ends but the client claims QrToken: the server feeds the token, not the PIN.
-        var issuer = new PinIssuer(new ManualTimeProvider());
+        var issuer = Open(new ManualTimeProvider());
         byte[] pinAsToken = new byte[32];
-        Ascii(issuer.CurrentPin).CopyTo(pinAsToken, 0);
+        Ascii(issuer.CurrentPin!).CopyTo(pinAsToken, 0);
         var (result, _, _) = Run(issuer, PairingSecretKind.QrToken, pinAsToken);
         Assert.Equal(PairingOutcome.Failed, result.Outcome);
     }
@@ -104,8 +117,8 @@ public class PairingTests
     [Fact]
     public void Wrong_pin_fails_at_server_confirmation_with_attempts_left()
     {
-        var issuer = new PinIssuer(new ManualTimeProvider());
-        string pin = issuer.CurrentPin;
+        var issuer = Open(new ManualTimeProvider());
+        string pin = issuer.CurrentPin!;
 
         var (result, client, server) = Run(issuer, PairingSecretKind.Pin, Ascii(WrongPin(pin)));
 
@@ -121,8 +134,9 @@ public class PairingTests
     public void Three_failures_lock_out_and_regenerate_the_pin()
     {
         int seq = 0;
-        var issuer = new PinIssuer(new ManualTimeProvider(), () => 111111 * (++seq % 9));
-        string pin = issuer.CurrentPin;
+        var time = new ManualTimeProvider();
+        var issuer = Open(time, () => 111111 * (++seq % 9));
+        string pin = issuer.CurrentPin!;
         int changed = 0;
         issuer.SecretsChanged += (_, _) => changed++;
 
@@ -133,48 +147,57 @@ public class PairingTests
         Assert.Equal(1, changed);
         Assert.NotEqual(pin, issuer.CurrentPin);
         Assert.Equal(3, issuer.AttemptsLeft);
+        Assert.Equal(time.GetUtcNow() + TimeSpan.FromSeconds(30), issuer.LockedUntil);
+        Assert.Equal(PairingAttemptStart.LockedOut, issuer.TryBeginAttempt(PairingSecretKind.Pin, out PinAttempt? none));
+        Assert.Null(none);
 
-        // The old PIN is now useless even if guessed correctly.
-        Assert.Equal(PairingOutcome.Failed, Run(issuer, PairingSecretKind.Pin, Ascii(pin)).Result.Outcome);
+        // After the backoff, the old PIN is useless even if guessed correctly.
+        time.Advance(TimeSpan.FromSeconds(30));
+        Assert.Equal(PairingOutcome.Failed, Run(issuer, PairingSecretKind.Pin, Ascii(pin!)).Result.Outcome);
     }
 
     [Fact]
     public void Expired_pin_is_rejected_and_replaced()
     {
         var time = new ManualTimeProvider();
-        var issuer = new PinIssuer(time, () => 123456);
+        var issuer = Open(time, () => 123456);
         Assert.Equal("123456", issuer.CurrentPin);
         Assert.Equal(time.GetUtcNow() + TimeSpan.FromMinutes(2), issuer.ExpiresAt);
 
         time.Advance(TimeSpan.FromMinutes(2));
         Assert.Equal(PairingAttemptStart.Expired, issuer.TryBeginAttempt(PairingSecretKind.Pin, out PinAttempt? attempt));
         Assert.Null(attempt);
-        Assert.Equal(time.GetUtcNow() + TimeSpan.FromMinutes(2), issuer.ExpiresAt);
+        Assert.False(issuer.IsWindowOpen);
+        Assert.Null(issuer.CurrentPin);
+        Assert.Equal(PairingAttemptStart.WindowClosed, issuer.TryBeginAttempt(PairingSecretKind.Pin, out _));
 
+        issuer.OpenPairingWindow();
         time.Advance(TimeSpan.FromSeconds(119));
         Assert.Equal(PairingAttemptStart.Started, issuer.TryBeginAttempt(PairingSecretKind.Pin, out attempt));
         attempt!.Dispose();
     }
 
     [Fact]
-    public void Display_access_after_expiry_regenerates()
+    public void Display_access_after_expiry_closes_the_window()
     {
         var time = new ManualTimeProvider();
         int n = 0;
-        var issuer = new PinIssuer(time, () => ++n);
+        var issuer = Open(time, () => ++n);
         Assert.Equal("000001", issuer.CurrentPin);
-        string token = issuer.CurrentQrTokenBase64Url;
+        Assert.NotNull(issuer.CurrentQrTokenBase64Url);
         time.Advance(TimeSpan.FromMinutes(3));
+        Assert.Null(issuer.CurrentPin);
+        Assert.Null(issuer.CurrentQrTokenBase64Url);
+        issuer.OpenPairingWindow();
         Assert.Equal("000002", issuer.CurrentPin);
-        Assert.NotEqual(token, issuer.CurrentQrTokenBase64Url);
     }
 
     [Fact]
     public void Regenerated_mid_attempt_reports_expired_without_striking_the_new_pin()
     {
-        var issuer = new PinIssuer(new ManualTimeProvider());
+        var issuer = Open(new ManualTimeProvider());
         Assert.Equal(PairingAttemptStart.Started, issuer.TryBeginAttempt(PairingSecretKind.Pin, out PinAttempt? attempt));
-        issuer.Regenerate();
+        issuer.OpenPairingWindow(); // reopened: new secrets
         Assert.Equal(PairingOutcome.Expired, attempt!.Complete(true).Outcome);
         Assert.Equal(3, issuer.AttemptsLeft);
     }
@@ -182,7 +205,7 @@ public class PairingTests
     [Fact]
     public void Only_one_attempt_at_a_time_and_abandoned_attempt_costs_a_strike()
     {
-        var issuer = new PinIssuer(new ManualTimeProvider());
+        var issuer = Open(new ManualTimeProvider());
         Assert.Equal(PairingAttemptStart.Started, issuer.TryBeginAttempt(PairingSecretKind.Pin, out PinAttempt? first));
         Assert.Equal(PairingAttemptStart.Busy, issuer.TryBeginAttempt(PairingSecretKind.QrToken, out PinAttempt? second));
         Assert.Null(second);
@@ -201,13 +224,13 @@ public class PairingTests
         var issuer = new PinIssuer(new ManualTimeProvider());
         for (int i = 0; i < 50; i++)
         {
-            string pin = issuer.CurrentPin;
+            issuer.OpenPairingWindow();
+            string pin = issuer.CurrentPin!;
             Assert.Equal(6, pin.Length);
             Assert.All(pin, c => Assert.True(char.IsAsciiDigit(c)));
-            issuer.Regenerate();
         }
 
-        Assert.Equal("000042", new PinIssuer(new ManualTimeProvider(), () => 42).CurrentPin);
+        Assert.Equal("000042", Open(new ManualTimeProvider(), () => 42).CurrentPin);
     }
 
     [Fact]
@@ -215,10 +238,10 @@ public class PairingTests
     {
         // The relay forwards every pairing byte verbatim, but the phone's TLS session terminates at
         // the relay, so the phone sees the relay's certificate fingerprint, not the Mac's.
-        var issuer = new PinIssuer(new ManualTimeProvider());
+        var issuer = Open(new ManualTimeProvider());
         byte[] relayFp = KeyScheduleTests.Fill(32, 99);
 
-        var (result, _, server) = Run(issuer, PairingSecretKind.Pin, Ascii(issuer.CurrentPin), relayFp);
+        var (result, _, server) = Run(issuer, PairingSecretKind.Pin, Ascii(issuer.CurrentPin!), relayFp);
 
         Assert.Equal(PairingOutcome.Failed, result.Outcome);
         Assert.Equal(PairingState.Failed, server.State);
@@ -230,7 +253,8 @@ public class PairingTests
         // A server whose transcript differs (different challenge) produces a confirm the client rejects.
         byte[] pin = Ascii("424242");
         var client = new PairingSession(PairingRole.Client, PairingSecretKind.Pin, pin, DeviceId, _challenge, _serverFp);
-        var server = new PairingSession(PairingRole.Server, PairingSecretKind.Pin, pin, DeviceId, KeyScheduleTests.Fill(32, 1), _serverFp);
+        Open(new ManualTimeProvider(), () => 424242).TryBeginAttempt(PairingSecretKind.Pin, out PinAttempt? attempt);
+        var server = PairingSession.ForServer(attempt!, DeviceId, KeyScheduleTests.Fill(32, 1), _serverFp);
         Exchange(client, server);
 
         // The server would reject the client's confirm; force-check the client side with a forged MAC.
@@ -331,8 +355,109 @@ public class PairingTests
         Assert.Throws<ArgumentOutOfRangeException>(() => PairingSession.EncodeSecret((PairingSecretKind)9, new byte[6]));
     }
 
-    private PairingSession NewServer() =>
-        new(PairingRole.Server, PairingSecretKind.Pin, Ascii("424242"), DeviceId, _challenge, _serverFp);
+    [Fact]
+    public void Attempts_outside_the_pairing_window_are_refused_without_a_strike()
+    {
+        var issuer = new PinIssuer(new ManualTimeProvider());
+        Assert.False(issuer.IsWindowOpen);
+        Assert.Null(issuer.CurrentPin);
+        Assert.Equal(PairingAttemptStart.WindowClosed, issuer.TryBeginAttempt(PairingSecretKind.Pin, out PinAttempt? a));
+        Assert.Null(a);
+        Assert.Equal(PairingAttemptStart.WindowClosed, issuer.TryBeginAttempt(PairingSecretKind.QrToken, out _));
+        Assert.Equal(3, issuer.AttemptsLeft);
+
+        issuer.OpenPairingWindow();
+        Assert.NotNull(issuer.CurrentPin);
+        issuer.ClosePairingWindow();
+        Assert.Null(issuer.CurrentPin);
+        Assert.Equal(PairingAttemptStart.WindowClosed, issuer.TryBeginAttempt(PairingSecretKind.Pin, out _));
+        issuer.OpenPairingWindow();
+        Assert.NotNull(issuer.CurrentPin);
+    }
+
+    [Fact]
+    public void Lockout_backoff_doubles_to_a_cap_and_resets_only_on_success()
+    {
+        var time = new ManualTimeProvider();
+        var issuer = Open(time);
+        TimeSpan[] expected = [TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(120),
+            TimeSpan.FromSeconds(240), TimeSpan.FromSeconds(480), TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(10)];
+
+        foreach (TimeSpan backoff in expected)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                Assert.Equal(PairingAttemptStart.Started, issuer.TryBeginAttempt(PairingSecretKind.Pin, out PinAttempt? a));
+                a!.Complete(false);
+            }
+
+            Assert.Equal(time.GetUtcNow() + backoff, issuer.LockedUntil);
+            time.Advance(backoff - TimeSpan.FromSeconds(1));
+            issuer.OpenPairingWindow(); // reopening does not lift the backoff
+            Assert.Equal(PairingAttemptStart.LockedOut, issuer.TryBeginAttempt(PairingSecretKind.Pin, out _));
+            time.Advance(TimeSpan.FromSeconds(1));
+        }
+
+        // Success resets the backoff ladder.
+        Assert.Equal(PairingOutcome.Ok, Run(issuer, PairingSecretKind.Pin, Ascii(issuer.CurrentPin!)).Result.Outcome);
+        issuer.OpenPairingWindow();
+        for (int i = 0; i < 3; i++)
+        {
+            issuer.TryBeginAttempt(PairingSecretKind.Pin, out PinAttempt? a);
+            a!.Complete(false);
+        }
+
+        Assert.Equal(time.GetUtcNow() + TimeSpan.FromSeconds(30), issuer.LockedUntil);
+    }
+
+    [Fact]
+    public void Attempt_completing_after_expiry_never_produces_a_server_confirm()
+    {
+        var time = new ManualTimeProvider();
+        var issuer = Open(time);
+        var (result, client, server) = Run(
+            issuer, PairingSecretKind.Pin, Ascii(issuer.CurrentPin!), beforeServerVerify: () => time.Advance(TimeSpan.FromMinutes(2)));
+
+        Assert.Equal(PairingOutcome.Expired, result.Outcome);
+        Assert.Equal(PairingState.Failed, server.State);
+        Assert.Equal(PairingState.InProgress, client.State);
+        Assert.False(issuer.IsWindowOpen);
+    }
+
+    [Fact]
+    public void Attempt_invalidated_by_window_close_never_produces_a_server_confirm()
+    {
+        var issuer = Open(new ManualTimeProvider());
+        var (result, _, server) = Run(
+            issuer, PairingSecretKind.Pin, Ascii(issuer.CurrentPin!), beforeServerVerify: issuer.ClosePairingWindow);
+
+        Assert.Equal(PairingOutcome.Expired, result.Outcome);
+        Assert.Equal(PairingState.Failed, server.State);
+    }
+
+    [Fact]
+    public void Server_session_completes_its_attempt_on_failure_or_dispose()
+    {
+        var issuer = Open(new ManualTimeProvider());
+        issuer.TryBeginAttempt(PairingSecretKind.Pin, out PinAttempt? a);
+        var server = PairingSession.ForServer(a!, DeviceId, _challenge, _serverFp);
+        server.CreateRound1();
+        Assert.False(server.TryProcessPeerRound1(new byte[3]));
+        Assert.Equal(new PairingResult(PairingOutcome.Failed, 2), server.AttemptResult);
+
+        issuer.TryBeginAttempt(PairingSecretKind.Pin, out a);
+        PairingSession.ForServer(a!, DeviceId, _challenge, _serverFp).Dispose();
+        Assert.Equal(1, issuer.AttemptsLeft);
+        Assert.Throws<ArgumentException>(() => PairingSession.ForServer(a!, DeviceId, _challenge, _serverFp));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new PairingSession(PairingRole.Server, PairingSecretKind.Pin, Ascii("424242"), DeviceId, _challenge, _serverFp));
+    }
+
+    private PairingSession NewServer()
+    {
+        Open(new ManualTimeProvider(), () => 424242).TryBeginAttempt(PairingSecretKind.Pin, out PinAttempt? attempt);
+        return PairingSession.ForServer(attempt!, DeviceId, _challenge, _serverFp);
+    }
 
     private static void Exchange(PairingSession client, PairingSession server)
     {

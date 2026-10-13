@@ -100,7 +100,10 @@ public class ServerIdentityTests
             cts.Token);
 
         Assert.True(clientSsl.IsAuthenticated);
-        Assert.True(clientSsl.SslProtocol >= SslProtocols.Tls12);
+        TestContext.Current.TestOutputHelper?.WriteLine($"Negotiated TLS protocol: {clientSsl.SslProtocol}");
+        Assert.True(
+            clientSsl.SslProtocol is SslProtocols.Tls12 or SslProtocols.Tls13,
+            $"Expected TLS 1.2+ (ADR-0013), got {clientSsl.SslProtocol}");
         byte[] echo = [1, 2, 3, 4];
         await clientSsl.WriteAsync(echo, cts.Token);
         byte[] back = new byte[4];

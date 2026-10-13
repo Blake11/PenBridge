@@ -29,8 +29,14 @@ public enum PairingAttemptStart
     /// <summary>Another attempt is in progress (only one at a time).</summary>
     Busy,
 
-    /// <summary>The secrets had expired; new ones were generated. Maps to <c>PairResult(expired)</c>.</summary>
+    /// <summary>The pairing window expired during this call and is now closed. Maps to <c>PairResult(expired)</c>.</summary>
     Expired,
+
+    /// <summary>No pairing window is open ("Pair new device…" not shown). No strike. Maps to <c>PairResult(expired)</c>.</summary>
+    WindowClosed,
+
+    /// <summary>Lockout backoff is active (see <see cref="PinIssuer.LockedUntil"/>). No strike. Maps to <c>PairResult(failed(0))</c>.</summary>
+    LockedOut,
 }
 
 /// <summary>Outcome of a finished attempt, mapping to <c>PairResult</c>.</summary>
@@ -39,10 +45,10 @@ public enum PairingOutcome
     /// <summary>Paired. The secrets were consumed and regenerated.</summary>
     Ok,
 
-    /// <summary>Failed; see <see cref="PairingResult.AttemptsLeft"/>. At 0 the PIN was replaced.</summary>
+    /// <summary>Failed; see <see cref="PairingResult.AttemptsLeft"/>. At 0 the PIN was replaced and backoff started.</summary>
     Failed,
 
-    /// <summary>The secrets were replaced while the attempt ran (expiry or manual regenerate).</summary>
+    /// <summary>The window expired, closed or regenerated while the attempt ran. No strike.</summary>
     Expired,
 }
 
