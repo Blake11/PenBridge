@@ -67,6 +67,12 @@ internal static partial class NetLog
     [LoggerMessage(19, LogLevel.Warning, "UDP receive error: {Error}")]
     public static partial void UdpReceiveError(ILogger logger, System.Net.Sockets.SocketError error);
 
+    [LoggerMessage(20, LogLevel.Debug, "Dropped accepted connection {RemoteEndPoint}: {Error}")]
+    public static partial void AcceptFailed(ILogger logger, EndPoint? remoteEndPoint, string error);
+
+    [LoggerMessage(21, LogLevel.Error, "Input sink failed; closing the session of device {DeviceId}")]
+    public static partial void InputFault(ILogger logger, Guid deviceId, Exception exception);
+
     [LoggerMessage(30, LogLevel.Information, "Connected to '{ServerName}' over {Protocol}")]
     public static partial void ClientConnected(ILogger logger, string serverName, System.Security.Authentication.SslProtocols protocol);
 
@@ -75,6 +81,9 @@ internal static partial class NetLog
 
     [LoggerMessage(32, LogLevel.Information, "Disconnected: {Reason}")]
     public static partial void ClientDisconnected(ILogger logger, SessionEndReason reason);
+
+    [LoggerMessage(34, LogLevel.Information, "UDP probe acknowledged; switching input back to UDP")]
+    public static partial void ClientUdpRestored(ILogger logger);
 
     [LoggerMessage(33, LogLevel.Information, "Paired with server '{ServerName}'")]
     public static partial void ClientPaired(ILogger logger, string serverName);

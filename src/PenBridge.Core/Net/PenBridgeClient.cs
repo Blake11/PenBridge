@@ -34,6 +34,7 @@ public sealed class PenBridgeClient : IAsyncDisposable
 {
     private static readonly TimerCallback KeepaliveCallback = static s => ((Connection)s!).Owner.OnKeepalive((Connection)s);
     private static readonly TimerCallback AckTimeoutCallback = static s => ((Connection)s!).Owner.OnAckTimeout((Connection)s);
+    private static readonly TimerCallback ProbeCallback = static s => ((Connection)s!).Owner.OnProbe((Connection)s);
     private static readonly TimerCallback PingCallback = static s => _ = PingAsync((Connection)s!);
 
     private readonly PenBridgeClientOptions _options;
@@ -103,6 +104,18 @@ public sealed class PenBridgeClient : IAsyncDisposable
 
     /// <summary>The negotiated TLS version of the current connection (ADR-0013: 1.2 or 1.3).</summary>
     public SslProtocols NegotiatedTlsProtocol => Volatile.Read(ref _connection)?.Protocol ?? SslProtocols.None;
+
+    /// <summary>Fallback frames replaced by a newer state because the TLS writer was stalled (tests, diagnostics).</summary>
+    internal long FallbackFramesDropped
+    {
+        get
+        {
+            lock (_sendLock)
+            {
+                return _connection?.FallbackDropped ?? 0;
+            }
+        }
+    }
 
     /// <summary>Datagrams sealed so far on this connection (tests, diagnostics).</summary>
     internal long DatagramsSealed => Volatile.Read(ref _connection)?.DatagramsSealed ?? 0;
@@ -205,7 +218,7 @@ public sealed class PenBridgeClient : IAsyncDisposable
         await c.Channel.WriteAsync(surface).ConfigureAwait(false);
     }
 
-    /// <summary>Sends Bye(Normal) and closes the session.</summary>
+    /// <summary>Sends Bye(Normal) (best effort, bounded) and closes the session.</summary>
     public async Task DisconnectAsync()
     {
         if (Volatile.Read(ref _connection) is not { } c)
@@ -215,10 +228,11 @@ public sealed class PenBridgeClient : IAsyncDisposable
 
         c.LocalClose = true;
         await c.Channel.TryWriteFarewellAsync(new ByeMessage(ByeReason.Normal)).ConfigureAwait(false);
-        c.Channel.Abort();
+        c.Channel.AbortHard();
         await c.Completed.Task.ConfigureAwait(false);
     }
 
+    /// <summary>Closes at once: aborts the socket before taking any lock, so a stalled server can't delay it.</summary>
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -226,7 +240,12 @@ public sealed class PenBridgeClient : IAsyncDisposable
             return;
         }
 
-        await DisconnectAsync().ConfigureAwait(false);
+        if (Volatile.Read(ref _connection) is { } c)
+        {
+            c.LocalClose = true;
+            c.Channel.AbortHard();
+            await c.Completed.Task.ConfigureAwait(false);
+        }
     }
 
     /// <summary>Sends raw bytes on the session's UDP socket (tests: replay/tamper from the pinned source).</summary>
@@ -276,27 +295,37 @@ public sealed class PenBridgeClient : IAsyncDisposable
         uint timeUs = unchecked((uint)(_time.GetElapsedTime(c.Start).Ticks / TimeSpan.TicksPerMicrosecond));
         if (c.Transport == InputTransport.Tls)
         {
-            Span<byte> frame = c.Frame;
+            // Never blocks: the frame goes into the bounded queue drained by the fallback writer.
+            Span<byte> frame = c.ReserveFallbackSlot(out int slot);
             int n = InputPayload.Write(frame[ControlFrame.HeaderSize..], timeUs, pen, touches, history);
             ControlFrame.WriteHeader(frame, ControlMessageType.InputFrame, n);
-            return c.Channel.TryWriteFrame(frame[..(ControlFrame.HeaderSize + n)]);
+            c.CommitFallbackSlot(slot, ControlFrame.HeaderSize + n);
+            return true;
         }
 
+        SendDatagramLocked(c, timeUs, pen, touches, history);
+        if (!c.AckArmed)
+        {
+            // Fall back when UDP has been sent this long without any UdpAck (the server acks at most 1/s while
+            // datagrams arrive, so a working path re-acks well within the timeout).
+            c.AckArmed = true;
+            c.AckTimer.Change(_options.UdpAckTimeout, Timeout.InfiniteTimeSpan);
+        }
+
+        return true;
+    }
+
+    private void SendDatagramLocked(Connection c, uint timeUs, in PenSample? pen, ReadOnlySpan<TouchSample> touches, ReadOnlySpan<PenSample> history)
+    {
         Span<byte> datagram = c.Datagram;
         new InputDatagramHeader(InputDatagramOptions.None, c.SessionId, ++c.Sequence).Write(datagram);
         int payloadLength = InputPayload.Write(datagram[InputDatagramHeader.Size..], timeUs, pen, touches, history);
         int total = c.Cipher.Seal(datagram, payloadLength);
         c.DatagramsSealed++;
-        if (!c.AckArmed && !c.UdpAcked)
-        {
-            c.AckArmed = true;
-            c.AckTimer.Change(_options.UdpAckTimeout, Timeout.InfiniteTimeSpan);
-        }
-
         DatagramFilter? filter = _options.DatagramFilter;
         if (filter is not null && !filter(datagram[..total]))
         {
-            return true;
+            return;
         }
 
         try
@@ -307,8 +336,6 @@ public sealed class PenBridgeClient : IAsyncDisposable
         {
             // Lossy by design (e.g. ICMP unreachable on a connected UDP socket); the ack fallback covers a dead path.
         }
-
-        return true;
     }
 
     private void ArmKeepaliveLocked(Connection c)
@@ -348,13 +375,17 @@ public sealed class PenBridgeClient : IAsyncDisposable
     {
         lock (_sendLock)
         {
-            if (c.Closed || c.UdpAcked || c.Transport == InputTransport.Tls)
+            if (c.Closed || !c.AckArmed || c.Transport == InputTransport.Tls)
             {
                 return;
             }
 
+            c.AckArmed = false;
+            c.UdpAcked = false;
             c.Transport = InputTransport.Tls;
             NetLog.ClientTlsFallback(_log, _options.UdpAckTimeout);
+            c.StartFallbackWriter();
+            c.ProbeTimer.Change(_options.UdpProbeInterval, _options.UdpProbeInterval);
 
             // Deliver the current state over the new path right away.
             SendLocked(c, c.LastPen, c.LastTouches.AsSpan(0, c.LastTouchCount), default);
@@ -362,11 +393,46 @@ public sealed class PenBridgeClient : IAsyncDisposable
         }
     }
 
-    private void OnUdpAck(Connection c)
+    /// <summary>In fallback: sends the current state as one UDP datagram; an ack covering it switches back to UDP.</summary>
+    private void OnProbe(Connection c)
     {
         lock (_sendLock)
         {
+            if (c.Closed || c.Transport != InputTransport.Tls)
+            {
+                return;
+            }
+
+            uint timeUs = unchecked((uint)(_time.GetElapsedTime(c.Start).Ticks / TimeSpan.TicksPerMicrosecond));
+            SendDatagramLocked(c, timeUs, c.LastPen, c.LastTouches.AsSpan(0, c.LastTouchCount), default);
+            c.ProbeSequence = c.Sequence;
+        }
+    }
+
+    private void OnUdpAck(Connection c, ulong highestSequence)
+    {
+        lock (_sendLock)
+        {
+            if (c.Closed)
+            {
+                return;
+            }
+
+            if (c.Transport == InputTransport.Tls)
+            {
+                // Only an ack covering the latest probe proves the path works again (not a late pre-fallback ack).
+                if (c.ProbeSequence == 0 || highestSequence < c.ProbeSequence)
+                {
+                    return;
+                }
+
+                c.Transport = InputTransport.Udp;
+                c.ProbeTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+                NetLog.ClientUdpRestored(_log);
+            }
+
             c.UdpAcked = true;
+            c.AckArmed = false;
             c.AckTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         }
     }
@@ -478,9 +544,12 @@ public sealed class PenBridgeClient : IAsyncDisposable
                 server = server.MapToIPv4();
             }
 
-            udp = new Socket(server.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+            udp = new Socket(server.AddressFamily, SocketType.Dgram, ProtocolType.Udp)
+            {
+                SendTimeout = (int)ControlChannel.SyncSendTimeout.TotalMilliseconds,
+            };
             udp.Connect(new IPEndPoint(server, start.UdpPort));
-            connection = new Connection(this, channel, udp, new InputCipher(inputKey, start.SessionId), start.SessionId, fingerprint, ack.ServerName, channel.Ssl.SslProtocol, _time);
+            connection = new Connection(this, channel, udp, new InputCipher(inputKey, start.SessionId), start.SessionId, fingerprint, ack.ServerName, channel.Ssl.SslProtocol, _time, _options.FallbackQueueCapacity);
 
             await channel.WriteAsync(_options.Surface).ConfigureAwait(false);
             await deadline.DisposeAsync().ConfigureAwait(false);
@@ -543,7 +612,11 @@ public sealed class PenBridgeClient : IAsyncDisposable
 
     private async Task<Socket> ConnectSocketAsync(string host, int port, CancellationToken cancellationToken)
     {
-        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp)
+        {
+            NoDelay = true,
+            SendTimeout = (int)ControlChannel.SyncSendTimeout.TotalMilliseconds,
+        };
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using ITimer deadline = _time.CreateTimer(
             static s =>
@@ -676,8 +749,7 @@ public sealed class PenBridgeClient : IAsyncDisposable
                 switch (frame.Type)
                 {
                     case ControlMessageType.UdpAck:
-                        _ = frame.Read<UdpAckMessage>();
-                        OnUdpAck(c);
+                        OnUdpAck(c, frame.Read<UdpAckMessage>().HighestSequence);
                         break;
                     case ControlMessageType.Ping:
                         await c.Channel.WriteAsync(new PongMessage(frame.Read<PingMessage>().TimestampUs)).ConfigureAwait(false);
@@ -757,10 +829,18 @@ public sealed class PenBridgeClient : IAsyncDisposable
     }
 
     /// <summary>State of one connection. Mutable fields are guarded by the client's send lock unless noted.</summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA1001", Justification = "The signal SemaphoreSlim never allocates a wait handle; resources are released by DisposeResourcesAsync.")]
     private sealed class Connection
     {
-        public Connection(PenBridgeClient owner, ControlChannel channel, Socket udp, InputCipher cipher, uint sessionId, byte[] fingerprint, string serverName, SslProtocols protocol, TimeProvider time)
+        public Connection(PenBridgeClient owner, ControlChannel channel, Socket udp, InputCipher cipher, uint sessionId, byte[] fingerprint, string serverName, SslProtocols protocol, TimeProvider time, int fallbackCapacity)
         {
+            _slots = new byte[Math.Max(1, fallbackCapacity)][];
+            for (int i = 0; i < _slots.Length; i++)
+            {
+                _slots[i] = new byte[FrameSize];
+            }
+
+            _lengths = new int[_slots.Length];
             Owner = owner;
             Channel = channel;
             Udp = udp;
@@ -773,6 +853,84 @@ public sealed class PenBridgeClient : IAsyncDisposable
             Start = time.GetTimestamp();
             Keepalive = time.CreateTimer(KeepaliveCallback, this, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             AckTimer = time.CreateTimer(AckTimeoutCallback, this, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            ProbeTimer = time.CreateTimer(ProbeCallback, this, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        }
+
+        private const int FrameSize = ControlFrame.HeaderSize + InputPayload.MaxSize;
+
+        private readonly byte[][] _slots;
+        private readonly int[] _lengths;
+        private readonly byte[] _writerBuffer = new byte[FrameSize];
+        private readonly SemaphoreSlim _signal = new(0);
+        private int _head;
+        private int _count;
+        private Task? _writer;
+
+        /// <summary>Fallback frames dropped because the queue was full (a newer full state replaced them).</summary>
+        public long FallbackDropped { get; private set; }
+
+        /// <summary>
+        /// Under the send lock: the buffer for the next fallback frame. When the queue is full (the server stopped
+        /// reading), every queued frame is dropped: each frame is the complete state, so only the newest matters.
+        /// </summary>
+        public Span<byte> ReserveFallbackSlot(out int slot)
+        {
+            if (_count == _slots.Length)
+            {
+                FallbackDropped += _count;
+                _count = 0;
+            }
+
+            slot = (_head + _count) % _slots.Length;
+            return _slots[slot];
+        }
+
+        /// <summary>Under the send lock: queues the frame written into <paramref name="slot"/> and wakes the writer.</summary>
+        public void CommitFallbackSlot(int slot, int length)
+        {
+            _lengths[slot] = length;
+            _count++;
+            _signal.Release();
+        }
+
+        /// <summary>Under the send lock: starts the single background writer once.</summary>
+        public void StartFallbackWriter() => _writer ??= Task.Run(WriteFallbackAsync);
+
+        private bool TryDequeue(out int length)
+        {
+            lock (Owner._sendLock)
+            {
+                if (_count == 0 || Closed)
+                {
+                    length = 0;
+                    return false;
+                }
+
+                length = _lengths[_head];
+                _slots[_head].AsSpan(0, length).CopyTo(_writerBuffer);
+                _head = (_head + 1) % _slots.Length;
+                _count--;
+                return true;
+            }
+        }
+
+        private async Task WriteFallbackAsync()
+        {
+            try
+            {
+                while (true)
+                {
+                    await _signal.WaitAsync(Channel.Token).ConfigureAwait(false);
+                    while (TryDequeue(out int length))
+                    {
+                        await Channel.WriteFrameAsync(_writerBuffer.AsMemory(0, length)).ConfigureAwait(false);
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException or SocketException or InvalidOperationException or NotSupportedException)
+            {
+                Channel.Abort();
+            }
         }
 
         public PenBridgeClient Owner { get; }
@@ -799,13 +957,13 @@ public sealed class PenBridgeClient : IAsyncDisposable
 
         public ITimer AckTimer { get; }
 
+        public ITimer ProbeTimer { get; }
+
         public ITimer? PingTimer { get; set; }
 
         public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public byte[] Datagram { get; } = new byte[InputDatagram.MaxSize];
-
-        public byte[] Frame { get; } = new byte[ControlFrame.HeaderSize + InputPayload.MaxSize];
 
         public TouchSample[] LastTouches { get; } = new TouchSample[InputPayload.MaxTouches];
 
@@ -815,6 +973,7 @@ public sealed class PenBridgeClient : IAsyncDisposable
         public bool WasActive;
         public int RepeatsLeft;
         public ulong Sequence;
+        public ulong ProbeSequence;
         public long DatagramsSealed;
         public InputTransport Transport = InputTransport.Udp;
         public bool UdpAcked;
@@ -839,6 +998,7 @@ public sealed class PenBridgeClient : IAsyncDisposable
         {
             await Keepalive.DisposeAsync().ConfigureAwait(false);
             await AckTimer.DisposeAsync().ConfigureAwait(false);
+            await ProbeTimer.DisposeAsync().ConfigureAwait(false);
             if (PingTimer is not null)
             {
                 await PingTimer.DisposeAsync().ConfigureAwait(false);

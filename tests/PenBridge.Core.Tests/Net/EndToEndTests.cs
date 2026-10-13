@@ -343,9 +343,109 @@ public class EndToEndTests
         var gone = new TaskCompletionSource<ClientDisconnectedEventArgs>();
         client.Disconnected += (_, e) => gone.TrySetResult(e);
 
-        await h.DisposeAsync();
+        await h.Server.DisposeAsync(); // only the server: the client must read the Bye itself
 
         ClientDisconnectedEventArgs e = await gone.Task.Bounded();
         Assert.Equal(ByeReason.Shutdown, e.ByeReason);
+        await h.DisposeAsync();
+    }
+
+    private sealed class ForgettingRegistry(IPairedDeviceRegistry inner) : IPairedDeviceRegistry
+    {
+        public volatile bool ForgetOnNextKeyRead;
+
+        public IReadOnlyList<PairedDevice> List() => inner.List();
+
+        public void Add(Guid deviceId, string name, ReadOnlySpan<byte> deviceKey) => inner.Add(deviceId, name, deviceKey);
+
+        public bool Remove(Guid deviceId) => inner.Remove(deviceId);
+
+        public bool Touch(Guid deviceId) => inner.Touch(deviceId);
+
+        public bool TryGetDeviceKey(Guid deviceId, Span<byte> destination)
+        {
+            bool found = inner.TryGetDeviceKey(deviceId, destination);
+            if (found && ForgetOnNextKeyRead)
+            {
+                ForgetOnNextKeyRead = false;
+                inner.Remove(deviceId); // the user hits "Forget" right after the HMAC verified
+            }
+
+            return found;
+        }
+    }
+
+    [Fact]
+    public async Task A_device_forgotten_between_auth_and_activation_cannot_start_a_session()
+    {
+        ForgettingRegistry? registry = null;
+        await using var h = new NetHarness(o => new PenBridgeServerOptions
+        {
+            Identity = o.Identity,
+            Registry = registry = new ForgettingRegistry(o.Registry),
+            InputSink = o.InputSink,
+            BindAddress = o.BindAddress,
+            Port = 0,
+            TimeProvider = o.TimeProvider,
+        });
+        var store = new InMemorySecretStore();
+        PenBridgeClient first = await h.PairAsync(store);
+        await first.DisconnectAsync().Bounded();
+        await Wait.Until(() => !h.Server.GetStats().HasSession, "first session ended");
+
+        registry!.ForgetOnNextKeyRead = true;
+        var ex = await Assert.ThrowsAsync<PenBridgeConnectException>(() =>
+            h.CreateClient(store).ConnectAsync("127.0.0.1", h.Port, h.Identity.Fingerprint.ToArray()).Bounded());
+
+        Assert.Equal(ConnectFailure.AuthFailed, ex.Failure);
+        Assert.False(h.Server.GetStats().HasSession);
+    }
+
+    private sealed class FailOnceSink(IInputSink inner) : IInputSink
+    {
+        private int _failed;
+
+        public void OnPenEvent(in PenEvent e)
+        {
+            if (Interlocked.Exchange(ref _failed, 1) == 0)
+            {
+                throw new InvalidOperationException("injector failure");
+            }
+
+            inner.OnPenEvent(e);
+        }
+
+        public void OnGestureEvent(in GestureEvent e) => inner.OnGestureEvent(e);
+    }
+
+    [Fact]
+    public async Task A_throwing_sink_closes_only_that_session_and_the_server_keeps_serving()
+    {
+        await using var h = new NetHarness(o => new PenBridgeServerOptions
+        {
+            Identity = o.Identity,
+            Registry = o.Registry,
+            InputSink = new FailOnceSink(o.InputSink),
+            BindAddress = o.BindAddress,
+            Port = 0,
+            TimeProvider = o.TimeProvider,
+        });
+        var ended = new TaskCompletionSource<SessionEndedEventArgs>();
+        h.Server.SessionEnded += (_, e) => ended.TrySetResult(e);
+        var store = new InMemorySecretStore();
+        PenBridgeClient first = await h.PairAsync(store);
+        var gone = new TaskCompletionSource<ClientDisconnectedEventArgs>();
+        first.Disconnected += (_, e) => gone.TrySetResult(e);
+
+        first.SendState(Pens.Hover(1000, 1000), []); // the sink throws on ProximityEnter
+
+        Assert.Equal(SessionEndReason.InternalError, (await ended.Task.Bounded()).Reason);
+        await gone.Task.Bounded();
+
+        PenBridgeClient again = h.CreateClient(store);
+        await again.ConnectAsync("127.0.0.1", h.Port, h.Identity.Fingerprint.ToArray()).Bounded();
+        await h.WaitForSurfaceAsync();
+        DrawStroke(again);
+        await AssertStrokeAsync(h.Sink);
     }
 }

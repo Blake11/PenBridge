@@ -15,6 +15,12 @@ internal sealed class ControlChannel : IAsyncDisposable
     /// <summary>Wall-clock bound for best-effort farewell writes (Error/Bye) on a channel that is closing.</summary>
     private static readonly TimeSpan FarewellTimeout = TimeSpan.FromSeconds(1);
 
+    /// <summary>
+    /// Backstop for any synchronous socket send: all control writes are async and cancellable, so this only bounds a
+    /// write that bypasses them.
+    /// </summary>
+    public static readonly TimeSpan SyncSendTimeout = TimeSpan.FromSeconds(5);
+
     private static readonly TimerCallback DeadlineCallback = static state => ((ControlChannel)state!).OnDeadline();
 
     private readonly Socket _socket;
@@ -84,34 +90,13 @@ internal sealed class ControlChannel : IAsyncDisposable
         }
     }
 
-    /// <summary>
-    /// Writes an already-encoded frame synchronously (fallback InputFrames from the send path). Returns false and
-    /// aborts the channel on failure.
-    /// </summary>
-    public bool TryWriteFrame(ReadOnlySpan<byte> frame)
+    /// <summary>Writes an already-encoded frame (serialized with other writes). Used by the client's fallback writer.</summary>
+    public async ValueTask WriteFrameAsync(ReadOnlyMemory<byte> frame)
     {
+        await _writeLock.WaitAsync(_cts.Token).ConfigureAwait(false);
         try
         {
-            _writeLock.Wait(_cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            return false;
-        }
-        catch (ObjectDisposedException)
-        {
-            return false;
-        }
-
-        try
-        {
-            _ssl.Write(frame);
-            return true;
-        }
-        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException or NotSupportedException)
-        {
-            Abort();
-            return false;
+            await _ssl.WriteAsync(frame, _cts.Token).ConfigureAwait(false);
         }
         finally
         {
@@ -157,6 +142,22 @@ internal sealed class ControlChannel : IAsyncDisposable
         try
         {
             _cts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Cancels everything and closes the socket at once, without taking any lock: unblocks a write stuck on a peer
+    /// that stopped reading. No farewell can be sent afterwards.
+    /// </summary>
+    public void AbortHard()
+    {
+        Abort();
+        try
+        {
+            _socket.Close(0);
         }
         catch (ObjectDisposedException)
         {

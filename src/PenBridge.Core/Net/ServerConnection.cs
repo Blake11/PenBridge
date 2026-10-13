@@ -27,6 +27,7 @@ internal sealed class ServerConnection
     private readonly TimeProvider _time;
     private readonly ControlChannel _channel;
     private readonly EndPoint? _remote;
+    private readonly IPAddress _address;
     private readonly long _epoch;
     private readonly TaskCompletionSource _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private byte[] _deviceIdBytes = [];
@@ -39,14 +40,16 @@ internal sealed class ServerConnection
     private bool _sessionStarted;
     private SessionEndReason _refusalReason = SessionEndReason.ProtocolError;
 
-    public ServerConnection(PenBridgeServer server, Socket socket)
+    public ServerConnection(PenBridgeServer server, Socket socket, IPEndPoint remote, IPAddress address)
     {
         _server = server;
         _options = server.Options;
         _log = server.Log;
         _time = _options.TimeProvider;
+        _remote = remote;
+        _address = address;
         socket.NoDelay = true;
-        _remote = socket.RemoteEndPoint;
+        socket.SendTimeout = (int)ControlChannel.SyncSendTimeout.TotalMilliseconds;
         _channel = new ControlChannel(socket, _time);
         _epoch = _time.GetTimestamp();
 
@@ -156,7 +159,7 @@ internal sealed class ServerConnection
             Input?.Shutdown();
             if (!_authenticated)
             {
-                _server.ReleasePending();
+                _server.ReleasePending(_address);
             }
 
             _server.OnConnectionEnded(this);
@@ -224,6 +227,13 @@ internal sealed class ServerConnection
                 return false;
         }
 
+        // Pairing has its own deadline instead of the pre-auth one; Auth afterwards gets a fresh pre-auth deadline.
+        if (_handshake is not null)
+        {
+            await _handshake.DisposeAsync().ConfigureAwait(false);
+        }
+
+        _handshake = null;
         ITimer deadline = _channel.StartDeadline(_options.PairingTimeout);
         PairingSession session = PairingSession.ForServer(attempt!, DeviceId, challenge, _server.Fingerprint);
         try
@@ -264,6 +274,7 @@ internal sealed class ServerConnection
 
             await _channel.WriteAsync(new ServerPairConfirmMessage(session.CreateConfirm())).ConfigureAwait(false);
             await _channel.WriteAsync(PairResultMessage.Ok()).ConfigureAwait(false);
+            _handshake = _channel.StartDeadline(_options.HandshakeTimeout);
             NetLog.Paired(_log, DeviceId, PeerText.Sanitize(DeviceName));
             foreach (PairedDevice device in _server.Registry.List())
             {
@@ -314,14 +325,20 @@ internal sealed class ServerConnection
 
             _server.Registry.Touch(DeviceId);
             _authenticated = true;
-            _server.ReleasePending();
+            _server.ReleasePending(_address);
 
-            if (!_server.TryActivate(this, out ServerConnection? previous))
+            switch (_server.TryActivate(this, out ServerConnection? previous))
             {
-                NetLog.Busy(_log, DeviceId);
-                _refusalReason = SessionEndReason.PeerClosed;
-                await _channel.TryWriteFarewellAsync(default(BusyMessage)).ConfigureAwait(false);
-                return false;
+                case ActivationResult.Busy:
+                    NetLog.Busy(_log, DeviceId);
+                    _refusalReason = SessionEndReason.PeerClosed;
+                    await _channel.TryWriteFarewellAsync(default(BusyMessage)).ConfigureAwait(false);
+                    return false;
+                case ActivationResult.Unpaired:
+                    NetLog.AuthFailed(_log, DeviceId);
+                    _refusalReason = SessionEndReason.Unpaired;
+                    await _channel.TryWriteFarewellAsync(new ErrorMessage(ProtocolErrorCode.AuthFailed, "Authentication failed.")).ConfigureAwait(false);
+                    return false;
             }
 
             if (previous is not null)
@@ -332,7 +349,6 @@ internal sealed class ServerConnection
             uint sessionId = _server.NextSessionId();
             byte[] serverNonce = RandomNumberGenerator.GetBytes(WireSizes.Nonce);
             KeySchedule.DeriveInputKey(deviceKey, auth.ClientNonce.Span, serverNonce, sessionId, inputKey);
-            IPAddress peer = (_remote as IPEndPoint)?.Address ?? IPAddress.None;
             var input = new SessionInput(
                 _server.InputLock,
                 _options.InputSink,
@@ -340,11 +356,11 @@ internal sealed class ServerConnection
                 _options.TrackerOptions,
                 inputKey,
                 sessionId,
-                peer,
                 _options.TargetDisplay,
                 _options.TargetRegion,
                 _options.MaxAuthFailuresPerSecond,
-                OnFirstDatagram);
+                OnUdpAck,
+                OnInputFault);
             input.ForgedDatagramFlood += OnForgedFlood;
             Input = input;
             if (!_server.PublishInput(this, input) || RequestedReason is not null)
@@ -393,7 +409,7 @@ internal sealed class ServerConnection
                 case ControlMessageType.InputFrame:
                     bool wasTls = input.Transport == InputTransport.Tls;
                     input.ProcessInputFrame(frame.Payload.Span);
-                    if (!wasTls)
+                    if (!wasTls && input.Transport == InputTransport.Tls)
                     {
                         NetLog.ServerTlsFallback(_log, DeviceId);
                     }
@@ -441,7 +457,13 @@ internal sealed class ServerConnection
         }
     }
 
-    private void OnFirstDatagram(ulong highestSequence) => _ = SendUdpAckAsync(highestSequence);
+    private void OnUdpAck(ulong highestSequence) => _ = SendUdpAckAsync(highestSequence);
+
+    private void OnInputFault(Exception exception)
+    {
+        NetLog.InputFault(_log, DeviceId, exception);
+        _ = CloseAsync(ByeReason.Normal, SessionEndReason.InternalError);
+    }
 
     private void OnForgedFlood() => NetLog.ForgedFlood(_log);
 

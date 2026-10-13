@@ -28,8 +28,20 @@ public sealed class PenBridgeClientOptions
     /// <summary>Heartbeat interval; <see cref="Timeout.InfiniteTimeSpan"/> disables pings.</summary>
     public TimeSpan PingInterval { get; init; } = TimeSpan.FromSeconds(2);
 
-    /// <summary>Without a UdpAck this long after the first datagram, input switches to InputFrame over TLS.</summary>
-    public TimeSpan UdpAckTimeout { get; init; } = TimeSpan.FromSeconds(1);
+    /// <summary>
+    /// After sending UDP this long without any UdpAck, input switches to InputFrame over TLS. The server re-acks at
+    /// most once per second while datagrams arrive.
+    /// </summary>
+    public TimeSpan UdpAckTimeout { get; init; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>While in TLS fallback, one UDP probe datagram is sent this often; an ack for it switches back to UDP.</summary>
+    public TimeSpan UdpProbeInterval { get; init; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Fallback InputFrames queued for the background writer: enough for normal bursts. When full (the server stopped
+    /// reading), all queued frames are dropped in favour of the newest state, so <c>SendState</c> never blocks.
+    /// </summary>
+    public int FallbackQueueCapacity { get; init; } = 64;
 
     /// <summary>
     /// Resend interval while the pen is in contact or touches are active. The spec requires a frame at least every

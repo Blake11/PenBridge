@@ -43,6 +43,7 @@ public sealed class PenBridgeServer : IAsyncDisposable
     private Task? _udpLoop;
     private ServerConnection? _active;
     private SessionInput? _activeInput;
+    private readonly Dictionary<IPAddress, int> _pendingByAddress = [];
     private int _pending;
     private volatile bool _allowTakeover;
     private DisplayRect _display;
@@ -64,6 +65,7 @@ public sealed class PenBridgeServer : IAsyncDisposable
         ArgumentOutOfRangeException.ThrowIfGreaterThan(options.Port, IPEndPoint.MaxPort);
         ArgumentOutOfRangeException.ThrowIfNegative(options.PortFallbackCount);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPendingConnections, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPendingConnectionsPerAddress, 1);
         _ = new CoordinateMapper(1, 1, options.TargetDisplay, options.TargetRegion); // validates the target
 
         _options = options;
@@ -137,7 +139,19 @@ public sealed class PenBridgeServer : IAsyncDisposable
 
     internal ILogger Log => _log;
 
-    internal int PendingConnections => Volatile.Read(ref _pending);
+    internal int PendingConnections
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _pending;
+            }
+        }
+    }
+
+    /// <summary>Ports that failed to bind during <see cref="Start"/> (tests).</summary>
+    internal List<int> FailedPorts { get; } = [];
 
     internal int ConnectionCount
     {
@@ -194,20 +208,15 @@ public sealed class PenBridgeServer : IAsyncDisposable
             throw new InvalidOperationException("The server is already started.");
         }
 
-        int basePort = _options.Port;
-        int attempts = basePort == 0 ? 10 : _options.PortFallbackCount + 1;
-        for (int i = 0; i < attempts && _tcp is null; i++)
+        foreach (int port in _options.PortCandidates ?? PortRange(_options.Port, _options.PortFallbackCount))
         {
-            int port = basePort == 0 ? 0 : basePort + i;
-            if (port > IPEndPoint.MaxPort)
+            if (TryBind(port))
             {
                 break;
             }
 
-            if (!TryBind(port))
-            {
-                NetLog.PortUnavailable(_log, port);
-            }
+            FailedPorts.Add(port);
+            NetLog.PortUnavailable(_log, port);
         }
 
         if (_tcp is null)
@@ -219,6 +228,24 @@ public sealed class PenBridgeServer : IAsyncDisposable
         NetLog.Listening(_log, Port);
         _acceptLoop = AcceptLoopAsync();
         _udpLoop = UdpLoopAsync();
+    }
+
+    /// <summary>Ports tried for <paramref name="basePort"/> (ADR-0011): it and the next <paramref name="fallbackCount"/>; port 0 retries ephemeral binds.</summary>
+    internal static IReadOnlyList<int> PortRange(int basePort, int fallbackCount)
+    {
+        var ports = new List<int>(fallbackCount + 1);
+        for (int i = 0; i <= fallbackCount; i++)
+        {
+            int port = basePort == 0 ? 0 : basePort + i;
+            if (port > IPEndPoint.MaxPort)
+            {
+                break;
+            }
+
+            ports.Add(port);
+        }
+
+        return ports;
     }
 
     /// <summary>Changes the display region the phone maps to (applies to the active session immediately).</summary>
@@ -279,10 +306,13 @@ public sealed class PenBridgeServer : IAsyncDisposable
     /// <summary>Forgets a paired device; its active session (if any) is closed with Bye(Unpaired).</summary>
     public bool ForgetDevice(Guid deviceId)
     {
-        bool removed = _options.Registry.Remove(deviceId);
+        bool removed;
         ServerConnection? connection;
         lock (_gate)
         {
+            // Under the gate: TryActivate re-checks the registry under it, so a connection that verified its HMAC
+            // just before this call can't activate afterwards.
+            removed = _options.Registry.Remove(deviceId);
             connection = _active is { } a && a.DeviceId == deviceId ? a : null;
         }
 
@@ -339,20 +369,29 @@ public sealed class PenBridgeServer : IAsyncDisposable
         _shutdown.Dispose();
     }
 
-    internal bool TryActivate(ServerConnection connection, out ServerConnection? previous)
+    internal ActivationResult TryActivate(ServerConnection connection, out ServerConnection? previous)
     {
+        Span<byte> key = stackalloc byte[KeySchedule.KeyLength];
         lock (_gate)
         {
-            previous = _active;
-            if (previous is not null && previous.DeviceId != connection.DeviceId && !_allowTakeover)
+            previous = null;
+            bool paired = _options.Registry.TryGetDeviceKey(connection.DeviceId, key);
+            CryptographicOperations.ZeroMemory(key);
+            if (!paired)
             {
-                previous = null;
-                return false;
+                return ActivationResult.Unpaired;
             }
 
+            ServerConnection? current = _active;
+            if (current is not null && current.DeviceId != connection.DeviceId && !_allowTakeover)
+            {
+                return ActivationResult.Busy;
+            }
+
+            previous = current;
             _active = connection;
             Volatile.Write(ref _activeInput, null);
-            return true;
+            return ActivationResult.Activated;
         }
     }
 
@@ -402,7 +441,45 @@ public sealed class PenBridgeServer : IAsyncDisposable
         }
     }
 
-    internal void ReleasePending() => Interlocked.Decrement(ref _pending);
+    /// <summary>Releases the pre-auth slot taken by <see cref="TryAdmit"/> (exactly once per admitted connection).</summary>
+    internal void ReleasePending(IPAddress address)
+    {
+        lock (_gate)
+        {
+            _pending--;
+            if (_pendingByAddress.TryGetValue(address, out int count))
+            {
+                if (count <= 1)
+                {
+                    _pendingByAddress.Remove(address);
+                }
+                else
+                {
+                    _pendingByAddress[address] = count - 1;
+                }
+            }
+        }
+    }
+
+    /// <summary>Takes a pre-auth slot for <paramref name="address"/>: false when the global or per-IP cap is reached.</summary>
+    internal bool TryAdmit(IPAddress address)
+    {
+        lock (_gate)
+        {
+            _pendingByAddress.TryGetValue(address, out int count);
+            if (_pending >= _options.MaxPendingConnections || count >= _options.MaxPendingConnectionsPerAddress)
+            {
+                return false;
+            }
+
+            _pending++;
+            _pendingByAddress[address] = count + 1;
+            return true;
+        }
+    }
+
+    internal static IPAddress Normalize(IPAddress address) =>
+        address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
 
     internal void RaiseDevicePaired(PairedDevice device) => Raise(DevicePaired, new DevicePairedEventArgs(device));
 
@@ -451,7 +528,7 @@ public sealed class PenBridgeServer : IAsyncDisposable
         {
             tcp = CreateSocket(SocketType.Stream, ProtocolType.Tcp);
             tcp.Bind(new IPEndPoint(_options.BindAddress, port));
-            tcp.Listen(16);
+            tcp.Listen(64);
             int bound = ((IPEndPoint)tcp.LocalEndPoint!).Port;
             udp = CreateSocket(SocketType.Dgram, ProtocolType.Udp);
             udp.Bind(new IPEndPoint(_options.BindAddress, bound));
@@ -492,14 +569,19 @@ public sealed class PenBridgeServer : IAsyncDisposable
             }
             catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
             {
+                // Only Dispose cancels the token or closes the listener.
                 break;
             }
-            catch (SocketException)
+#pragma warning disable CA1031 // The accept loop must survive anything but shutdown.
+            catch (Exception ex)
+#pragma warning restore CA1031
             {
                 if (ct.IsCancellationRequested)
                 {
                     break;
                 }
+
+                NetLog.Unexpected(_log, null, ex);
 
                 // Transient (e.g. out of descriptors): back off briefly instead of spinning.
                 try
@@ -514,21 +596,45 @@ public sealed class PenBridgeServer : IAsyncDisposable
                 continue;
             }
 
-            if (Interlocked.Increment(ref _pending) > _options.MaxPendingConnections)
-            {
-                Interlocked.Decrement(ref _pending);
-                NetLog.TooManyPending(_log, SafeRemote(socket));
-                socket.Dispose();
-                continue;
-            }
+            Admit(socket);
+        }
+    }
 
-            var connection = new ServerConnection(this, socket);
+    /// <summary>Starts a handler for an accepted socket, or closes it. Never throws.</summary>
+    private void Admit(Socket socket)
+    {
+        // A peer that reset right after connecting has no endpoint; drop it.
+        if (SafeRemote(socket) is not IPEndPoint remote)
+        {
+            socket.Dispose();
+            return;
+        }
+
+        IPAddress address = Normalize(remote.Address);
+        if (!TryAdmit(address))
+        {
+            NetLog.TooManyPending(_log, remote);
+            socket.Dispose();
+            return;
+        }
+
+        try
+        {
+            var connection = new ServerConnection(this, socket, remote, address);
             lock (_gate)
             {
                 _connections.Add(connection);
             }
 
             connection.Start();
+        }
+#pragma warning disable CA1031 // e.g. NoDelay or NetworkStream on a socket the peer already reset.
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            NetLog.AcceptFailed(_log, remote, ex.GetType().Name);
+            socket.Dispose();
+            ReleasePending(address);
         }
     }
 
@@ -562,7 +668,16 @@ public sealed class PenBridgeServer : IAsyncDisposable
                 continue;
             }
 
-            Volatile.Read(ref _activeInput)?.ProcessDatagram(buffer.AsSpan(0, received), address);
+            try
+            {
+                Volatile.Read(ref _activeInput)?.ProcessDatagram(buffer.AsSpan(0, received), address);
+            }
+#pragma warning disable CA1031 // One bad datagram (or a bug) must not stop input for every later session.
+            catch (Exception ex)
+#pragma warning restore CA1031
+            {
+                NetLog.Unexpected(_log, null, ex);
+            }
         }
     }
 

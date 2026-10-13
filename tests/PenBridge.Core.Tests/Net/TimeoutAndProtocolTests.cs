@@ -192,37 +192,89 @@ public class TimeoutAndProtocolTests
     }
 
     [Fact]
-    public async Task Too_many_pending_connections_are_refused_on_accept()
+    public async Task One_ip_cannot_take_all_pending_slots()
     {
-        await using var h = new NetHarness(o => new PenBridgeServerOptions
-        {
-            Identity = o.Identity,
-            Registry = o.Registry,
-            InputSink = o.InputSink,
-            BindAddress = o.BindAddress,
-            Port = 0,
-            TimeProvider = o.TimeProvider,
-            MaxPendingConnections = 2,
-        });
+        await using var h = new NetHarness();
         await using RawClient a = await RawClient.ConnectTcpAsync(h.Port);
         await using RawClient b = await RawClient.ConnectTcpAsync(h.Port);
         await Wait.Until(() => h.Server.PendingConnections == 2, "two pending");
 
         await using RawClient c = await RawClient.ConnectTcpAsync(h.Port);
 
-        await Wait.Until(() => c.IsClosed, "third connection refused");
+        await Wait.Until(() => c.IsClosed, "third connection from the same IP refused");
         Assert.False(a.IsClosed);
+        Assert.Equal(2, h.Server.PendingConnections); // 6 of 8 global slots stay free for other hosts
+
+        // Another host still gets in (admission is per remote IP).
+        IPAddress other = IPAddress.Parse("192.0.2.7");
+        Assert.True(h.Server.TryAdmit(other));
+        Assert.True(h.Server.TryAdmit(other));
+        Assert.False(h.Server.TryAdmit(other));
+        h.Server.ReleasePending(other);
+        h.Server.ReleasePending(other);
     }
 
     [Fact]
-    public async Task The_server_falls_back_to_the_next_port_when_tcp_or_udp_is_taken()
+    public void The_global_pending_cap_holds_across_ips()
     {
-        int basePort = FindFreePortRange();
+        var server = new PenBridgeServer(new PenBridgeServerOptions
+        {
+            Identity = NetHarness.SharedServerIdentity,
+            Registry = new PairedDeviceRegistry(new InMemorySecretStore()),
+            InputSink = new ConcurrentSink(),
+        });
+        for (int i = 0; i < 8; i++)
+        {
+            Assert.True(server.TryAdmit(IPAddress.Parse("192.0.2." + (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture))));
+        }
+
+        Assert.False(server.TryAdmit(IPAddress.Parse("192.0.2.200")));
+    }
+
+    [Fact]
+    public async Task Connections_reset_right_after_connect_dont_stop_the_accept_loop()
+    {
+        await using var h = new NetHarness();
+        for (int i = 0; i < 20; i++)
+        {
+            using var s = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            s.LingerState = new LingerOption(true, 0);
+            try
+            {
+                await s.ConnectAsync(IPAddress.Loopback, h.Port);
+            }
+            catch (SocketException)
+            {
+                // A full accept backlog under a loaded test run may refuse one; that's fine here.
+                continue;
+            }
+
+            s.Close(); // RST
+        }
+
+        await Wait.Until(() => h.Server.PendingConnections == 0, "reset connections released");
+        PenBridgeClient client = await h.PairAsync();
+        Assert.True(client.IsConnected);
+    }
+
+    [Fact]
+    public void The_default_port_range_is_47820_to_47829()
+    {
+        Assert.Equal(Enumerable.Range(47820, 10), PenBridgeServer.PortRange(ProtocolInfo.DefaultPort, 9));
+        Assert.Equal([65534, 65535], PenBridgeServer.PortRange(65534, 9));
+    }
+
+    [Fact]
+    public async Task The_server_skips_ports_where_tcp_or_udp_is_taken()
+    {
+        // The test holds both blocked ports for its whole duration; the last candidate is ephemeral (always free).
         using var tcpBlocker = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-        tcpBlocker.Bind(new IPEndPoint(IPAddress.Loopback, basePort));
+        tcpBlocker.Bind(new IPEndPoint(IPAddress.Loopback, 0));
         tcpBlocker.Listen();
+        int tcpTaken = ((IPEndPoint)tcpBlocker.LocalEndPoint!).Port;
         using var udpBlocker = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-        udpBlocker.Bind(new IPEndPoint(IPAddress.Loopback, basePort + 1));
+        udpBlocker.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        int udpTaken = ((IPEndPoint)udpBlocker.LocalEndPoint!).Port;
 
         await using var h = new NetHarness(o => new PenBridgeServerOptions
         {
@@ -230,93 +282,35 @@ public class TimeoutAndProtocolTests
             Registry = o.Registry,
             InputSink = o.InputSink,
             BindAddress = o.BindAddress,
-            Port = basePort,
             TimeProvider = o.TimeProvider,
+            PortCandidates = [tcpTaken, udpTaken, 0],
         });
 
-        Assert.InRange(h.Port, basePort + 2, basePort + 9);
-
-        // The TCP socket tried on the UDP-blocked port was released again.
-        using var probe = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-        probe.Bind(new IPEndPoint(IPAddress.Loopback, basePort + 1));
-
+        Assert.Equal([tcpTaken, udpTaken], h.Server.FailedPorts);
+        Assert.NotEqual(tcpTaken, h.Port);
+        Assert.NotEqual(udpTaken, h.Port);
         PenBridgeClient client = await h.PairAsync();
         EndToEndTests.DrawStroke(client);
         await EndToEndTests.AssertStrokeAsync(h.Sink);
     }
 
     [Fact]
-    public async Task Start_fails_when_every_port_in_the_range_is_taken()
+    public async Task Start_fails_when_every_candidate_port_is_taken()
     {
-        int basePort = FindFreePortRange();
-        var blockers = new List<Socket>();
-        try
+        using var tcpBlocker = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        tcpBlocker.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        tcpBlocker.Listen();
+        using var udpBlocker = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        udpBlocker.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+
+        await using var server = new PenBridgeServer(new PenBridgeServerOptions
         {
-            for (int i = 0; i < 3; i++)
-            {
-                var s = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-                s.Bind(new IPEndPoint(IPAddress.Loopback, basePort + i));
-                s.Listen();
-                blockers.Add(s);
-            }
-
-            ServerIdentity identity = NetHarness.SharedServerIdentity;
-            await using var server = new PenBridgeServer(new PenBridgeServerOptions
-            {
-                Identity = identity,
-                Registry = new PairedDeviceRegistry(new InMemorySecretStore()),
-                InputSink = new ConcurrentSink(),
-                BindAddress = IPAddress.Loopback,
-                Port = basePort,
-                PortFallbackCount = 2,
-            });
-            Assert.Throws<SocketException>(server.Start);
-        }
-        finally
-        {
-            foreach (Socket s in blockers)
-            {
-                s.Dispose();
-            }
-        }
-    }
-
-    /// <summary>An ephemeral base port whose next 9 ports are currently free for TCP and UDP (best effort).</summary>
-    private static int FindFreePortRange()
-    {
-        for (int attempt = 0; attempt < 50; attempt++)
-        {
-            using var probe = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-            probe.Bind(new IPEndPoint(IPAddress.Loopback, 0));
-            int port = ((IPEndPoint)probe.LocalEndPoint!).Port;
-            probe.Dispose();
-            if (port + 9 > IPEndPoint.MaxPort)
-            {
-                continue;
-            }
-
-            bool free = true;
-            for (int i = 0; i <= 9 && free; i++)
-            {
-                try
-                {
-                    using var t = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-                    t.Bind(new IPEndPoint(IPAddress.Loopback, port + i));
-                    using var u = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-                    u.Bind(new IPEndPoint(IPAddress.Loopback, port + i));
-                }
-                catch (SocketException)
-                {
-                    free = false;
-                }
-            }
-
-            if (free)
-            {
-                return port;
-            }
-        }
-
-        throw new InvalidOperationException("No free port range found.");
+            Identity = NetHarness.SharedServerIdentity,
+            Registry = new PairedDeviceRegistry(new InMemorySecretStore()),
+            InputSink = new ConcurrentSink(),
+            BindAddress = IPAddress.Loopback,
+            PortCandidates = [((IPEndPoint)tcpBlocker.LocalEndPoint!).Port, ((IPEndPoint)udpBlocker.LocalEndPoint!).Port],
+        });
+        Assert.Throws<SocketException>(server.Start);
     }
 }

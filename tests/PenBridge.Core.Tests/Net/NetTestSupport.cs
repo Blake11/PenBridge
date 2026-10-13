@@ -203,6 +203,20 @@ internal static class Wait
         }
     }
 
+    /// <summary>
+    /// Advances fake time in 1 s steps with a short real pause between them, so pings and pongs actually cross the
+    /// loopback before the next liveness deadline: one big jump would fire every deadline before any I/O ran.
+    /// </summary>
+    public static async Task Step(FakeTime time, TimeSpan total)
+    {
+        TimeSpan step = TimeSpan.FromSeconds(1);
+        for (TimeSpan done = TimeSpan.Zero; done < total; done += step)
+        {
+            time.Advance(total - done < step ? total - done : step);
+            await Task.Delay(20);
+        }
+    }
+
     public static Task<T> Bounded<T>(this Task<T> task) => task.WaitAsync(Limit);
 
     public static Task Bounded(this Task task) => task.WaitAsync(Limit);
@@ -464,5 +478,113 @@ internal sealed class RawClient : IAsyncDisposable
         _ssl?.Dispose();
         _tcp.Dispose();
         return ValueTask.CompletedTask;
+    }
+}
+
+/// <summary>
+/// A plain TCP pass-through to the server. While <see cref="Paused"/>, it stops reading from the client, so the
+/// client's TCP send buffer fills and its writes stall like against a server that stopped reading.
+/// </summary>
+internal sealed class PausableProxy : IAsyncDisposable
+{
+    private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
+    private readonly CancellationTokenSource _cts = new();
+    private readonly int _targetPort;
+    private readonly Task _loop;
+    private volatile bool _paused;
+
+    public PausableProxy(int targetPort)
+    {
+        _targetPort = targetPort;
+        _listener.Start();
+        _loop = AcceptAsync();
+    }
+
+    public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
+
+    public bool Paused
+    {
+        get => _paused;
+        set => _paused = value;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _cts.CancelAsync();
+        _listener.Stop();
+        try
+        {
+            await _loop.WaitAsync(Wait.Limit);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        _cts.Dispose();
+    }
+
+    private async Task AcceptAsync()
+    {
+        while (!_cts.IsCancellationRequested)
+        {
+            Socket inbound;
+            try
+            {
+                inbound = await _listener.AcceptSocketAsync(_cts.Token);
+            }
+            catch (Exception)
+            {
+                return;
+            }
+
+            inbound.ReceiveBufferSize = 4096;
+            _ = PumpPairAsync(inbound);
+        }
+    }
+
+    private async Task PumpPairAsync(Socket inbound)
+    {
+        using (inbound)
+        using (var outbound = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
+        {
+            try
+            {
+                await outbound.ConnectAsync(IPAddress.Loopback, _targetPort, _cts.Token);
+                Task up = PumpAsync(inbound, outbound, pausable: true);
+                Task down = PumpAsync(outbound, inbound, pausable: false);
+                await Task.WhenAny(up, down);
+            }
+            catch (Exception)
+            {
+                // Dropped on any failure.
+            }
+        }
+    }
+
+    private async Task PumpAsync(Socket from, Socket to, bool pausable)
+    {
+        byte[] buffer = new byte[4096];
+        try
+        {
+            while (true)
+            {
+                while (pausable && _paused)
+                {
+                    await Task.Delay(10, _cts.Token);
+                }
+
+                int n = await from.ReceiveAsync(buffer, SocketFlags.None, _cts.Token);
+                if (n == 0)
+                {
+                    return;
+                }
+
+                await to.SendAsync(buffer.AsMemory(0, n), SocketFlags.None, _cts.Token);
+            }
+        }
+        catch (Exception)
+        {
+            // Either side closed.
+        }
     }
 }

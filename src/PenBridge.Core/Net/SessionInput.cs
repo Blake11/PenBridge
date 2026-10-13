@@ -7,15 +7,24 @@ using PenBridge.Core.Security;
 namespace PenBridge.Core.Net;
 
 /// <summary>
-/// Server-side input path of one session: endpoint pinning, forged-datagram budget, decryption, payload validation,
+/// Server-side input path of one session: forged-datagram budget, decryption, endpoint pinning, payload validation,
 /// the <see cref="PenStateTracker"/> and its one-shot watchdog timer.
 /// </summary>
 /// <remarks>
-/// Every tracker/recognizer call (datagrams, TLS InputFrames, the watchdog, surface changes, shutdown) runs under one
-/// lock shared by all sessions of a server, so the <see cref="IInputSink"/> is never called concurrently, even while an
-/// old session is releasing and a new one starts. The watchdog is a one-shot timer re-armed from
-/// <see cref="PenStateTracker.WatchdogDueIn"/> after each frame; with nothing active it stays disarmed (no polling).
-/// The datagram path is allocation-free once the source endpoint is pinned.
+/// <para>Every tracker/recognizer call (datagrams, TLS InputFrames, the watchdog, surface changes, shutdown) runs under
+/// one lock shared by all sessions of a server, so the <see cref="IInputSink"/> is never called concurrently, even while
+/// an old session is releasing and a new one starts. The watchdog is a one-shot timer re-armed from
+/// <see cref="PenStateTracker.WatchdogDueIn"/> after each frame; with nothing active it stays disarmed (no polling).</para>
+/// <para>Endpoint: the session's UDP source is pinned by the first authenticated datagram and re-pinned only by a
+/// datagram from a new source that authenticates (AEAD) <i>and</i> carries a sequence above the highest seen, so
+/// replays and forgeries can't move it, while a phone that roams (new IP or NAT port) keeps working.</para>
+/// <para>Accepted DoS limitation: any source can make the server try one AEAD decryption per datagram with a
+/// plausible header, bounded by a token bucket shared by the whole session. A LAN attacker who floods forged datagrams
+/// exhausts that budget and so also delays the genuine phone's datagrams; it cannot inject input.</para>
+/// <para>Frames from both transports are ordered by their <c>timeUs</c>: a frame older than the last accepted one is
+/// dropped as stale, so a late TLS fallback frame can't overtake UDP input after the client switched back.</para>
+/// <para>A sink or tracker exception faults the session (reported once through the fault callback) instead of escaping
+/// into the UDP loop or a timer thread. Allocation-free per datagram except when the endpoint changes.</para>
 /// </remarks>
 internal sealed class SessionInput : IDisposable
 {
@@ -24,13 +33,16 @@ internal sealed class SessionInput : IDisposable
     /// <summary>Re-arm delay when the tracker reports "due now" but did not fire (clock granularity).</summary>
     private static readonly TimeSpan MinWatchdogDelay = TimeSpan.FromMilliseconds(1);
 
+    /// <summary>UdpAck is re-sent at most this often while datagrams arrive.</summary>
+    private static readonly TimeSpan AckInterval = TimeSpan.FromSeconds(1);
+
     private readonly Lock _lock;
     private readonly TimeProvider _time;
     private readonly PenStateTracker _tracker;
     private readonly InputCipher _cipher;
     private readonly ITimer _watchdog;
-    private readonly IPAddress _peerAddress;
-    private readonly Action<ulong>? _onFirstDatagram;
+    private readonly Action<ulong>? _onAck;
+    private readonly Action<Exception>? _onFault;
     private readonly double _budgetCapacity;
     private readonly double _budgetPerSecond;
 
@@ -39,8 +51,13 @@ internal sealed class SessionInput : IDisposable
     private long _budgetTimestamp;
     private bool _budgetExhaustedReported;
     private bool _closed;
-    private bool _tlsMode;
-    private bool _firstDatagramSeen;
+    private bool _disposed;
+    private bool _faulted;
+    private InputTransport _transport;
+    private bool _acked;
+    private long _lastAckTimestamp;
+    private bool _hasTime;
+    private uint _lastTimeUs;
     private DisplayRect _display;
     private NormalizedRect _region;
     private ushort _surfaceWidth;
@@ -51,7 +68,7 @@ internal sealed class SessionInput : IDisposable
     private long _authFailures;
     private long _malformed;
     private long _invalid;
-    private long _foreignSource;
+    private long _endpointChanges;
     private long _rateLimited;
 
     public SessionInput(
@@ -61,20 +78,20 @@ internal sealed class SessionInput : IDisposable
         PenStateTrackerOptions? trackerOptions,
         ReadOnlySpan<byte> inputKey,
         uint sessionId,
-        IPAddress peerAddress,
         DisplayRect display,
         NormalizedRect region,
         int maxAuthFailuresPerSecond,
-        Action<ulong>? onFirstDatagram)
+        Action<ulong>? onAck,
+        Action<Exception>? onFault)
     {
         _lock = inputLock;
         _time = time;
         _tracker = new PenStateTracker(sink, time, trackerOptions);
         _cipher = new InputCipher(inputKey, sessionId);
-        _peerAddress = Normalize(peerAddress);
         _display = display;
         _region = region;
-        _onFirstDatagram = onFirstDatagram;
+        _onAck = onAck;
+        _onFault = onFault;
         _budgetPerSecond = Math.Max(1, maxAuthFailuresPerSecond);
         _budgetCapacity = _budgetPerSecond * 2;
         _budget = _budgetCapacity;
@@ -87,13 +104,14 @@ internal sealed class SessionInput : IDisposable
 
     public uint SessionId => _cipher.SessionId;
 
+    /// <summary>The transport of the last accepted frame.</summary>
     public InputTransport Transport
     {
         get
         {
             lock (_lock)
             {
-                return _tlsMode ? InputTransport.Tls : _firstDatagramSeen ? InputTransport.Udp : InputTransport.None;
+                return _transport;
             }
         }
     }
@@ -104,7 +122,7 @@ internal sealed class SessionInput : IDisposable
         {
             lock (_lock)
             {
-                return new InputCounters(_accepted, _stale, _authFailures, _malformed, _invalid, _foreignSource, _rateLimited);
+                return new InputCounters(_accepted, _stale, _authFailures, _malformed, _invalid, _endpointChanges, _rateLimited);
             }
         }
     }
@@ -132,9 +150,6 @@ internal sealed class SessionInput : IDisposable
             }
         }
     }
-
-    /// <summary>Tracker access for tests (call only under the input lock).</summary>
-    internal PenStateTracker Tracker => _tracker;
 
     /// <summary>Applies SurfaceInfo: (re)configures the mapper. Frames are dropped until this is called.</summary>
     public void ConfigureSurface(ushort widthPx, ushort heightPx)
@@ -167,31 +182,18 @@ internal sealed class SessionInput : IDisposable
     }
 
     /// <summary>
-    /// Handles one received UDP datagram in place (it is decrypted in the buffer). Allocation-free once the peer's
-    /// source endpoint is pinned. Never throws for bad input.
+    /// Handles one received UDP datagram in place (it is decrypted in the buffer). Allocation-free unless the source
+    /// endpoint changes. Never throws.
     /// </summary>
     public void ProcessDatagram(Span<byte> datagram, SocketAddress source)
     {
-        bool first = false;
+        bool ack = false;
         ulong highest = 0;
+        Exception? fault = null;
         lock (_lock)
         {
-            if (_closed || _tlsMode)
+            if (_closed)
             {
-                return;
-            }
-
-            if (_pinned is not null)
-            {
-                if (!_pinned.Equals(source))
-                {
-                    _foreignSource++;
-                    return;
-                }
-            }
-            else if (!IsPeerAddress(source))
-            {
-                _foreignSource++;
                 return;
             }
 
@@ -221,30 +223,42 @@ internal sealed class SessionInput : IDisposable
             }
 
             _budget += 1; // Refund: only failed decryptions consume the budget.
-            if (_pinned is null)
+
+            // Authenticated and above the highest sequence (TryOpen guarantees both): safe to (re)pin.
+            if (_pinned is null || !_pinned.Equals(source))
             {
+                if (_pinned is not null)
+                {
+                    _endpointChanges++;
+                }
+
                 _pinned = Copy(source);
             }
 
-            if (!_firstDatagramSeen)
+            long now = _time.GetTimestamp();
+            if (!_acked || _time.GetElapsedTime(_lastAckTimestamp, now) >= AckInterval)
             {
-                _firstDatagramSeen = true;
-                first = true;
+                _acked = true;
+                _lastAckTimestamp = now;
+                ack = true;
                 highest = _cipher.HighestSequence;
             }
 
-            HandlePayloadLocked(datagram.Slice(InputDatagramHeader.Size, payloadLength));
+            fault = HandlePayloadLocked(datagram.Slice(InputDatagramHeader.Size, payloadLength), InputTransport.Udp);
         }
 
-        if (first)
+        if (ack)
         {
-            _onFirstDatagram?.Invoke(highest);
+            _onAck?.Invoke(highest);
         }
+
+        Report(fault);
     }
 
-    /// <summary>Handles a TLS-fallback InputFrame payload. From now on UDP datagrams for this session are ignored.</summary>
+    /// <summary>Handles a TLS-fallback InputFrame payload.</summary>
     public void ProcessInputFrame(ReadOnlySpan<byte> payload)
     {
+        Exception? fault;
         lock (_lock)
         {
             if (_closed)
@@ -252,32 +266,46 @@ internal sealed class SessionInput : IDisposable
                 return;
             }
 
-            _tlsMode = true;
-            HandlePayloadLocked(payload);
+            fault = HandlePayloadLocked(payload, InputTransport.Tls);
         }
+
+        Report(fault);
     }
 
-    /// <summary>Ends the session input: synthesizes the full release, stops the watchdog and drops the key.</summary>
+    /// <summary>Ends the session input: synthesizes the full release (unless faulted), stops the watchdog, drops the key.</summary>
     public void Shutdown()
     {
+        Exception? fault = null;
         lock (_lock)
         {
-            if (_closed)
+            if (_disposed)
             {
                 return;
             }
 
+            _disposed = true;
+            bool release = !_closed && _tracker.IsMapperConfigured;
             _closed = true;
             _watchdog.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
-            if (_tracker.IsMapperConfigured)
+            if (release)
             {
-                _tracker.Reset();
+                try
+                {
+                    _tracker.Reset();
+                }
+#pragma warning disable CA1031 // A faulty sink must not stop the session teardown.
+                catch (Exception ex)
+#pragma warning restore CA1031
+                {
+                    fault = FaultLocked(ex);
+                }
             }
 
             _cipher.Dispose();
         }
 
         _watchdog.Dispose();
+        Report(fault);
     }
 
     public void Dispose() => Shutdown();
@@ -317,24 +345,66 @@ internal sealed class SessionInput : IDisposable
 
     private static bool IsKnownTool(PenTool tool) => tool is PenTool.Pen or PenTool.Eraser or PenTool.FingerFallback;
 
-    private void HandlePayloadLocked(ReadOnlySpan<byte> payload)
+    private Exception? HandlePayloadLocked(ReadOnlySpan<byte> payload, InputTransport transport)
     {
         if (!InputPayload.TryRead(payload, out InputPayload frame))
         {
             _malformed++;
-            return;
+            return null;
         }
 
         if (!IsValid(frame))
         {
             _invalid++;
-            return;
+            return null;
         }
 
+        // Cross-transport ordering: never apply a frame older than the last one (timeUs wraps; compare as a delta).
+        if (_hasTime && unchecked((int)(frame.TimeUs - _lastTimeUs)) < 0)
+        {
+            _stale++;
+            return null;
+        }
+
+        _hasTime = true;
+        _lastTimeUs = frame.TimeUs;
+        _transport = transport;
         PenSample? pen = frame.Pen;
-        _tracker.ProcessFrame(frame.TimeUs, pen, frame.History, frame.Touches);
+        try
+        {
+            _tracker.ProcessFrame(frame.TimeUs, pen, frame.History, frame.Touches);
+        }
+#pragma warning disable CA1031 // Sink/tracker failures fault the session; they must not escape into the UDP loop.
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            return FaultLocked(ex);
+        }
+
         _accepted++;
         RearmLocked();
+        return null;
+    }
+
+    private Exception? FaultLocked(Exception ex)
+    {
+        _closed = true;
+        _watchdog.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        if (_faulted)
+        {
+            return null;
+        }
+
+        _faulted = true;
+        return ex;
+    }
+
+    private void Report(Exception? fault)
+    {
+        if (fault is not null)
+        {
+            _onFault?.Invoke(fault);
+        }
     }
 
     private void ApplyMapperLocked()
@@ -351,6 +421,7 @@ internal sealed class SessionInput : IDisposable
 
     private void OnWatchdog()
     {
+        Exception? fault = null;
         lock (_lock)
         {
             if (_closed)
@@ -358,9 +429,20 @@ internal sealed class SessionInput : IDisposable
                 return;
             }
 
-            _tracker.CheckWatchdog();
-            RearmLocked();
+            try
+            {
+                _tracker.CheckWatchdog();
+                RearmLocked();
+            }
+#pragma warning disable CA1031 // Never let a sink failure escape onto a timer thread.
+            catch (Exception ex)
+#pragma warning restore CA1031
+            {
+                fault = FaultLocked(ex);
+            }
         }
+
+        Report(fault);
     }
 
     private bool TryTakeBudget()
@@ -392,26 +474,6 @@ internal sealed class SessionInput : IDisposable
 
         return false;
     }
-
-    private bool IsPeerAddress(SocketAddress source)
-    {
-        // Runs only until the first authenticated datagram pins the endpoint; allocating here is fine.
-        try
-        {
-            IPEndPoint template = source.Family == AddressFamily.InterNetworkV6
-                ? new IPEndPoint(IPAddress.IPv6Any, 0)
-                : new IPEndPoint(IPAddress.Any, 0);
-            var endPoint = (IPEndPoint)template.Create(source);
-            return Normalize(endPoint.Address).Equals(_peerAddress);
-        }
-        catch (Exception ex) when (ex is ArgumentException or SocketException or InvalidCastException)
-        {
-            return false;
-        }
-    }
-
-    private static IPAddress Normalize(IPAddress address) =>
-        address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
 
     private static SocketAddress Copy(SocketAddress source)
     {

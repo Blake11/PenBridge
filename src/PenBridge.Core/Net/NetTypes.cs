@@ -149,11 +149,12 @@ public enum SessionEndReason
 
 /// <summary>Counters of the server's input path for the active session (all monotonic).</summary>
 /// <param name="Accepted">Valid frames handed to the tracker (UDP datagrams and TLS InputFrames).</param>
-/// <param name="Stale">Datagrams at or below the highest seen sequence (replays, reordering). Dropped before decryption.</param>
+/// <param name="Stale">Datagrams at or below the highest seen sequence (replays, reordering), dropped before decryption,
+/// plus frames older (by <c>timeUs</c>) than the last accepted one across transports.</param>
 /// <param name="AuthFailures">Datagrams whose AEAD tag didn't verify (tampered or forged).</param>
 /// <param name="Malformed">Datagrams with a bad size, header or session id, or an authenticated payload that doesn't parse.</param>
 /// <param name="Invalid">Authenticated, well-formed frames rejected by sample validation.</param>
-/// <param name="ForeignSource">Datagrams from a source other than the session peer (pinned endpoint).</param>
+/// <param name="EndpointChanges">Times an authenticated, newer datagram from a new source re-pinned the UDP endpoint (roaming).</param>
 /// <param name="RateLimited">Datagrams dropped undecrypted because the forged-datagram budget was exhausted.</param>
 public readonly record struct InputCounters(
     long Accepted,
@@ -161,7 +162,7 @@ public readonly record struct InputCounters(
     long AuthFailures,
     long Malformed,
     long Invalid,
-    long ForeignSource,
+    long EndpointChanges,
     long RateLimited);
 
 /// <summary>Snapshot for the menu-bar UI (<see cref="PenBridgeServer.GetStats"/>).</summary>
@@ -255,4 +256,16 @@ public static class PeerText
 
         return builder.ToString();
     }
+}
+
+/// <summary>Outcome of activating an authenticated connection as the session.</summary>
+internal enum ActivationResult
+{
+    Activated,
+
+    /// <summary>Another device is active and takeover is off.</summary>
+    Busy,
+
+    /// <summary>The device was forgotten after it authenticated.</summary>
+    Unpaired,
 }

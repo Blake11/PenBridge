@@ -54,15 +54,15 @@ public class InputChannelTests
         client.SendRawDatagram(last.AsSpan(0, 20)); // truncated
         using (var foreign = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp))
         {
-            foreign.SendTo(WithSequence(last, 2000), new IPEndPoint(IPAddress.Loopback, h.Port));
+            foreign.SendTo(WithSequence(last, 2000), new IPEndPoint(IPAddress.Loopback, h.Port)); // forged, elsewhere
         }
 
         await Wait.Until(
             () =>
             {
                 InputCounters c = h.Server.GetStats().Counters;
-                return c.Stale == before.Stale + 2 && c.AuthFailures == before.AuthFailures + 2
-                    && c.Malformed == before.Malformed + 1 && c.ForeignSource == before.ForeignSource + 1;
+                return c.Stale == before.Stale + 2 && c.AuthFailures == before.AuthFailures + 3
+                    && c.Malformed == before.Malformed + 1 && c.EndpointChanges == before.EndpointChanges;
             },
             "all bad datagrams counted");
         Assert.Equal(before.Accepted, h.Server.GetStats().Counters.Accepted);
@@ -176,7 +176,7 @@ public class InputChannelTests
         client.SendState(Pens.Hover(1000, 1000), []);
         Assert.Equal(InputTransport.None, client.Transport);
 
-        h.Time.Advance(TimeSpan.FromMilliseconds(999));
+        h.Time.Advance(TimeSpan.FromMilliseconds(1999));
         Assert.NotEqual(InputTransport.Tls, client.Transport);
         h.Time.Advance(TimeSpan.FromMilliseconds(1));
 
@@ -211,5 +211,119 @@ public class InputChannelTests
         Assert.All(gestures, g => Assert.Equal(GestureKind.Scroll, g.Kind));
         Assert.Equal(GesturePhase.Began, gestures[0].Phase);
         Assert.Empty(h.Sink.Pen());
+    }
+
+    [Fact]
+    public async Task Fallback_probes_udp_every_10_s_and_switches_back_on_ack()
+    {
+        await using var h = new NetHarness();
+        var blocked = new StrongBox<bool>(true);
+        PenBridgeClient client = await h.PairAsync(filter: _ => !blocked.Value);
+        client.SendState(Pens.Hover(1000, 1000), []);
+        h.Time.Advance(TimeSpan.FromSeconds(2));
+        Assert.Equal(InputTransport.Tls, client.Transport);
+        await Wait.Until(() => h.Server.GetStats().Transport == InputTransport.Tls, "server on TLS");
+
+        blocked.Value = false; // the network recovers
+        await Wait.Step(h.Time, TimeSpan.FromSeconds(9));
+        Assert.Equal(InputTransport.Tls, client.Transport); // no probe yet
+
+        h.Time.Advance(TimeSpan.FromSeconds(1)); // probe
+        await Wait.Until(() => client.Transport == InputTransport.Udp, "switched back to UDP after the probe ack");
+
+        h.Sink.Clear();
+        client.SendState(Pens.Contact(1200, 1000), []);
+        await Wait.Until(() => h.Sink.PenKinds().Contains(PenEventKind.Down), "input over UDP again");
+        await Wait.Until(() => h.Server.GetStats().Transport == InputTransport.Udp, "server on UDP");
+    }
+
+    [Fact]
+    public async Task Continuous_streaming_is_re_acked_and_never_falls_back()
+    {
+        await using var h = new NetHarness();
+        PenBridgeClient client = await h.PairAsync();
+        client.SendState(Pens.Contact(3000, 3000), []);
+        await Wait.Until(() => client.Transport == InputTransport.Udp, "first ack");
+
+        for (int i = 0; i < 125; i++) // 5 s of contact keepalives
+        {
+            long accepted = h.Server.GetStats().Counters.Accepted;
+            h.Time.Advance(TimeSpan.FromMilliseconds(40));
+            await Wait.Until(() => h.Server.GetStats().Counters.Accepted > accepted, "keepalive " + i);
+        }
+
+        Assert.Equal(InputTransport.Udp, client.Transport);
+        Assert.Equal(InputTransport.Udp, h.Server.GetStats().Transport);
+    }
+
+    [Fact]
+    public async Task A_roaming_phone_keeps_its_session_from_a_new_udp_source()
+    {
+        await using var h = new NetHarness();
+        var divert = new StrongBox<bool>(false);
+        var diverted = new List<byte[]>();
+        PenBridgeClient client = await h.PairAsync(filter: d =>
+        {
+            if (!divert.Value)
+            {
+                return true;
+            }
+
+            lock (diverted)
+            {
+                diverted.Add(d.ToArray());
+            }
+
+            return false;
+        });
+        client.SendState(Pens.Hover(1000, 1000), []);
+        await Wait.Until(() => h.Server.GetStats().Counters.Accepted == 1, "first datagram");
+
+        divert.Value = true;
+        client.SendState(Pens.Contact(1000, 1000), []);
+        byte[] datagram;
+        lock (diverted)
+        {
+            datagram = diverted[0];
+        }
+
+        using (var roamed = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp))
+        {
+            roamed.SendTo(datagram, new IPEndPoint(IPAddress.Loopback, h.Port)); // same datagram, new source port
+            await Wait.Until(() => h.Sink.PenKinds().Contains(PenEventKind.Down), "accepted from the new source");
+        }
+
+        Assert.Equal(1, h.Server.GetStats().Counters.EndpointChanges);
+    }
+
+    [Fact]
+    public async Task A_stalled_server_blocks_neither_send_state_nor_dispose()
+    {
+        await using var h = new NetHarness();
+        await using var proxy = new PausableProxy(h.Port);
+        PenBridgeClient client = h.CreateClient(filter: _ => false); // UDP blocked: input goes over TLS
+        h.Server.OpenPairingWindow();
+        await client.PairWithPinAsync("127.0.0.1", proxy.Port, h.Server.CurrentPin!).Bounded();
+        await h.WaitForSurfaceAsync();
+        client.SendState(Pens.Contact(1000, 1000), []);
+        h.Time.Advance(TimeSpan.FromSeconds(2));
+        Assert.Equal(InputTransport.Tls, client.Transport);
+
+        proxy.Paused = true; // the server side stops reading: TCP buffers fill, then writes stall
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        TimeSpan worst = TimeSpan.Zero;
+        for (int i = 0; i < 50_000; i++)
+        {
+            long t0 = watch.ElapsedTicks;
+            Assert.True(client.SendState(Pens.Contact((ushort)(i % 60000), 1000, 30000), []));
+            worst = TimeSpan.FromTicks(Math.Max(worst.Ticks, (long)((watch.ElapsedTicks - t0) * (TimeSpan.TicksPerSecond / (double)System.Diagnostics.Stopwatch.Frequency))));
+        }
+
+        Assert.True(worst < TimeSpan.FromMilliseconds(500), "SendState blocked for " + worst);
+        Assert.True(client.FallbackFramesDropped > 0, "the fallback writer never stalled, so the test proved nothing");
+
+        var dispose = System.Diagnostics.Stopwatch.StartNew();
+        await client.DisposeAsync().AsTask().Bounded();
+        Assert.True(dispose.Elapsed < TimeSpan.FromSeconds(2), "DisposeAsync took " + dispose.Elapsed);
     }
 }

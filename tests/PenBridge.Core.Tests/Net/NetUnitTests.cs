@@ -27,8 +27,8 @@ public class NetUnitTests
         public void OnGestureEvent(in GestureEvent e) => Gestures++;
     }
 
-    private static SessionInput CreateInput(IInputSink sink, TimeProvider time) =>
-        new(new Lock(), sink, time, null, Key, SessionId, IPAddress.Loopback, new DisplayRect(0, 0, 1000, 2000), NormalizedRect.Full, 16, null);
+    private static SessionInput CreateInput(IInputSink sink, TimeProvider time, Action<ulong>? onAck = null, Action<Exception>? onFault = null) =>
+        new(new Lock(), sink, time, null, Key, SessionId, new DisplayRect(0, 0, 1000, 2000), NormalizedRect.Full, 16, onAck, onFault);
 
     private static int Seal(InputCipher cipher, byte[] buffer, ulong sequence, uint timeUs, in PenSample? pen, ReadOnlySpan<TouchSample> touches)
     {
@@ -100,32 +100,9 @@ public class NetUnitTests
             i =>
             {
                 copy.CopyTo(scratch);
-                input.ProcessDatagram(scratch, (i & 1) == 0 ? source : foreign); // stale or foreign
+                input.ProcessDatagram(scratch, (i & 1) == 0 ? source : foreign); // stale, from the pinned or another source
             },
-            () => input.Counters.Stale + input.Counters.ForeignSource);
-    }
-
-    [Fact]
-    public void Client_serialize_and_seal_path_is_allocation_free()
-    {
-        // Mirrors PenBridgeClient.SendLocked: header, payload, seal into one reused buffer.
-        using var cipher = new InputCipher(Key, SessionId);
-        byte[] buffer = new byte[InputDatagram.MaxSize];
-        PenSample[] history = [Pens.Contact(1, 1), Pens.Contact(2, 2), Pens.Contact(3, 3)];
-        ulong sequence = 0;
-        long sealedCount = 0;
-
-        Alloc.AssertZero(
-            200,
-            i =>
-            {
-                PenSample? pen = (i & 1) == 0 ? Pens.Contact((ushort)i, 2) : null;
-                new InputDatagramHeader(InputDatagramOptions.None, SessionId, ++sequence).Write(buffer);
-                int n = InputPayload.Write(buffer.AsSpan(InputDatagramHeader.Size), (uint)i, pen, [], history);
-                cipher.Seal(buffer, n);
-                sealedCount++;
-            },
-            () => sealedCount);
+            () => input.Counters.Stale);
     }
 
     [Fact]
@@ -158,32 +135,126 @@ public class NetUnitTests
     }
 
     [Fact]
-    public void Datagrams_from_another_ip_never_reach_decryption()
+    public void Only_an_authenticated_newer_datagram_moves_the_pinned_endpoint()
     {
-        using SessionInput input = CreateInput(new CountingSink(), new FakeTime());
+        var sink = new CountingSink();
+        using SessionInput input = CreateInput(sink, new FakeTime());
+        input.ConfigureSurface(1440, 3088);
         using var sealer = new InputCipher(Key, SessionId);
+        SocketAddress home = Peer.Serialize();
+        SocketAddress roamed = new IPEndPoint(IPAddress.Parse("10.1.2.3"), 40000).Serialize();
         byte[] buffer = new byte[InputDatagram.MaxSize];
         int length = Seal(sealer, buffer, 1, 0, Pens.Hover(1, 1), []);
+        input.ProcessDatagram(buffer.AsSpan(0, length), home);
+        byte[] replay = buffer.AsSpan(0, length).ToArray();
 
-        input.ProcessDatagram(buffer.AsSpan(0, length), new IPEndPoint(IPAddress.Parse("10.1.2.3"), 50000).Serialize());
+        // A forged or replayed datagram from elsewhere doesn't move it.
+        byte[] forged = replay.ToArray();
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(forged.AsSpan(8), 99);
+        input.ProcessDatagram(forged, roamed);
+        input.ProcessDatagram(replay.ToArray(), roamed);
+        Assert.Equal(0, input.Counters.EndpointChanges);
 
-        Assert.Equal(1, input.Counters.ForeignSource);
-        Assert.Equal(0, input.Counters.AuthFailures);
+        // A genuine newer one does (the phone roamed); then the old source is just another endpoint.
+        length = Seal(sealer, buffer, 2, 10, Pens.Hover(2, 2), []);
+        input.ProcessDatagram(buffer.AsSpan(0, length), roamed);
+        Assert.Equal(1, input.Counters.EndpointChanges);
+        Assert.Equal(2, input.Counters.Accepted);
+        Assert.Equal(1, input.Counters.AuthFailures);
+        Assert.Equal(1, input.Counters.Stale);
     }
 
     [Fact]
-    public void Ipv4_mapped_peer_addresses_match_plain_ipv4_sources()
+    public void UdpAck_is_resent_at_most_once_per_second_while_datagrams_arrive()
     {
-        var sink = new CountingSink();
-        using var input = new SessionInput(new Lock(), sink, new FakeTime(), null, Key, SessionId, IPAddress.Loopback.MapToIPv6(), new DisplayRect(0, 0, 1, 1), NormalizedRect.Full, 16, null);
+        var time = new FakeTime();
+        var acks = new List<ulong>();
+        using SessionInput input = CreateInput(new CountingSink(), time, onAck: acks.Add);
         input.ConfigureSurface(100, 100);
         using var sealer = new InputCipher(Key, SessionId);
         byte[] buffer = new byte[InputDatagram.MaxSize];
-        int length = Seal(sealer, buffer, 1, 0, Pens.Hover(1, 1), []);
+        for (ulong seq = 1; seq <= 30; seq++)
+        {
+            int length = Seal(sealer, buffer, seq, (uint)(seq * 100_000), Pens.Hover(1, 1), []);
+            input.ProcessDatagram(buffer.AsSpan(0, length), Peer.Serialize());
+            time.Advance(TimeSpan.FromMilliseconds(100));
+        }
 
-        input.ProcessDatagram(buffer.AsSpan(0, length), new IPEndPoint(IPAddress.Loopback.MapToIPv6(), 4000).Serialize());
+        Assert.Equal([1UL, 11UL, 21UL], acks);
+    }
 
-        Assert.Equal(1, input.Counters.Accepted);
+    [Fact]
+    public void Frames_older_than_the_last_accepted_are_dropped_across_transports()
+    {
+        var sink = new ConcurrentSink();
+        using SessionInput input = CreateInput(sink, new FakeTime());
+        input.ConfigureSurface(100, 100);
+        using var sealer = new InputCipher(Key, SessionId);
+        byte[] buffer = new byte[InputDatagram.MaxSize];
+        int length = Seal(sealer, buffer, 1, 5000, Pens.Contact(1, 1), []);
+        input.ProcessDatagram(buffer.AsSpan(0, length), Peer.Serialize());
+        Assert.Equal(InputTransport.Udp, input.Transport);
+
+        // A late fallback frame from before the UDP one is ignored; a newer one is applied.
+        byte[] frame = new byte[InputPayload.MaxSize];
+        int n = InputPayload.Write(frame, 4000, Pens.Hover(9, 9), [], default);
+        input.ProcessInputFrame(frame.AsSpan(0, n));
+        Assert.Equal(1, input.Counters.Stale);
+        n = InputPayload.Write(frame, 6000, Pens.Hover(9, 9), [], default);
+        input.ProcessInputFrame(frame.AsSpan(0, n));
+        Assert.Equal(InputTransport.Tls, input.Transport);
+        Assert.Equal([PenEventKind.ProximityEnter, PenEventKind.Down, PenEventKind.Up], sink.PenKinds());
+    }
+
+    private sealed class ThrowingSink(Func<PenEvent, bool> throwOn) : IInputSink
+    {
+        public int Calls;
+
+        public void OnPenEvent(in PenEvent e)
+        {
+            Calls++;
+            if (throwOn(e))
+            {
+                throw new InvalidOperationException("sink failure");
+            }
+        }
+
+        public void OnGestureEvent(in GestureEvent e)
+        {
+        }
+    }
+
+    [Fact]
+    public void A_throwing_sink_faults_the_session_once_without_escaping_datagram_or_watchdog_paths()
+    {
+        var time = new FakeTime();
+        var faults = new List<Exception>();
+        var sink = new ThrowingSink(e => e.Synthetic);
+        using SessionInput input = CreateInput(sink, time, onFault: faults.Add);
+        input.ConfigureSurface(100, 100);
+        using var sealer = new InputCipher(Key, SessionId);
+        byte[] buffer = new byte[InputDatagram.MaxSize];
+        int length = Seal(sealer, buffer, 1, 0, Pens.Contact(1, 1), []);
+        input.ProcessDatagram(buffer.AsSpan(0, length), Peer.Serialize());
+
+        time.Advance(TimeSpan.FromMilliseconds(150)); // watchdog → synthetic Up → sink throws on the timer callback
+
+        Assert.Single(faults);
+        int calls = sink.Calls;
+        length = Seal(sealer, buffer, 2, 10, Pens.Contact(2, 2), []);
+        input.ProcessDatagram(buffer.AsSpan(0, length), Peer.Serialize()); // faulted: ignored
+        input.Shutdown(); // no release into the broken sink
+        Assert.Equal(calls, sink.Calls);
+        Assert.Single(faults);
+
+        var direct = new ThrowingSink(_ => true);
+        var faults2 = new List<Exception>();
+        using SessionInput second = CreateInput(direct, time, onFault: faults2.Add);
+        second.ConfigureSurface(100, 100);
+        using var sealer2 = new InputCipher(Key, SessionId);
+        length = Seal(sealer2, buffer, 1, 0, Pens.Hover(1, 1), []);
+        second.ProcessDatagram(buffer.AsSpan(0, length), Peer.Serialize()); // must not throw
+        Assert.Single(faults2);
     }
 
     [Fact]

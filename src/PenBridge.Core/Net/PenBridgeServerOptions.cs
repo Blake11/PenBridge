@@ -41,8 +41,8 @@ public sealed class PenBridgeServerOptions
     /// <summary>Host put into QR payloads; null picks the first non-loopback IPv4 address.</summary>
     public string? AdvertisedHost { get; init; }
 
-    /// <summary>From TCP accept until SessionStart (TLS handshake, Hello, pairing, Auth).</summary>
-    public TimeSpan HandshakeTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    /// <summary>Pre-auth deadline: from accept until SessionStart, excluding pairing (which has <see cref="PairingTimeout"/> and is followed by a fresh pre-auth deadline for Auth).</summary>
+    public TimeSpan HandshakeTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
     /// <summary>Deadline for each control read before the session starts.</summary>
     public TimeSpan ReadTimeout { get; init; } = TimeSpan.FromSeconds(10);
@@ -58,6 +58,12 @@ public sealed class PenBridgeServerOptions
 
     /// <summary>Concurrent connections that haven't authenticated yet; more are closed on accept.</summary>
     public int MaxPendingConnections { get; init; } = 8;
+
+    /// <summary>Concurrent unauthenticated connections from one remote IP, so one host can't take every pending slot.</summary>
+    public int MaxPendingConnectionsPerAddress { get; init; } = 2;
+
+    /// <summary>Tests only: the exact ports to try, replacing <see cref="Port"/> + <see cref="PortFallbackCount"/>.</summary>
+    internal IReadOnlyList<int>? PortCandidates { get; init; }
 
     /// <summary>Sustained rate of failed datagram decryptions tolerated per session (bursts up to twice this).</summary>
     public int MaxAuthFailuresPerSecond { get; init; } = 16;
