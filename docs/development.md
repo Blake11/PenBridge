@@ -183,3 +183,5 @@ scripts/android-run.sh --device 192.168.1.23:41234 --logs
 - **Emulator won't boot.** Check `$TMPDIR/penbridge-emulator.log`. Try `--cold-boot`, then `--wipe`. `--recreate` rebuilds the AVD after you change `AVD_DEVICE` or `ANDROID_API_LEVEL`.
 - **`adb pair` fails.** The code and the pairing port expire when the dialog closes; reopen it. Use the pairing port for `pair` and the connect port for `connect`. VPNs and guest Wi-Fi with client isolation block wireless adb.
 - **Accessibility granted, but nothing happens.** The signature changed. Check `codesign -dr - <app>`: it should show `certificate leaf`, not `cdhash`. Then run `--reset-tcc`.
+
+<!-- skip-proof: throwaway, do not merge -->
