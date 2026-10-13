@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using PenBridge.Core.Security;
+using PenBridge.Core.Tests.Input;
 
 namespace PenBridge.Core.Tests.Security;
 
@@ -147,19 +148,12 @@ public class InputCipherTests
             }
         }
 
-        for (int i = 0; i < 100; i++)
+        long opened = 0;
+        Alloc.AssertZero(1_000, _ =>
         {
             RoundTrip();
-        }
-
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 1000; i++)
-        {
-            RoundTrip();
-        }
-
-        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
-        Assert.Equal(0, allocated);
+            opened++;
+        }, () => opened);
     }
 
     private static byte[] Sealed(InputCipher tx, ulong seq, int payloadLength, out int length)

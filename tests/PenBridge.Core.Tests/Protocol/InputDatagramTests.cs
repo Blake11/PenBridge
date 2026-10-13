@@ -1,5 +1,6 @@
 using PenBridge.Core.Input;
 using PenBridge.Core.Protocol;
+using PenBridge.Core.Tests.Input;
 
 namespace PenBridge.Core.Tests.Protocol;
 
@@ -188,19 +189,16 @@ public class InputDatagramTests
 
     private static void AssertNoAllocations(TouchSample[] touches, PenSample[] history)
     {
-        Span<byte> datagram = stackalloc byte[InputDatagram.MaxSize];
-        Span<byte> frameBuffer = stackalloc byte[ControlFrame.HeaderSize + InputPayload.MaxSize];
+        byte[] datagram = new byte[InputDatagram.MaxSize];
+        byte[] frameBuffer = new byte[ControlFrame.HeaderSize + InputPayload.MaxSize];
         int payloadLength = InputPayload.GetSize(true, touches.Length, history.Length);
+        long roundTrips = 0;
 
-        RoundTrip(datagram, frameBuffer, payloadLength, touches, history, 1);
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        for (ulong i = 2; i < 10_002; i++)
+        Alloc.AssertZero(2_000, i =>
         {
-            RoundTrip(datagram, frameBuffer, payloadLength, touches, history, i);
-        }
-
-        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
-        Assert.Equal(0, allocated);
+            RoundTrip(datagram, frameBuffer, payloadLength, touches, history, (ulong)i + 1);
+            roundTrips++;
+        }, () => roundTrips);
     }
 
     private static void RoundTrip(Span<byte> buffer, Span<byte> frameBuffer, int payloadLength, TouchSample[] touches, PenSample[] history, ulong sequence)
