@@ -17,15 +17,24 @@
   </PropertyGroup>
 
   <!--
-    BouncyCastle.Cryptography (J-PAKE, ADR-0009) is not marked IsTrimmable. Under the heads' default
-    partial trim mode ILLink therefore copies the whole assembly and analyses every type in it,
+    BouncyCastle.Cryptography (J-PAKE, ADR-0009) is not marked IsTrimmable. Under partial trimming
+    (Android Release, iOS) ILLink therefore copies the whole assembly and analyses every type in it,
     including unused OpenPGP code (Org.BouncyCastle.Bcpg) that reports IL2045, which fails the build
     as IL2104. Instead of suppressing, opt the assembly into trimming: ILLink keeps only the code
     PenBridge.Core reaches (JPake, digests, BigInteger) and analyses that, which is warning-free.
     A Native AOT publish of a full pairing (full trimming) is warning-free too.
-    Runs only when ILLink runs (trimmed head builds); a no-op for Core and the tests.
+
+    Only when the build really trims (issue #46). With TrimMode=copy (the macOS head's default
+    LinkMode=None, Debug and Release) every assembly is copied and the macOS SDK passes ILLink
+    `DisableMarkingOfCopyAssemblies=true`, so nothing inside the copied PenBridge.Core is walked and
+    none of its BouncyCastle references are marked. A link-mode BouncyCastle then has no marked code
+    and ILLink drops the whole assembly; pairing fails at runtime with FileNotFoundException.
+    Copy mode needs no override: the assembly is copied as is and trim analysis is off.
+    Guarded by scripts/check-bundle.sh and scripts/smoke-trimmed-pairing.sh (CI).
+    Runs only when ILLink runs (head builds); a no-op for Core and the tests.
   -->
-  <Target Name="PenBridgeTrimBouncyCastle" AfterTargets="PrepareForILLink">
+  <Target Name="PenBridgeTrimBouncyCastle" AfterTargets="PrepareForILLink"
+          Condition="'$(TrimMode)' != 'copy' and !$([System.String]::Copy('$(_ExtraTrimmerArgs)').Contains('DisableMarkingOfCopyAssemblies'))">
     <ItemGroup>
       <ManagedAssemblyToLink Condition="'%(Filename)' == 'BouncyCastle.Cryptography'">
         <IsTrimmable>true</IsTrimmable>
