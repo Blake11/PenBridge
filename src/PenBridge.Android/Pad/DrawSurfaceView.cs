@@ -36,6 +36,13 @@ internal sealed class DrawSurfaceView : View
     private readonly PenSample[] _samples = new PenSample[MaxSamplesPerEvent];
     private readonly Java.Lang.Runnable _penLeaveRunnable;
     private readonly Java.Lang.Runnable _armRunnable;
+
+    /// <summary>
+    /// Owned main-looper handler for the timers. <c>View.RemoveCallbacks</c> doesn't reach runnables already queued on
+    /// the looper once the view is detached, so a disposed runnable could still run (#78); a Handler always can.
+    /// </summary>
+    private readonly Handler _handler = new(Looper.MainLooper!);
+    private bool _disposed;
     private InputFilter _filter;
     private InputFilterOptions? _pendingFilterOptions;
     private int _fingerCount;
@@ -89,7 +96,7 @@ internal sealed class DrawSurfaceView : View
     /// <summary>Forgets all pointers and sends an empty state (pad hidden or paused).</summary>
     public void ReleaseAll()
     {
-        RemoveCallbacks(_penLeaveRunnable);
+        _handler.RemoveCallbacks(_penLeaveRunnable);
         _penLeavePending = false;
         _penPresent = false;
         _fingerCount = 0;
@@ -262,10 +269,16 @@ internal sealed class DrawSurfaceView : View
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing)
+        if (disposing && !_disposed)
         {
+            _disposed = true; // a callback already dequeued becomes a no-op
+            _handler.RemoveCallbacks(_penLeaveRunnable);
+            _handler.RemoveCallbacks(_armRunnable);
+            _penLeavePending = false;
+            _armAtMs = -1;
             _penLeaveRunnable.Dispose();
             _armRunnable.Dispose();
+            _handler.Dispose();
         }
 
         base.Dispose(disposing);
@@ -586,9 +599,9 @@ internal sealed class DrawSurfaceView : View
 
     private void SchedulePenLeave()
     {
-        RemoveCallbacks(_penLeaveRunnable);
+        _handler.RemoveCallbacks(_penLeaveRunnable);
         _penLeavePending = true;
-        PostDelayed(_penLeaveRunnable, PenLeaveDelayMs);
+        _handler.PostDelayed(_penLeaveRunnable, PenLeaveDelayMs);
     }
 
     private void CancelPenLeave()
@@ -596,13 +609,13 @@ internal sealed class DrawSurfaceView : View
         if (_penLeavePending)
         {
             _penLeavePending = false;
-            RemoveCallbacks(_penLeaveRunnable);
+            _handler.RemoveCallbacks(_penLeaveRunnable);
         }
     }
 
     private void OnPenLeaveTimeout()
     {
-        if (!_penLeavePending)
+        if (_disposed || !_penLeavePending)
         {
             return;
         }
@@ -629,9 +642,9 @@ internal sealed class DrawSurfaceView : View
             return;
         }
 
-        RemoveCallbacks(_armRunnable);
+        _handler.RemoveCallbacks(_armRunnable);
         _armAtMs = atMs;
-        PostDelayed(_armRunnable, Math.Max(0, atMs - SystemClock.UptimeMillis()));
+        _handler.PostDelayed(_armRunnable, Math.Max(0, atMs - SystemClock.UptimeMillis()));
     }
 
     private void CancelArm()
@@ -639,13 +652,13 @@ internal sealed class DrawSurfaceView : View
         if (_armAtMs >= 0)
         {
             _armAtMs = -1;
-            RemoveCallbacks(_armRunnable);
+            _handler.RemoveCallbacks(_armRunnable);
         }
     }
 
     private void OnArmTimeout()
     {
-        if (_armAtMs < 0)
+        if (_disposed || _armAtMs < 0)
         {
             return;
         }

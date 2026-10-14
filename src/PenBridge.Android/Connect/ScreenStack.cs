@@ -102,12 +102,12 @@ internal sealed class ScreenStack : Java.Lang.Object, View.IOnApplyWindowInsetsL
     public void Clear()
     {
         Pause();
+        _container.RemoveAllViews();
         for (int i = _stack.Count - 1; i >= 0; i--)
         {
-            _stack[i].Dispose(); // while still attached, see Detach
+            _stack[i].Dispose();
         }
 
-        _container.RemoveAllViews();
         _stack.Clear();
     }
 
@@ -144,11 +144,7 @@ internal sealed class ScreenStack : Java.Lang.Object, View.IOnApplyWindowInsetsL
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
-    /// <summary>
-    /// Pauses the screen and removes its view. When disposing, the screen is disposed <i>before</i> its view leaves
-    /// the window: <c>View.RemoveCallbacks</c> on a detached view doesn't reach runnables already posted to the
-    /// looper, and a disposed Java runnable that still runs crashes the app.
-    /// </summary>
+    /// <summary>Pauses the screen, removes its view, and disposes it when it leaves the stack.</summary>
     private void Detach(Screen? screen, bool dispose = false)
     {
         if (screen is null)
@@ -162,13 +158,11 @@ internal sealed class ScreenStack : Java.Lang.Object, View.IOnApplyWindowInsetsL
         }
 
         Ui.HideKeyboard(_container);
-        View view = screen.View;
+        _container.RemoveView(screen.View);
         if (dispose)
         {
             screen.Dispose();
         }
-
-        _container.RemoveView(view);
     }
 
     /// <summary>Disposes the (detached, never-shown-again) screens between the root and the top.</summary>

@@ -1,4 +1,5 @@
 using Android.Content.PM;
+using Android.OS;
 using Android.Views;
 using Android.Widget;
 using PenBridge.Core.Input;
@@ -36,6 +37,9 @@ public sealed class PadController : IDisposable
     private readonly InkEchoView? _ink;
     private readonly StatusDotView _dot;
     private readonly Java.Lang.Runnable _stateRunnable;
+
+    /// <summary>Owned main-looper handler: removing from it always works, attached view or not (#78).</summary>
+    private readonly Handler _handler = new(Looper.MainLooper!);
     private readonly Lock _postLock = new();
     private PadOrientationMode _orientation;
     private PadOrientationMode? _pendingOrientation;
@@ -174,9 +178,10 @@ public sealed class PadController : IDisposable
         }
 
         _dot.Tapped -= OnDotActivated;
-        _root.RemoveCallbacks(_stateRunnable);
+        _handler.RemoveCallbacks(_stateRunnable); // nothing can post it any more (see _postLock)
         _queue.Dispose();
         _stateRunnable.Dispose();
+        _handler.Dispose();
     }
 
     private InputFilterOptions CreateFilterOptions() => new()
@@ -193,7 +198,7 @@ public sealed class PadController : IDisposable
         {
             if (!_disposed)
             {
-                _root.Post(_stateRunnable);
+                _handler.Post(_stateRunnable);
             }
         }
     }
