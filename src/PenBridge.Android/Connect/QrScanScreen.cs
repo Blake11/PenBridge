@@ -1,4 +1,5 @@
 using Android.Gms.Tasks;
+using Android.Runtime;
 using Android.Views;
 using Android.Widget;
 using AndroidX.Camera.Core;
@@ -267,20 +268,30 @@ internal sealed class QrScanScreen : AttemptScreen
         {
             image.Close();
             Volatile.Write(ref _busy, 0);
-            if (!Enabled || !task.IsSuccessful || task.Result is not Java.Util.IList barcodes)
+            if (!Enabled || !task.IsSuccessful || AsList(task.Result) is not { } barcodes)
             {
                 return;
             }
 
             for (int i = 0; i < barcodes.Size(); i++)
             {
-                if (barcodes.Get(i) is Barcode { RawValue: { Length: > 0 and <= PairingQrPayload.MaxLength } raw })
+                if (AsBarcode(barcodes.Get(i)) is { RawValue: { Length: > 0 and <= PairingQrPayload.MaxLength } raw })
                 {
                     screen.OnCode(raw);
                     return;
                 }
             }
         }
+
+        /// <summary>
+        /// The task result is a <c>java.util.List</c>, but its managed peer is a plain <see cref="Java.Lang.Object"/>
+        /// (generic Java types have no registered peer), so a type test fails: cast through JNI instead.
+        /// </summary>
+        private static Java.Util.IList? AsList(Java.Lang.Object? result) =>
+            result is null ? null : result as Java.Util.IList ?? result.JavaCast<Java.Util.IList>();
+
+        private static Barcode? AsBarcode(Java.Lang.Object? item) =>
+            item is null ? null : item as Barcode ?? item.JavaCast<Barcode>();
 
         /// <summary>ML Kit completion, delivered on the main executor.</summary>
         private sealed class Completion(QrAnalyzer owner, IImageProxy image) : Java.Lang.Object, IOnCompleteListener
