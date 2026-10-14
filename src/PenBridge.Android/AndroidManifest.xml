@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
   <!-- TLS control channel and UDP input to the Mac. -->
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -20,5 +20,14 @@
     android:label="@string/app_name"
     android:networkSecurityConfig="@xml/network_security_config"
     android:supportsRtl="true"
-    android:theme="@style/PenBridgeTheme" />
+    android:theme="@style/PenBridgeTheme">
+    <!--
+      No third-party telemetry (ADR-0020). ML Kit pulls in Google's datatransport, which batches SDK usage events and
+      uploads them to Google (CCT backend). Without its backend discovery service no backend exists, so nothing is
+      sent; the scheduler components that would retry uploads go too. Barcode scanning itself runs on-device.
+    -->
+    <service android:name="com.google.android.datatransport.runtime.backends.TransportBackendDiscovery" tools:node="remove" />
+    <service android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService" tools:node="remove" />
+    <receiver android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.AlarmManagerSchedulerBroadcastReceiver" tools:node="remove" />
+  </application>
 </manifest>

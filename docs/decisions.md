@@ -154,3 +154,11 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
 - **QR scanning:** CameraX with Google ML Kit barcode scanning, **bundled** model (no Play Services dependency). CAMERA is requested only on "Scan QR".
 - **Secrets:** an AndroidKeyStore AES-GCM key encrypting a small file store (`ISecretStore`).
 - **Tilt conversion:** `Axis.Tilt` + `Axis.Orientation` → the Core convention (+x right, +y down, centi-degrees), as a pure function in Core with tests.
+
+## ADR-0020 — No third-party telemetry: strip ML Kit datatransport
+**Status:** accepted (2026-10-14)
+- **Context:** ML Kit barcode scanning (ADR-0019) pulls in Google's `datatransport` runtime. It batches SDK usage events and uploads them to Google through its CCT backend, independent of Play Services and of anything the user agreed to.
+- **Decision:** PenBridge sends no third-party telemetry. The Android manifest removes the datatransport components with `tools:node="remove"`: `TransportBackendDiscovery` (so no backend is registered), `JobInfoSchedulerService` and `AlarmManagerSchedulerBroadcastReceiver`. ML Kit only logs "Transport backend 'cct' is not registered"; the bundled model still loads and decodes on-device.
+- **Why not an SDK opt-out:** ML Kit has no public switch to disable its usage logging.
+- **Why not another scanner:** ZXing-style decoders are less robust on camera frames. The bundled ML Kit model works with the uploads cut at the manifest.
+- **Consequences:** a dependency update that adds a new uploader must be caught. Review the merged manifest (`obj/<config>/net10.0-android/android/AndroidManifest.xml`) for `datatransport`, `firebase` or analytics components when bumping ML Kit or CameraX. Applies to every future head and dependency.
