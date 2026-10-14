@@ -76,6 +76,29 @@ internal sealed class FakeTime : TimeProvider
         }
     }
 
+    /// <summary>
+    /// Counts the armed one-shot timers (deadlines) for which <paramref name="match"/>(state, armed for, remaining)
+    /// holds; periodic timers (pings) are skipped. Lets a test wait for real I/O to finish or re-arm a deadline
+    /// instead of guessing a real delay. Not called under any product lock: <paramref name="match"/> must be pure.
+    /// </summary>
+    public int CountDeadlines(Func<object?, TimeSpan, TimeSpan, bool> match)
+    {
+        lock (_lock)
+        {
+            int n = 0;
+            foreach (FakeTimer t in _timers)
+            {
+                if (t.Period == 0 && t.Due != long.MaxValue
+                    && match(t.State, TimeSpan.FromTicks(t.ArmedFor), TimeSpan.FromTicks(t.Due - _ticks)))
+                {
+                    n++;
+                }
+            }
+
+            return n;
+        }
+    }
+
     private sealed class FakeTimer(FakeTime owner, TimerCallback callback, object? state) : ITimer
     {
         public TimerCallback Callback { get; } = callback;
@@ -86,10 +109,14 @@ internal sealed class FakeTime : TimeProvider
 
         public long Period { get; set; }
 
+        /// <summary>The due time of the last <see cref="Change"/>, in ticks (-1 when disarmed).</summary>
+        public long ArmedFor { get; private set; } = -1;
+
         public bool Change(TimeSpan dueTime, TimeSpan period)
         {
             lock (owner._lock)
             {
+                ArmedFor = dueTime == Timeout.InfiniteTimeSpan ? -1 : dueTime.Ticks;
                 Due = dueTime == Timeout.InfiniteTimeSpan ? long.MaxValue : owner._ticks + Math.Max(0, dueTime.Ticks);
                 Period = period == Timeout.InfiniteTimeSpan || period <= TimeSpan.Zero ? 0 : period.Ticks;
             }
@@ -203,17 +230,55 @@ internal static class Wait
         }
     }
 
+    /// <summary>The default peer timeout and ping interval (both sides) the liveness waits assume.</summary>
+    public static readonly TimeSpan PeerTimeout = TimeSpan.FromSeconds(6);
+
+    public static readonly TimeSpan PingInterval = TimeSpan.FromSeconds(2);
+
     /// <summary>
-    /// Advances fake time in 1 s steps with a short real pause between them, so pings and pongs actually cross the
-    /// loopback before the next liveness deadline: one big jump would fire every deadline before any I/O ran.
+    /// Waits until the last ping round reached both peers: every control-channel read deadline (armed for the
+    /// default peer timeout) is more than <c>PeerTimeout - PingInterval</c> away, so the next step can't expire it.
+    /// Before a round's frames arrive, a deadline is at most that far away.
     /// </summary>
-    public static async Task Step(FakeTime time, TimeSpan total)
+    public static Task PeersAlive(FakeTime time) =>
+        Until(() => time.CountDeadlines(static (state, armedFor, remaining) =>
+            state is ControlChannel && armedFor == PeerTimeout && remaining <= PeerTimeout - PingInterval) == 0,
+            "pings crossed the loopback");
+
+    /// <summary>
+    /// Waits until no control-channel write is in flight. A write's deadline counts fake time
+    /// (<see cref="ControlChannel.WriteTimeout"/>), so a write that is merely slow in real time would expire if the
+    /// test kept stepping.
+    /// </summary>
+    public static Task WritesDone(FakeTime time) =>
+        Until(() => time.CountDeadlines(static (state, armedFor, _) =>
+            state is ControlChannel && armedFor == ControlChannel.WriteTimeout) == 0,
+            "control writes finished");
+
+    /// <summary><see cref="PeersAlive"/> then <see cref="WritesDone"/>: real I/O has caught up with fake time.</summary>
+    public static async Task Settled(FakeTime time)
     {
-        TimeSpan step = TimeSpan.FromSeconds(1);
-        for (TimeSpan done = TimeSpan.Zero; done < total; done += step)
+        await PeersAlive(time);
+        await WritesDone(time);
+    }
+
+    /// <summary>
+    /// Advances fake time in steps of at most <paramref name="step"/> (default 1 s). After each step it waits until
+    /// real I/O caught up (<see cref="Settled"/>) and <paramref name="settled"/> holds, so I/O keeps up with fake time
+    /// however slow the machine is: one big jump, or a fixed real pause per step, lets deadlines expire before the
+    /// I/O that would have re-armed or finished them ran. Keep steps below the write timeout (2 s).
+    /// </summary>
+    public static async Task Step(FakeTime time, TimeSpan total, TimeSpan? step = null, Func<bool>? settled = null)
+    {
+        TimeSpan size = step ?? TimeSpan.FromSeconds(1);
+        for (TimeSpan done = TimeSpan.Zero; done < total; done += size)
         {
-            time.Advance(total - done < step ? total - done : step);
-            await Task.Delay(20);
+            time.Advance(total - done < size ? total - done : size);
+            await Settled(time);
+            if (settled is not null)
+            {
+                await Until(settled, "I/O settled after a fake-time step");
+            }
         }
     }
 

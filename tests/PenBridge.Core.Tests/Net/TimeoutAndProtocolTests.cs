@@ -120,11 +120,14 @@ public class TimeoutAndProtocolTests
     {
         await using var h = new NetHarness();
         PenBridgeClient client = await h.PairAsync();
-        for (int i = 0; i < 10; i++)
-        {
-            h.Time.Advance(TimeSpan.FromSeconds(2));
-            await Task.Delay(10); // let the pings and pongs cross the loopback
-        }
+
+        // Both session read loops are waiting under a peer-timeout deadline, so the waits below are not vacuous.
+        await Wait.Until(() => h.Time.CountDeadlines(static (s, armedFor, _) => s is ControlChannel && armedFor == Wait.PeerTimeout) == 2, "both read deadlines armed");
+
+        // 20 s of fake time (> the 6 s peer timeout) in 1 s steps. Each step waits for the pings to reach both peers:
+        // under CPU load a fixed real pause is not enough, and a few steps without the I/O completing add up to a
+        // peer timeout.
+        await Wait.Step(h.Time, TimeSpan.FromSeconds(20));
 
         Assert.True(client.IsConnected);
         Assert.True(h.Server.GetStats().HasSession);
