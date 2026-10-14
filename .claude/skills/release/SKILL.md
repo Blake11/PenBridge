@@ -18,9 +18,19 @@ Details: `docs/releasing.md`, `.github/workflows/release-please.yml`, `.github/w
 ## Flow
 1. PRs squash-merge into `main` with Conventional titles. From 1.0: `feat:` → minor, `fix:`/`perf:` → patch, `!` → major. `docs/ci/chore/test/refactor/build/style` don't bump.
 2. `release-please.yml` (on push to main) maintains a release PR (version bump + CHANGELOG). The user holds it until the phase/fix is verified.
-3. Without `RELEASE_PLEASE_TOKEN` (#23), CI on the release PR waits for **Approve and run** in the PR's checks; required checks must pass before merging.
+3. Without `RELEASE_PLEASE_TOKEN` (#23), the bot's release PR starts no CI. Trigger it with a user-token event: `gh pr close <N> && gh pr reopen <N>` (worked for 1.0.0), or set up the #23 PAT. Required checks must pass before merging.
 4. Merging the release PR (user) creates tag `vX.Y.Z` + GitHub Release and calls `build-release.yml` (`dry_run: false`).
 5. `build-release.yml` builds the macOS `.zip` + `.dmg` (ad-hoc) and the release-signed APK (checked with `apksigner`: debug-key APKs fail), writes `SHA256SUMS`, uploads to the release.
+
+## Verify the published assets
+```bash
+gh release download vX.Y.Z -R Blake11/PenBridge -D /tmp/rel && cd /tmp/rel
+shasum -a 256 -c SHA256SUMS
+JAVA_HOME=/opt/homebrew/opt/openjdk@17 $ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs <apk>   # compare with the release keystore's cert (keytool -list -v)
+codesign -dv PenBridge.app           # from the .zip/.dmg: ad-hoc, identifier com.blake11.penbridge
+lipo -archs PenBridge.app/Contents/MacOS/PenBridge   # x86_64 arm64 (universal)
+```
+- A locally built Release APK is signed with the same release keystore, so the published APK installs over it in place (`adb install -r`) and keeps the pairing.
 
 ## Dry run and rebuilds (ask the user before running workflows)
 - **Dry run** (the `workflow_dispatch` default): builds the assets as workflow artifacts only, no release touched. `version` stamps a future version:

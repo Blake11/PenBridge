@@ -45,17 +45,21 @@ Report in <200 words: what changed (paths), test results, deviations, bugs found
 ## 6. Review
 - Read the diff (`git diff`, or the worktree branch). Run the `reviewer` agent before **every** PR (hot-path perf, security of pairing/injection, protocol versioning).
 - Verify: `scripts/test.sh`, `dotnet build PenBridge.slnx`, device checks per skill `mac-build-run` / `android-build-run`. Ask the user to do device checks you can't do.
+- **Interactive device tests (P3-D pattern):** an agent preps the device (install, discovery check, log capture) and returns a numbered checklist; the user does the interactive steps; the architect analyses the captures (e.g. `scripts/latency-report.sh`).
 - Send fixes back to the same agent (SendMessage) rather than fixing in the main session — minor findings too.
 - Reviewer findings not fixed in the same PR become issues (`type: bug` or `type: chore`, right milestone) — never only a note in progress.md.
 
 ## 7. Ship
 - PR per workstream or per feature (skill `pr`) — only after the user approves pushing. The body says `Closes #<workstream issue>`.
 - Set `status: in progress` on the issue while in review; update progress.md; tick the epic task list when merged. Close the epic when all its tasks are done.
-- **Phase delivered → release it** (ADR-0021, skill `release`). After the phase is verified on devices:
-  1. Update `README.md` (status, features, usage, install) in a `docs:` PR. User rule.
-  2. Ask the user to dry-run `build-release.yml` with the target version and test those artifacts, if the pipeline or packaging changed.
-  3. The user merges the README PR (with `--body "Release-As: X.Y.Z"` when the version needs forcing: 1.0.0, or a fix-only phase), then the release PR. Never merge it yourself.
-  4. Smoke-test the published assets, then close the epic.
+- **Phase delivered → release it** (ADR-0021, skill `release`):
+  1. Verify the phase on devices.
+  2. Update `README.md` (status, features, usage, install) in a `docs:` PR. User rule. If the pipeline or packaging changed, ask the user to dry-run `build-release.yml` with the target version and test those artifacts.
+  3. The user merges the README PR: with `--body "Release-As: X.Y.Z"` when the version needs forcing (1.0.0, or a fix-only phase), else a normal merge. Never merge yourself.
+  4. Trigger CI on the release PR (close/reopen, skill `release`); the user merges it once green.
+  5. Verify the published assets (skill `release`); the user does the install smoke tests.
+  6. Close the epic, the release issue and the milestone.
+  7. Disable debug captures (`scripts/latency-report.sh --disable`).
 - **Bug fixes between phases** get a patch release (1.1.1 …): after the fix is verified, re-raise the release PR with the user. If `main` already has the next phase's `feat` commits, follow skill `release` ("Versioning").
 
 ## 8. Learn
