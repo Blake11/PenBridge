@@ -109,15 +109,23 @@ public class GestureTouchDownTests
     }
 
     [Fact]
-    public void None_while_blocked_until_all_fingers_lift_without_the_pen()
+    public void None_while_fingers_that_were_down_with_the_pen_stay_down()
     {
-        _rec.Process([], true, 0); // pen in range: blocked
-        _rec.Process([F(1, 400, 500), F(2, 600, 500)], false, 10); // still blocked: no gestures yet
-        _rec.Process([], false, 20); // all lifted: unblocked
+        _rec.Process([F(1, 400, 500)], true, 0); // a finger down while the pen is in range: blocked
+        _rec.Process([F(1, 400, 500), F(2, 600, 500)], false, 10);
         Assert.Empty(_sink.Gestures);
-
+        _rec.Process([], false, 20); // all lifted: unblocked
         _rec.Process([F(1, 400, 500)], false, 30);
         Assert.Single(TouchDowns());
+    }
+
+    [Fact]
+    public void Fingers_landing_as_the_pen_leaves_are_new()
+    {
+        _rec.Process([], true, 0); // pen hovering, no fingers
+        _rec.Process([F(1, 400, 500), F(2, 600, 500)], false, 10); // pen gone, two fingers land in the same frame
+        _rec.Process([F(1, 400, 560), F(2, 600, 560)], false, 20);
+        Assert.Equal([GestureKind.TouchDown, GestureKind.Scroll], _sink.Gestures.Select(g => g.Kind));
     }
 
     [Fact]

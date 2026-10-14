@@ -92,7 +92,8 @@ public sealed record GestureRecognizerOptions
 /// blocked), one TouchDown event is emitted first, so the head can stop a scroll coast.
 /// </para>
 /// <para>
-/// When the pen comes into range an active gesture is Cancelled and nothing new starts until all fingers have lifted.
+/// When the pen comes into range an active gesture is Cancelled, and fingers already down are blocked until all have
+/// lifted (fingers landing in a later pen-free frame are new).
 /// <see cref="Cancel"/> (watchdog, session end) cancels likewise: fingers still down in later frames are blocked until
 /// all lift. Frames are ignored until a configured <see cref="Mapper"/> is set (apply SurfaceInfo first). Not
 /// thread-safe; allocation-free per call.
@@ -265,7 +266,7 @@ public sealed class GestureRecognizer
             }
 
             _tapCandidate = false;
-            _state = State.Blocked;
+            _state = count > 0 ? State.Blocked : State.Idle; // only fingers already down are blocked
             return;
         }
 

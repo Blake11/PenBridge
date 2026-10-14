@@ -227,12 +227,12 @@ public class GestureTapTests
     }
 
     [Fact]
-    public void Fingers_landing_while_still_pen_blocked_are_no_tap()
+    public void Fingers_landing_after_the_pen_left_can_tap()
     {
-        Frame(0, true); // pen in range without fingers: blocked until a pen-free frame with no contacts
-        Frame(30, false, F(1, 400, 500), F(2, 600, 500));
+        Frame(0, true); // pen in range without fingers
+        Frame(30, false, F(1, 400, 500), F(2, 600, 500)); // pen gone: a new touch sequence
         Lift(60);
-        Assert.Empty(_sink.Gestures);
+        Assert.Single(Taps());
     }
 
     [Fact]
