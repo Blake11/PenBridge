@@ -25,7 +25,7 @@ internal sealed class NaturalScrolling : IDisposable
     private static readonly NSString Key = new("com.apple.swipescrolldirection");
 
     private readonly ILogger _logger;
-    private readonly NSObject _observer;
+    private readonly DistributedNotificationObserver _observer;
     private volatile bool _value;
 
     /// <param name="logger">Logs the value at startup and on each change broadcast.</param>
@@ -33,8 +33,7 @@ internal sealed class NaturalScrolling : IDisposable
     {
         _logger = logger;
         Refresh();
-        _observer = NSDistributedNotificationCenter.DefaultCenter.AddObserver(
-            new NSString(ChangedNotification), _ => Refresh());
+        _observer = new DistributedNotificationObserver(ChangedNotification, Refresh);
     }
 
     /// <summary>True when content should follow the fingers. A cached field read; safe from any thread.</summary>
@@ -42,7 +41,6 @@ internal sealed class NaturalScrolling : IDisposable
 
     public void Dispose()
     {
-        NSDistributedNotificationCenter.DefaultCenter.RemoveObserver(_observer);
         _observer.Dispose();
     }
 
