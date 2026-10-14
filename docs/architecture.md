@@ -39,14 +39,14 @@ Rule: platform apps contain only platform glue; anything testable without a devi
   - MVP: `CGEventTabletInjector` posts a `kCGEventTabletProximity` event (pen/eraser enter and leave), then mouse down/drag/up/move events with the `TabletPoint` subtype carrying pressure, tilt X/Y and rotation. It needs the **Accessibility** permission (check `AXIsProcessTrusted`, then guide the user to grant it).
   - Later (only if compatibility gaps appear): a DriverKit virtual HID digitizer (C++ dext, Apple entitlements, paid account).
 - **Mapping**: the absolute phone surface maps to one configurable display (`CGDisplayBounds`), optionally to a sub-region, preserving aspect ratio (letterboxed). The math lives in Core.
-- **Gestures**: two-finger pan → `CGEvent` scroll wheel (pixel units, with phases for smooth scrolling). Pinch → zoom; the implementation is an open item, because synthesizing magnify gestures is not public API. Candidates are Cmd+scroll or Cmd +/− and get decided in the gestures feature.
+- **Gestures** (ADR-0023): trackpad parity, with three-finger drag on. Core recognizes the gestures and the Mac only posts them, at the current cursor position, which stays put. 2 fingers: scroll with acceleration and momentum (continuous phased scroll-wheel events, so swipe-between-pages works; direction follows the natural-scrolling setting). Pinch and rotate combine into one transform (magnify/rotate gesture events, undocumented CGEvent fields, frontmost app only). Tap = secondary click, double tap = smart zoom. 3 fingers: drag. 4 fingers: Mission Control / App Exposé / Spaces / Launchpad / show desktop, interactive through Dock gesture events if feasible, otherwise the system shortcuts. Pen in range, the watchdog, pause or disconnect cancel a gesture and its momentum.
 
 ## Android client
 
 - `DrawSurfaceView` (custom `View`) is full-screen immersive and keeps the screen on. It calls `RequestUnbufferedDispatch` for low latency.
 - It consumes `OnTouchEvent`, `OnHoverEvent` and `OnGenericMotionEvent`, including **historical samples** (`GetHistoricalX/Y/AxisValue`) to keep the full ~240 Hz S Pen rate.
 - **Stylus** (`ToolType.Stylus`/`Eraser`): pressure, `Axis.Tilt` + `Axis.Orientation` → tilt X/Y. Hover → proximity + move. `ButtonStylusPrimary` → configurable action (default right-click while hovering; held at contact-down the stroke is a right-drag, ADR-0022; eraser and others are options).
-- **Fingers**: pen-first. While the stylus is in proximity or touching, finger/palm input is ignored, and canceled pointers (`FLAG_CANCELED`) are dropped. Without a stylus, one finger moves the cursor (hover, absolute): a quick tap clicks and double-tap-and-hold drags (ADR-0022). Settings can switch it to drawing (fixed pressure). Two fingers produce gestures (scroll/zoom), recognized in Core.
+- **Fingers**: pen-first. While the stylus is in proximity or touching, finger/palm input is ignored, and canceled pointers (`FLAG_CANCELED`) are dropped. Without a stylus, one finger moves the cursor (hover, absolute): a quick tap clicks and double-tap-and-hold drags (ADR-0022). Settings can switch it to drawing (fixed pressure). Two to four fingers produce trackpad-style gestures, recognized in Core (ADR-0023).
 - **Discovery**: `NsdManager` browses `_penbridge._tcp`. **Pairing**: scan the QR code, or pick the discovered Mac and type its PIN. **Advanced ▸ Connect manually**: enter host:port + PIN, for networks without mDNS and for the emulator (ADR-0008).
 
 ## Networking & protocol (ADR-0004)
@@ -80,7 +80,7 @@ Rule: platform apps contain only platform glue; anything testable without a devi
 | 1 | Core: protocol, serialization, crypto session, pairing state machine, mapping, gesture recognizer + tests; `SimClient` |
 | 2 | Mac server: menu bar, run-at-startup, Bonjour, TLS/UDP server, pairing UI, Accessibility flow, CGEvent tablet injector |
 | 3 | Android client: discovery, pairing (QR + PIN), drawing surface, S Pen pressure/tilt/hover/button, finger fallback *(done, released 1.0.0)* |
-| 4 | Gestures: two-finger scroll, pinch-zoom |
+| 4 | Gestures with trackpad parity (ADR-0023): 2-finger scroll/momentum/pinch/rotate/tap/smart zoom/swipe pages, 3-finger drag, 4-finger system gestures |
 | 5 | Settings: display/region mapping, button mapping (synced Mac ⇄ phone) |
 | Later | **Android UX improvements** ([#95](https://github.com/Blake11/PenBridge/issues/95)): scope to be defined |
 | Later | **Windows host app** (tray app, `InjectSyntheticPointerInput` pen injection, ADR-0015), Mac screen mirroring onto the phone (video stream), DriverKit virtual digitizer, iOS client, S Pen Air Actions, relative (trackpad) mode, Developer ID signing + notarization, Google Play |
