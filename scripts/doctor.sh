@@ -39,7 +39,9 @@ step "Xcode (macos/ios builds)"
 if xcode_ok; then
   ok "$(xcodebuild -version | tr '\n' ' ')at $(xcode-select -p)"
   if xcodebuild -checkFirstLaunchStatus >/dev/null 2>&1; then ok "first-launch components installed"
-  else bad "Xcode first-launch not done" "sudo xcodebuild -runFirstLaunch"; fi
+  # Soft: the first-launch packages (CoreSimulator, MobileDevice) are only needed to run on a
+  # simulator or device; `dotnet build` of the macOS and iOS heads uses just the SDK toolchain (#25).
+  else soft "Xcode first-launch not done — builds work; iOS simulator/device runs need it" "sudo xcodebuild -runFirstLaunch"; fi
 else
   bad "full Xcode not selected (xcode-select -p: $(xcode-select -p 2>/dev/null || echo none))" \
       "App Store → Xcode, then: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer && sudo xcodebuild -runFirstLaunch"
