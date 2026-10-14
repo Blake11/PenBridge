@@ -88,8 +88,9 @@ public sealed record GestureRecognizerOptions
 /// outlasts the tap duration without being that second tap. Only <see cref="Cancel"/> drops a held tap.
 /// </para>
 /// <para>
-/// <b>Touch down.</b> In each frame where a contact appears that was not in the previous frame (and gestures are not
-/// blocked), one TouchDown event is emitted first, so the head can stop a scroll coast.
+/// <b>Touch down.</b> In each frame where a contact appears that was not in the previous frame (gestures not blocked
+/// and no gesture active), one TouchDown event is emitted first, so the head can stop a scroll coast. A finger
+/// brushing during an active gesture emits none, so it can't reset the gesture's momentum samples.
 /// </para>
 /// <para>
 /// When the pen comes into range an active gesture is Cancelled, and fingers already down are blocked until all have
@@ -275,9 +276,9 @@ public sealed class GestureRecognizer
             FlushPendingTap(timestampUs); // a third finger: no double tap, emit before its TouchDown
         }
 
-        if (_landed > 0 && _state != State.Blocked)
+        if (_landed > 0 && _state != State.Blocked && !IsActive)
         {
-            EmitTouchDown(touches, timestampUs);
+            EmitTouchDown(touches, timestampUs); // not during a gesture: a brushing finger must not reset its momentum samples
         }
 
         TrackTap(touches, previousCount, count, timestampUs);

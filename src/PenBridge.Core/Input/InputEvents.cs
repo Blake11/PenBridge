@@ -73,8 +73,8 @@ public enum GestureKind : byte
     Tap = 3,
 
     /// <summary>
-    /// A finger landed: a contact appeared that was not in the previous frame, while gestures were not blocked (pen,
-    /// cancel). One informational event per such frame with <see cref="GesturePhase.Began"/>, no deltas, at the first
+    /// A finger landed: a contact appeared that was not in the previous frame, while no gesture was active and gestures
+    /// were not blocked (pen, cancel). One informational event per such frame with <see cref="GesturePhase.Began"/>, no deltas, at the first
     /// new contact's position. The Mac uses it to stop a scroll coast at once (a finger landing stops momentum).
     /// Never active; nothing ends it.
     /// </summary>

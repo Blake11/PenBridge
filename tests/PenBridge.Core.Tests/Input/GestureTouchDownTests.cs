@@ -56,12 +56,45 @@ public class GestureTouchDownTests
     }
 
     [Fact]
-    public void A_finger_landing_mid_scroll_emits_one()
+    public void No_touch_down_while_a_gesture_is_active()
     {
         _rec.Process([F(1, 400, 500), F(2, 600, 500)], false, 0);
-        _rec.Process([F(1, 400, 560), F(2, 600, 560)], false, 10);
-        _rec.Process([F(1, 400, 570), F(2, 600, 570), F(3, 100, 100)], false, 20);
+        _rec.Process([F(1, 400, 560), F(2, 600, 560)], false, 10); // scrolling
+        _rec.Process([F(1, 400, 570), F(2, 600, 570), F(3, 100, 100)], false, 20); // a brushing finger
+        Assert.Single(TouchDowns());
+
+        _rec.Process([F(1, 400, 570)], false, 30); // the scroll ended
+        _rec.Process([F(1, 400, 570), F(4, 600, 570)], false, 40); // a new finger may stop the coast
         Assert.Equal(2, TouchDowns().Length);
+    }
+
+    [Fact]
+    public void A_brushing_finger_does_not_reset_momentum_samples()
+    {
+        var rec = new GestureRecognizer(_sink, new GestureRecognizerOptions { ScrollAcceleration = GestureAcceleration.None }) { Mapper = Square };
+        var momentum = new ScrollMomentum();
+        for (int i = 0; i < 12; i++)
+        {
+            double y = 300 + (i * 10);
+            if (i == 11) // on the last frame: a reset here would leave one sample and no momentum
+            {
+                rec.Process([F(1, 400, y), F(2, 600, y), F(3, 100, 100)], false, i * 8_000L);
+            }
+            else
+            {
+                rec.Process([F(1, 400, y), F(2, 600, y)], false, i * 8_000L);
+            }
+        }
+
+        rec.Process([], false, 12 * 8_000L);
+        bool coasting = false;
+        foreach (GestureEvent e in _sink.Gestures)
+        {
+            coasting = momentum.Observe(e) || coasting;
+        }
+
+        Assert.True(coasting);
+        Assert.InRange(momentum.ReleaseVelocityY, 1245, 1255); // 10 pt per 8 ms over the whole window
     }
 
     [Fact]
