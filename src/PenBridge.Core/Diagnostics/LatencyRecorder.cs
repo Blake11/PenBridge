@@ -70,13 +70,21 @@ public sealed class LatencyRecorder
     public void RecordServerRtt(uint sessionId, long sent, long received) =>
         Add(new LatencyRecord(LatencyRecordKind.ServerRtt, LatencyFrameInfo.None, sessionId, 0, sent, received));
 
-    /// <summary>The held records, oldest first; with <paramref name="clear"/> they are also dropped (atomically).</summary>
+    /// <summary>Records that may arrive between sizing a snapshot and copying it.</summary>
+    private const int SnapshotSlack = 4096;
+
+    /// <summary>
+    /// The held records, oldest first; with <paramref name="clear"/> they are also dropped (atomically). The copy is
+    /// allocated before taking the lock, so recording never waits on a multi-MB allocation; if more than
+    /// <see cref="SnapshotSlack"/> records arrive in between, only the newest that fit are copied.
+    /// </summary>
     public LatencyRecord[] Snapshot(bool clear = false)
     {
+        var copy = new LatencyRecord[Math.Min(Count + SnapshotSlack, _ring.Length)];
+        int count;
         lock (_lock)
         {
-            int count = (int)Math.Min(_total, _ring.Length);
-            var copy = new LatencyRecord[count];
+            count = (int)Math.Min(Math.Min(_total, _ring.Length), copy.Length);
             int start = (int)((_total - count) % _ring.Length);
             int first = Math.Min(count, _ring.Length - start);
             Array.Copy(_ring, start, copy, 0, first);
@@ -85,9 +93,14 @@ public sealed class LatencyRecorder
             {
                 _total = 0;
             }
-
-            return copy;
         }
+
+        if (count < copy.Length)
+        {
+            Array.Resize(ref copy, count);
+        }
+
+        return copy;
     }
 
     /// <summary>Drops every held record.</summary>

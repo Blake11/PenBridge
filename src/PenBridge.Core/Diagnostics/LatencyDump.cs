@@ -14,10 +14,14 @@ public static class LatencyDump
     /// <summary>Column header of the record rows (server times in µs from the first record).</summary>
     public const string Columns = "kind\tsession\tflags\tclient_us\tserver_us\tserver_end_us";
 
-    public static void Write(TextWriter writer, ReadOnlySpan<LatencyRecord> records, long timestampFrequency, bool includeRecords = true)
+    public static void Write(TextWriter writer, ReadOnlySpan<LatencyRecord> records, long timestampFrequency, bool includeRecords = true) =>
+        Write(writer, records, timestampFrequency, LatencyAnalyzer.Analyze(records, timestampFrequency), includeRecords);
+
+    /// <summary>Same, with a <paramref name="report"/> already computed from <paramref name="records"/>.</summary>
+    public static void Write(TextWriter writer, ReadOnlySpan<LatencyRecord> records, long timestampFrequency, LatencyReport report, bool includeRecords = true)
     {
         ArgumentNullException.ThrowIfNull(writer);
-        LatencyReport report = LatencyAnalyzer.Analyze(records, timestampFrequency);
+        ArgumentNullException.ThrowIfNull(report);
         writer.WriteLine(Header);
         writer.WriteLine(FormattableString.Invariant($"# records={records.Length} frequency={timestampFrequency}"));
         foreach (string line in Summarize(report))

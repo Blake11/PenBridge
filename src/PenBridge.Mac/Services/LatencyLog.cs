@@ -75,13 +75,20 @@ internal sealed partial class LatencyLog : IDisposable
             try
             {
                 Directory.CreateDirectory(DumpDirectory);
-                using (var writer = new StreamWriter(path, append: false))
+                LatencyReport report = LatencyAnalyzer.Analyze(records, _frequency);
+                var options = new FileStreamOptions
                 {
-                    LatencyDump.Write(writer, records, _frequency);
+                    Mode = FileMode.CreateNew,
+                    Access = FileAccess.Write,
+                    UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite, // 0600: only this user reads timings
+                };
+                using (var writer = new StreamWriter(path, options))
+                {
+                    LatencyDump.Write(writer, records, _frequency, report);
                 }
 
                 Log.Dumped(_log, records.Length, reason, path);
-                foreach (string line in LatencyDump.Summarize(LatencyAnalyzer.Analyze(records, _frequency)))
+                foreach (string line in LatencyDump.Summarize(report))
                 {
                     Log.Summary(_log, line);
                 }
@@ -96,11 +103,28 @@ internal sealed partial class LatencyLog : IDisposable
         }
     }
 
-    /// <summary>Stops listening for SIGUSR1 and writes what is left.</summary>
+    /// <summary>The quit dump may take this long before quitting goes on without it.</summary>
+    private static readonly TimeSpan QuitDumpTimeout = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Stops listening for SIGUSR1 and writes what is left. Called on the main thread while quitting: the write
+    /// (up to a few MB of text) runs on the thread pool and quitting waits at most <see cref="QuitDumpTimeout"/>.
+    /// </summary>
     public void Dispose()
     {
         _signal?.Dispose();
-        Dump("quit", clear: true);
+        Task dump = Task.Run(() => Dump("quit", clear: true));
+        try
+        {
+            if (!dump.Wait(QuitDumpTimeout))
+            {
+                Log.QuitDumpSlow(_log);
+            }
+        }
+        catch (AggregateException ex)
+        {
+            Log.DumpFailed(_log, DumpDirectory, ex.GetBaseException());
+        }
     }
 
     private void OnSignal(PosixSignalContext context)
@@ -122,6 +146,9 @@ internal sealed partial class LatencyLog : IDisposable
 
         [LoggerMessage(4, LogLevel.Error, "Latency dump to {Path} failed")]
         public static partial void DumpFailed(ILogger logger, string path, Exception exception);
+
+        [LoggerMessage(6, LogLevel.Warning, "Latency dump at quit still running; quitting without waiting for it")]
+        public static partial void QuitDumpSlow(ILogger logger);
 
         [LoggerMessage(5, LogLevel.Warning, "SIGUSR1 latency dumps unavailable ({Error}); dumps happen at session end and quit")]
         public static partial void SignalUnavailable(ILogger logger, string error);

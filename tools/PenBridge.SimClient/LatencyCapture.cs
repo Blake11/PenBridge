@@ -37,7 +37,13 @@ internal sealed class LatencyCapture
 
             Directory.CreateDirectory(DumpDirectory);
             string path = Path.Combine(DumpDirectory, "latency-sim-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture) + ".tsv");
-            using (var writer = new StreamWriter(path, append: false))
+            var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
+            if (!OperatingSystem.IsWindows())
+            {
+                options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite; // 0600
+            }
+
+            using (var writer = new StreamWriter(path, options))
             {
                 LatencyDump.Write(writer, records, TimeProvider.System.TimestampFrequency);
             }
