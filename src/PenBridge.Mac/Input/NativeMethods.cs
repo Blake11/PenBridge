@@ -32,6 +32,18 @@ internal static class NativeMethods
     [DllImport(CoreGraphics)]
     internal static extern IntPtr CGEventCreateMouseEvent(IntPtr source, uint mouseType, NativePoint position, uint mouseButton);
 
+    /// <summary>
+    /// <c>CGEventRef CGEventCreateScrollWheelEvent2(source, CGScrollEventUnit, uint32_t wheelCount, int32_t wheel1,
+    /// int32_t wheel2, int32_t wheel3)</c> (the non-variadic form); +1 retained, NULL on failure. Location = the current
+    /// cursor position.
+    /// </summary>
+    [DllImport(CoreGraphics)]
+    internal static extern IntPtr CGEventCreateScrollWheelEvent2(IntPtr source, uint units, uint wheelCount, int wheel1, int wheel2, int wheel3);
+
+    /// <summary><c>CGPoint CGEventGetLocation(CGEventRef)</c>: global display coordinates (top-left origin, points).</summary>
+    [DllImport(CoreGraphics)]
+    internal static extern NativePoint CGEventGetLocation(IntPtr ev);
+
     [DllImport(CoreGraphics)]
     internal static extern void CGEventSetType(IntPtr ev, uint type);
 
@@ -66,6 +78,17 @@ internal static class NativeMethods
 
     [DllImport(CoreFoundation)]
     internal static extern void CFRelease(IntPtr cf);
+
+    /// <summary>
+    /// <c>Boolean CFPreferencesGetAppBooleanValue(CFStringRef key, CFStringRef app, Boolean *keyExistsAndHasValidFormat)</c>;
+    /// accepts CFBoolean and CFNumber values.
+    /// </summary>
+    [DllImport(CoreFoundation)]
+    internal static extern byte CFPreferencesGetAppBooleanValue(IntPtr key, IntPtr applicationId, out byte keyExistsAndHasValidFormat);
+
+    /// <summary><c>Boolean CFPreferencesAppSynchronize(CFStringRef app)</c>: picks up values other processes wrote.</summary>
+    [DllImport(CoreFoundation)]
+    internal static extern byte CFPreferencesAppSynchronize(IntPtr applicationId);
 
     /// <summary><c>Boolean AXIsProcessTrusted(void)</c>: whether this process may post input events (Accessibility).</summary>
     [DllImport(ApplicationServices)]

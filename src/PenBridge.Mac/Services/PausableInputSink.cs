@@ -1,4 +1,5 @@
 using PenBridge.Core.Input;
+using PenBridge.Mac.Input;
 
 namespace PenBridge.Mac.Services;
 
@@ -12,6 +13,10 @@ namespace PenBridge.Mac.Services;
 /// <see cref="PenEventKind.ToolChanged"/> is forwarded as is, and a hover <see cref="PenEventKind.Move"/> is preceded
 /// by a synthesized proximity enter. Contact events (Down/Drag/Up) and buttons are dropped until then, so a stroke in
 /// progress at resume time starts injecting after the pen lifts.</para>
+/// <para>Gestures likewise: pausing makes the injector cancel an open gesture and stop scroll momentum
+/// (<see cref="IReleasableInputSink.ReleaseAll"/>). After a resume the phased gestures (scroll, pinch, drag, system
+/// swipe/pinch) are dropped until a <see cref="GesturePhase.Began"/>, so a gesture in progress at resume time never
+/// continues with a dangling Changed/Ended. One-shot events (Tap, SmartZoom, TouchDown) pass at once.</para>
 /// <para>Platform-free; a candidate for Core if another head needs it.</para>
 /// <para>Hot path: one uncontended lock per event, no allocations.</para>
 /// </remarks>
@@ -21,6 +26,7 @@ public sealed class PausableInputSink : IInputSink
     private readonly Lock _lock = new();
     private bool _paused;
     private bool _needsResync;
+    private bool _gestureNeedsBegan;
 
     public PausableInputSink(IReleasableInputSink inner)
     {
@@ -56,6 +62,19 @@ public sealed class PausableInputSink : IInputSink
 
             _paused = paused;
             _needsResync = true;
+            _gestureNeedsBegan = true;
+        }
+    }
+
+    /// <summary>Stops scroll momentum in the injector, if it has any (session end). Callable from any thread.</summary>
+    public void StopMomentum()
+    {
+        if (_inner is IMomentumSink momentum)
+        {
+            lock (_lock)
+            {
+                momentum.StopMomentum();
+            }
         }
     }
 
@@ -92,10 +111,26 @@ public sealed class PausableInputSink : IInputSink
     {
         lock (_lock)
         {
-            if (!_paused)
+            if (_paused)
             {
-                _inner.OnGestureEvent(e);
+                return;
             }
+
+            if (_gestureNeedsBegan && IsPhased(e.Kind))
+            {
+                if (e.Phase != GesturePhase.Began)
+                {
+                    return;
+                }
+
+                _gestureNeedsBegan = false;
+            }
+
+            _inner.OnGestureEvent(e);
         }
     }
+
+    /// <summary>Gesture kinds with Began/Changed/Ended phases (the rest are one-shot events).</summary>
+    private static bool IsPhased(GestureKind kind) =>
+        kind is GestureKind.Scroll or GestureKind.Pinch or GestureKind.Drag or GestureKind.SystemSwipe or GestureKind.SystemPinch;
 }

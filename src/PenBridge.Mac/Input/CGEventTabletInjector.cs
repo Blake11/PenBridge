@@ -15,7 +15,8 @@ namespace PenBridge.Mac.Input;
 /// Injects pen input into macOS as CGEvent tablet events (ADR-0003): proximity events announce a pen or eraser, then
 /// mouse events with the tablet-point subtype carry position, pressure, tilt and rotation. The side button is a
 /// right-click while hovering (ADR-0016); held at contact-down it makes the stroke a right-button drag, latched until
-/// the tip lifts (ADR-0022). Gesture events are accepted and ignored until Phase 4.
+/// the tip lifts (ADR-0022). Gesture events go to <see cref="CGEventGestureInjector"/> (ADR-0023: scroll with momentum,
+/// magnify/rotate, smart zoom, two-finger tap), under the same lock.
 /// </summary>
 /// <remarks>
 /// <para><b>Threading.</b> <see cref="ServerHost"/> wraps the injector in a <see cref="PausableInputSink"/>, so
@@ -45,7 +46,7 @@ namespace PenBridge.Mac.Input;
 /// <see cref="ReleaseAll"/> post every outstanding up and the proximity leave. Each post stands alone: a failure
 /// does not skip the remaining releases, and the failed step is reverted in the planner state so it is retried.</para>
 /// </remarks>
-public sealed class CGEventTabletInjector : IReleasableInputSink, IDisposable
+public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink, IDisposable
 {
     /// <summary>The System Settings pane where the user grants Accessibility.</summary>
     public const string AccessibilitySettingsUrl = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
@@ -77,6 +78,7 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IDisposable
     private readonly IntPtr _sourceHandle;
     private readonly long _doubleClickNs;
     private readonly NSObject _accessibilityObserver;
+    private readonly CGEventGestureInjector _gestures;
     private TabletPostedState _state;
     private HostClockAnchor _clock;
     private ClickState _leftClicks;
@@ -101,6 +103,7 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IDisposable
         _source = new CGEventSource(CGEventSourceStateID.HidSystem);
         _sourceHandle = _source.Handle;
         _doubleClickNs = (long)(NSEvent.DoubleClickInterval * 1e9);
+        _gestures = new CGEventGestureInjector(_gate, _sourceHandle, () => _trusted);
 
         // Broadcast by the system when the Accessibility (AX trust) list changes.
         _accessibilityObserver = NSDistributedNotificationCenter.DefaultCenter.AddObserver(
@@ -204,8 +207,9 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IDisposable
 
     /// <inheritdoc />
     /// <remarks>
-    /// Posts left-up, right-up and proximity-leave for anything still posted (pause, quit). Idempotent and safe from
-    /// any thread. The next event re-enters proximity first (the planner ensures it even without a resync).
+    /// Posts left-up, right-up and proximity-leave for anything still posted (pause, quit), cancels an open gesture
+    /// and stops scroll momentum. Idempotent and safe from any thread. The next event re-enters proximity first (the
+    /// planner ensures it even without a resync).
     /// </remarks>
     public void ReleaseAll()
     {
@@ -225,6 +229,8 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IDisposable
             {
                 return;
             }
+
+            _gestures.StopCoast(); // the pen takes over: stop a scroll coast
 
             Span<TabletStep> steps = stackalloc TabletStep[TabletEventPlanner.MaxSteps];
             int count = TabletEventPlanner.Plan(ref _state, e.Kind, e.Button, e.Sample.Tool, steps, e.Sample.Buttons);
@@ -249,9 +255,30 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IDisposable
     }
 
     /// <inheritdoc />
-    /// <remarks>Two-finger gestures (scroll, pinch) are Phase 4; they are ignored here.</remarks>
+    public void StopMomentum()
+    {
+        lock (_gate)
+        {
+            if (!_disposed)
+            {
+                _gestures.StopCoast();
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>Posted at the current cursor by <see cref="CGEventGestureInjector"/>; dropped while no display is available.</remarks>
     public void OnGestureEvent(in GestureEvent e)
     {
+        lock (_gate)
+        {
+            if (!_targetAvailable || _disposed)
+            {
+                return;
+            }
+
+            _gestures.OnGesture(e);
+        }
     }
 
     /// <summary>Releases everything posted, stops observing Accessibility changes and frees the event source.</summary>
@@ -265,6 +292,7 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IDisposable
             }
 
             ReleaseLocked();
+            _gestures.Dispose();
             _disposed = true;
         }
 
@@ -287,6 +315,7 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IDisposable
             return;
         }
 
+        _gestures.CancelAll();
         Span<TabletStep> steps = stackalloc TabletStep[TabletEventPlanner.MaxSteps];
         int count = TabletEventPlanner.Release(ref _state, steps);
         if (count == 0)
