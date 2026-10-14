@@ -44,6 +44,7 @@ public sealed class PadController : IDisposable
     private PadOrientationMode _orientation;
     private PadOrientationMode? _pendingOrientation;
     private bool _fingerFallbackEnabled;
+    private readonly FingerFallbackMode _fingerMode;
     private ushort _fingerFallbackPressure;
     private readonly TimeSpan _armDelay;
     private readonly float _palmSizeThreshold;
@@ -61,6 +62,7 @@ public sealed class PadController : IDisposable
         _output = output;
         _orientation = options.Orientation;
         _fingerFallbackEnabled = options.FingerFallbackEnabled;
+        _fingerMode = options.FingerMode;
         _fingerFallbackPressure = options.FingerFallbackPressure;
         _armDelay = options.FingerFallbackArmDelay;
         _palmSizeThreshold = options.PalmSizeThreshold;
@@ -201,6 +203,7 @@ public sealed class PadController : IDisposable
     private InputFilterOptions CreateFilterOptions() => new()
     {
         FingerFallbackEnabled = _fingerFallbackEnabled,
+        FingerMode = _fingerMode,
         FingerFallbackPressure = _fingerFallbackPressure,
         FingerFallbackArmDelay = _armDelay,
         PalmSizeThreshold = _palmSizeThreshold,

@@ -88,6 +88,15 @@ public static class TabletEventMath
     }
 
     /// <summary>
+    /// The double-click slop to pass to <see cref="NextClickCount"/> for a press by <paramref name="tool"/>: the
+    /// host's pen slop for a pen or eraser, 0 for <see cref="PenTool.FingerFallback"/>. The phone's
+    /// <see cref="InputFilter"/> decides finger double-clicks itself and snaps the second click to exactly the first
+    /// tap's point; the press that starts a double-tap drag never lands on that point. With slop 0 only the snapped
+    /// click repeats, so a double-tap drag starts with click state 1 (a plain drag, not a word selection).
+    /// </summary>
+    public static double ClickSlopFor(PenTool tool, double penSlop) => tool == PenTool.FingerFallback ? 0 : penSlop;
+
+    /// <summary>
     /// The click count for a new button press: one more than the previous press when it follows within
     /// <paramref name="intervalNs"/> (the system double-click interval) and <paramref name="slop"/> points, else 1.
     /// Without it a pen double-tap never registers as a double-click.

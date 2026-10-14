@@ -10,6 +10,9 @@ public sealed record PadOptions
     /// <summary>When true and no stylus is present, a single finger draws like a pen with <see cref="FingerFallbackPressure"/>.</summary>
     public bool FingerFallbackEnabled { get; init; } = true;
 
+    /// <summary>What one finger does: move the cursor with tap to click (default) or draw (<see cref="InputFilterOptions.FingerMode"/>).</summary>
+    public FingerFallbackMode FingerMode { get; init; } = new InputFilterOptions().FingerMode;
+
     /// <summary>Synthetic pressure (0..65535) for finger drawing.</summary>
     public ushort FingerFallbackPressure { get; init; } = new InputFilterOptions().FingerFallbackPressure;
 

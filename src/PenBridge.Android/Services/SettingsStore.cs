@@ -27,7 +27,7 @@ public sealed record KnownMac(byte[] Fingerprint, string Name, string Host, int 
 
 /// <summary>
 /// Non-secret preferences in SharedPreferences (<c>penbridge.settings</c>): last-used Mac, known Macs, orientation
-/// mode, synthetic finger pressure, finger arming delay, palm threshold, touch-size readout. Secrets (device id, device keys) live in <see cref="AndroidKeystoreSecretStore"/>.
+/// mode, finger mode, synthetic finger pressure, finger arming delay, palm threshold, touch-size readout. Secrets (device id, device keys) live in <see cref="AndroidKeystoreSecretStore"/>.
 /// </summary>
 /// <remarks>Safe to call from any thread (SharedPreferences is thread-safe; writes use <c>Apply</c>, which never blocks).</remarks>
 public sealed class SettingsStore
@@ -43,6 +43,7 @@ public sealed class SettingsStore
     private const string ArmDelayKey = "pad.finger-arm-delay-ms";
     private const string PalmThresholdKey = "pad.palm-size-threshold";
     private const string ShowTouchSizeKey = "pad.show-touch-size";
+    private const string FingerModeKey = "pad.finger-mode";
     private const string MacPrefix = "mac.";
 
     /// <summary>Longest selectable finger arming delay (Settings range 0..this).</summary>
@@ -81,6 +82,18 @@ public sealed class SettingsStore
             _ => OrientationMode.LockLandscape,
         };
         set => Edit().PutInt(OrientationKey, (int)value)!.Apply();
+    }
+
+    /// <summary>
+    /// What one finger does without a stylus (<c>InputFilterOptions.FingerMode</c>, ADR-0022): move the cursor with tap
+    /// to click (the default) or draw.
+    /// </summary>
+    public FingerFallbackMode FingerMode
+    {
+        get => _prefs.GetInt(FingerModeKey, (int)FilterDefaults.FingerMode) == (int)FingerFallbackMode.Draw
+            ? FingerFallbackMode.Draw
+            : FingerFallbackMode.Cursor;
+        set => Edit().PutInt(FingerModeKey, (int)value)!.Apply();
     }
 
     /// <summary>Synthetic pressure (1..65535) for <c>InputFilterOptions.FingerFallbackPressure</c>.</summary>

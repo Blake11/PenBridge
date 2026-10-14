@@ -24,7 +24,7 @@ Wave 2 composes the wave-1 types. P3-C is the only workstream that edits the csp
   - `NsdManager` browses `_penbridge._tcp`, holding a `WifiManager.MulticastLock` only while browsing;
   - it resolves the TXT record into Core's `BonjourTxtRecord` (`v`, `fp`, `name`) and exposes the list of discovered Macs (name, host, port, fingerprint, version-compatible);
   - browsing stops while the app is backgrounded.
-- **`SettingsStore`** (SharedPreferences): last-used Mac (device id / fingerprint), orientation mode, synthetic finger pressure.
+- **`SettingsStore`** (SharedPreferences): last-used Mac (device id / fingerprint), orientation mode, finger mode (cursor or draw), synthetic finger pressure.
 - **`ClientHost`:**
   - owns `PenBridgeClient` (from Core): connect (discovered, manual host:port, or QR payload), pair (PIN/QR), auth, and an observable state (Idle / Discovering / Connecting / Pairing / Connected(transport, rtt) / Error(kind, message));
   - auto-connects to the last-used paired Mac when it's discovered, and reconnects with backoff (1, 2, 4 … 30 s) while the pad is open;
@@ -46,7 +46,7 @@ Wave 2 composes the wave-1 types. P3-C is the only workstream that edits the csp
   - **Rotation:** use the orientation axis.
   - **Hover:** `ActionHoverEnter`/`Move`/`Exit` → InRange without Contact.
   - **Button:** `MotionEventButtonState.StylusPrimary` → Primary (the Mac maps it to right-click while hovering and to a right-drag when held at contact-down, ADR-0022).
-- **Finger (ADR-0022, #91):** by default one finger moves the cursor (Core `InputFilter` cursor mode: hover samples; a tap clicks; double-tap-and-hold drags). The pad counts a finger moving the cursor as active (orientation stays locked and filter options aren't swapped mid-touch). There is no Settings toggle for the finger mode yet: it needs a `SettingsStore` key (`InputFilterOptions.FingerMode = Draw` restores drawing).
+- **Finger (ADR-0022, #91):** by default one finger moves the cursor (Core `InputFilter` cursor mode: hover samples; a tap clicks; double-tap-and-hold drags). The pad counts a finger moving the cursor as active (orientation stays locked and filter options aren't swapped mid-touch). Settings ▸ One finger switches between "Cursor (tap to click, double-tap and hold to drag)" (default) and "Draw" (`SettingsStore.FingerMode` → `PadOptions.FingerMode` → `InputFilterOptions.FingerMode`).
   - **Coordinates:** x/y are normalized over the view's size in its current orientation.
 - **Keepalives:** handled by `PenBridgeClient` (50 ms with contact or touches, 250 ms hover). The pad only reports state changes and samples.
 - **Ink echo:** a faint trail of the last ~1 s of pen positions, fading out, rendered on a separate lightweight layer (`SurfaceView`/`TextureView`, or invalidating only the dirty rect). It must never block input dispatch.

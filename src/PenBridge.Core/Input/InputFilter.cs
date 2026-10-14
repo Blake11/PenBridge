@@ -113,9 +113,11 @@ public readonly record struct InputFilterResult(bool HasPen, PenSample Pen, int 
 /// <see cref="InputFilterOptions.TapSlop"/>) is replayed as a click where it landed: a hover sample, a contact sample,
 /// then <see cref="PenState.None"/>. Any other lift ends with <see cref="PenState.None"/>. A touch that lands within
 /// <see cref="InputFilterOptions.DoubleTapWindow"/> after a tap and within <see cref="InputFilterOptions.DoubleTapSlop"/>
-/// of it is held until decided: lifting as a tap clicks again at the first tap's point (so the host counts a
+/// of it is held until decided: lifting as a tap clicks again at exactly the first tap's point (so the host counts a
 /// double-click); moving beyond the tap slop or staying down for the tap duration (never before the arming delay)
-/// starts a contact stroke from where it landed, a left drag until lift.</para>
+/// starts a contact stroke from where it landed, a left drag until lift. That press never lands exactly on the tap's
+/// point (nudged by one unit if it would), so the host starts the drag with click state 1
+/// (<see cref="TabletEventMath.ClickSlopFor"/>).</para>
 /// <para>Draw mode (<see cref="FingerFallbackMode.Draw"/>): the finger's samples are contact samples, a stroke.</para>
 /// <para>Not thread-safe; allocation-free per call.</para>
 /// </remarks>
@@ -507,6 +509,12 @@ public sealed class InputFilter
             _downSet = true;
             _downX = t.X;
             _downY = t.Y;
+            if (_kind == FingerKind.Press && t.X == _tapX && t.Y == _tapY)
+            {
+                // The drag's press must not land exactly on the tap's click point: the host repeats the click count
+                // only there (TabletEventMath.ClickSlopFor), and a drag starts with click state 1.
+                return ContactSample(t.X == ushort.MaxValue ? (ushort)(t.X - 1) : (ushort)(t.X + 1), t.Y);
+            }
         }
         else if (!_moved && DistanceSquared(_downX, _downY, t.X, t.Y) > _tapSlopSq)
         {

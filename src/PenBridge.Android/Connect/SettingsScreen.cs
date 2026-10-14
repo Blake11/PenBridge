@@ -4,11 +4,12 @@ using Android.Views;
 using Android.Widget;
 using PenBridge.Android.Services;
 using PenBridge.Core;
+using PenBridge.Core.Input;
 
 namespace PenBridge.Android.Connect;
 
 /// <summary>
-/// About + settings: finger drawing pressure, default pad orientation, and the paired Macs (forget removes this
+/// About + settings: finger mode and drawing pressure, default pad orientation, and the paired Macs (forget removes this
 /// phone's key for that Mac; the Mac keeps its own record until it's removed there too).
 /// </summary>
 internal sealed class SettingsScreen : Screen
@@ -36,6 +37,20 @@ internal sealed class SettingsScreen : Screen
         SettingsStore settings = Host.Settings;
         ScrollView page = Ui.Page(ctx, out LinearLayout content);
         content.AddView(Ui.Header(ctx, "Settings", () => Activity.Screens.Pop()));
+
+        // Finger mode (ADR-0022): what one finger does when no stylus is present.
+        content.AddView(Ui.Text(ctx, "One finger", TextRole.Label));
+        var fingerGroup = new RadioGroup(ctx) { Orientation = global::Android.Widget.Orientation.Vertical };
+        AddChoice(fingerGroup, "Cursor (tap to click, double-tap and hold to drag)", (int)FingerFallbackMode.Cursor, (int)settings.FingerMode);
+        AddChoice(fingerGroup, "Draw", (int)FingerFallbackMode.Draw, (int)settings.FingerMode);
+        fingerGroup.CheckedChange += (_, e) =>
+        {
+            if (fingerGroup.FindViewById(e.CheckedId) is RadioButton { Tag: Java.Lang.Integer mode })
+            {
+                settings.FingerMode = (FingerFallbackMode)mode.IntValue();
+            }
+        };
+        content.AddView(fingerGroup, Ui.FullWidthLp(ctx, 0));
 
         // Finger pressure (used when no stylus is present and a single finger draws).
         content.AddView(Ui.Text(ctx, "Finger drawing", TextRole.Label));
@@ -82,9 +97,9 @@ internal sealed class SettingsScreen : Screen
         // Default orientation of the pad (also changeable from the pad's menu).
         content.AddView(Ui.Text(ctx, "Pad orientation", TextRole.Label));
         var group = new RadioGroup(ctx) { Orientation = global::Android.Widget.Orientation.Vertical };
-        AddChoice(group, "Landscape (locked)", OrientationMode.LockLandscape, settings.Orientation);
-        AddChoice(group, "Portrait (locked)", OrientationMode.LockPortrait, settings.Orientation);
-        AddChoice(group, "Auto-rotate (between strokes)", OrientationMode.Auto, settings.Orientation);
+        AddChoice(group, "Landscape (locked)", (int)OrientationMode.LockLandscape, (int)settings.Orientation);
+        AddChoice(group, "Portrait (locked)", (int)OrientationMode.LockPortrait, (int)settings.Orientation);
+        AddChoice(group, "Auto-rotate (between strokes)", (int)OrientationMode.Auto, (int)settings.Orientation);
         group.CheckedChange += (_, e) =>
         {
             if (group.FindViewById(e.CheckedId) is RadioButton { Tag: Java.Lang.Integer mode })
@@ -127,20 +142,21 @@ internal sealed class SettingsScreen : Screen
         return row;
     }
 
-    private void AddChoice(RadioGroup group, string label, OrientationMode mode, OrientationMode current)
+    /// <summary>Adds a radio choice tagged with <paramref name="value"/>; checked when it equals <paramref name="current"/>.</summary>
+    private void AddChoice(RadioGroup group, string label, int value, int current)
     {
         var ctx = Activity;
         var button = new RadioButton(ctx)
         {
             Text = label,
             Id = View.GenerateViewId(),
-            Tag = Java.Lang.Integer.ValueOf((int)mode),
+            Tag = Java.Lang.Integer.ValueOf(value),
         };
         button.SetTextColor(Ui.ColorOf(ctx, Resource.Color.pb_on_surface));
         button.SetTextSize(global::Android.Util.ComplexUnitType.Sp, 15);
         button.SetMinHeight(Ui.Dp(ctx, 48));
         group.AddView(button);
-        if (mode == current)
+        if (value == current)
         {
             group.Check(button.Id);
         }

@@ -45,8 +45,8 @@ Rule: platform apps contain only platform glue; anything testable without a devi
 
 - `DrawSurfaceView` (custom `View`) is full-screen immersive and keeps the screen on. It calls `RequestUnbufferedDispatch` for low latency.
 - It consumes `OnTouchEvent`, `OnHoverEvent` and `OnGenericMotionEvent`, including **historical samples** (`GetHistoricalX/Y/AxisValue`) to keep the full ~240 Hz S Pen rate.
-- **Stylus** (`ToolType.Stylus`/`Eraser`): pressure, `Axis.Tilt` + `Axis.Orientation` → tilt X/Y. Hover → proximity + move. `ButtonStylusPrimary` → configurable action (default right-click; eraser and others are options).
-- **Fingers**: pen-first. While the stylus is in proximity or touching, finger/palm input is ignored, and canceled pointers (`FLAG_CANCELED`) are dropped. Without a stylus, one finger draws (fixed pressure, optionally estimated from touch size). Two fingers produce gestures (scroll/zoom), recognized in Core.
+- **Stylus** (`ToolType.Stylus`/`Eraser`): pressure, `Axis.Tilt` + `Axis.Orientation` → tilt X/Y. Hover → proximity + move. `ButtonStylusPrimary` → configurable action (default right-click while hovering; held at contact-down the stroke is a right-drag, ADR-0022; eraser and others are options).
+- **Fingers**: pen-first. While the stylus is in proximity or touching, finger/palm input is ignored, and canceled pointers (`FLAG_CANCELED`) are dropped. Without a stylus, one finger moves the cursor (hover, absolute): a quick tap clicks and double-tap-and-hold drags (ADR-0022). Settings can switch it to drawing (fixed pressure). Two fingers produce gestures (scroll/zoom), recognized in Core.
 - **Discovery**: `NsdManager` browses `_penbridge._tcp`. **Pairing**: scan the QR code, or pick the discovered Mac and type its PIN. **Advanced ▸ Connect manually**: enter host:port + PIN, for networks without mDNS and for the emulator (ADR-0008).
 
 ## Networking & protocol (ADR-0004)

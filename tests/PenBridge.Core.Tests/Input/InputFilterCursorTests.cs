@@ -10,12 +10,16 @@ public class InputFilterCursorTests
 
     private readonly TouchSample[] _out = new TouchSample[InputFilter.MaxTouches];
     private readonly RecordingSink _sink = new();
+    private readonly ClickCountingSink _clicks = new();
     private readonly PenStateTracker _tracker;
     private uint _us = 10_000;
 
     public InputFilterCursorTests()
     {
-        _tracker = new PenStateTracker(_sink, new ManualTimeProvider()) { Mapper = new(1, 1, new DisplayRect(0, 0, 65535, 65535)) };
+        _tracker = new PenStateTracker(new TeeSink(_sink, _clicks), new ManualTimeProvider())
+        {
+            Mapper = new(1, 1, new DisplayRect(0, 0, 1512, 982)),
+        };
     }
 
     private static TimeSpan Ms(double ms) => TimeSpan.FromMilliseconds(ms);
@@ -207,6 +211,48 @@ public class InputFilterCursorTests
     }
 
     [Fact]
+    public void Double_tap_reaches_the_host_as_a_double_click()
+    {
+        var f = new InputFilter();
+        Feed(f, 0, Finger(1, 10000, 20000));
+        Feed(f, 50);
+        Feed(f, 200, Finger(2, 10300, 20100));
+        Feed(f, 260);
+        Assert.Equal([1L, 2L], _clicks.LeftDownClickStates);
+    }
+
+    [Theory]
+    [InlineData(10000, 20000)] // lands exactly on the tap's point: nudged off it
+    [InlineData(10100, 20050)] // within the 6 pt pen slop of the tap
+    public void Double_tap_and_hold_drag_starts_with_click_state_one(int x, int y)
+    {
+        var f = new InputFilter();
+        Feed(f, 0, Finger(1, 10000, 20000));
+        Feed(f, 50);
+        Feed(f, 150, Finger(2, (ushort)x, (ushort)y));
+        Feed(f, 350, Finger(2, (ushort)x, (ushort)y)); // decided: a drag
+        Feed(f, 400, Finger(2, 20000, 20000));
+        Feed(f, 450);
+
+        // The tap's click, then the drag's press: a plain single-click drag, never a word selection.
+        Assert.Equal([1L, 1L], _clicks.LeftDownClickStates);
+        Assert.Contains(TabletAction.LeftDragged, _clicks.Actions);
+    }
+
+    [Fact]
+    public void Finger_presses_repeat_the_click_count_only_at_the_exact_point()
+    {
+        Assert.Equal(0, TabletEventMath.ClickSlopFor(PenTool.FingerFallback, 6));
+        Assert.Equal(6, TabletEventMath.ClickSlopFor(PenTool.Pen, 6));
+        Assert.Equal(6, TabletEventMath.ClickSlopFor(PenTool.Eraser, 6));
+
+        var state = default(ClickState);
+        Assert.Equal(1, TabletEventMath.NextClickCount(ref state, 0, new DisplayPoint(10, 10), 500_000_000, 0));
+        Assert.Equal(2, TabletEventMath.NextClickCount(ref state, 100_000_000, new DisplayPoint(10, 10), 500_000_000, 0));
+        Assert.Equal(1, TabletEventMath.NextClickCount(ref state, 200_000_000, new DisplayPoint(10.01, 10), 500_000_000, 0));
+    }
+
+    [Fact]
     public void Double_tap_and_move_starts_the_drag_after_the_arming_delay()
     {
         var f = new InputFilter();
@@ -219,7 +265,7 @@ public class InputFilterCursorTests
         Assert.Equal(Contact, drag.Pen.State);
         Assert.Equal(13000, drag.Pen.X);
         Assert.Equal(2, drag.ReplayCount);
-        Assert.Equal(10000, f.ReplaySamples[0].X);
+        Assert.Equal(10001, f.ReplaySamples[0].X); // landed exactly on the tap point: nudged off it
     }
 
     [Theory]
@@ -378,5 +424,57 @@ public class InputFilterCursorTests
 
         _us += 10_000;
         return r;
+    }
+}
+
+/// <summary>Forwards pen and gesture events to two sinks.</summary>
+internal sealed class TeeSink(IInputSink a, IInputSink b) : IInputSink
+{
+    public void OnPenEvent(in PenEvent e)
+    {
+        a.OnPenEvent(e);
+        b.OnPenEvent(e);
+    }
+
+    public void OnGestureEvent(in GestureEvent e)
+    {
+        a.OnGestureEvent(e);
+        b.OnGestureEvent(e);
+    }
+}
+
+/// <summary>
+/// Plans host posts and computes the click state of each press the way the Mac injector does
+/// (<see cref="TabletEventMath.NextClickCount"/> with <see cref="TabletEventMath.ClickSlopFor"/>, a 500 ms interval and
+/// a 6 pt pen slop).
+/// </summary>
+internal sealed class ClickCountingSink : IInputSink
+{
+    private const long IntervalNs = 500_000_000;
+    private const double PenSlop = 6;
+    private readonly TabletStep[] _buffer = new TabletStep[TabletEventPlanner.MaxSteps];
+    private TabletPostedState _state;
+    private ClickState _left;
+
+    public List<TabletAction> Actions { get; } = [];
+
+    public List<long> LeftDownClickStates { get; } = [];
+
+    public void OnPenEvent(in PenEvent e)
+    {
+        int n = TabletEventPlanner.Plan(ref _state, e.Kind, e.Button, e.Sample.Tool, _buffer, e.Sample.Buttons);
+        for (int i = 0; i < n; i++)
+        {
+            Actions.Add(_buffer[i].Action);
+            if (_buffer[i].Action == TabletAction.LeftDown)
+            {
+                LeftDownClickStates.Add(TabletEventMath.NextClickCount(
+                    ref _left, e.TimestampUs * 1000, e.Position, IntervalNs, TabletEventMath.ClickSlopFor(_buffer[i].Tool, PenSlop)));
+            }
+        }
+    }
+
+    public void OnGestureEvent(in GestureEvent e)
+    {
     }
 }
