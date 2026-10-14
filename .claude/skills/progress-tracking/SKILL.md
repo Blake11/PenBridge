@@ -5,7 +5,9 @@ description: Template and update rules for .claude/progress/<feature>/ — the a
 
 # Progress tracking
 
-Every feature keeps a folder `.claude/progress/<feature>/` in the **main worktree** (untracked, gitignored — never commit it). Worktrees don't have it: subagents in worktrees write to the main-tree path given in their prompt.
+Every feature keeps a folder `.claude/progress/<feature>/` in the **main worktree** (untracked, gitignored — never commit it).
+
+**Agents in an isolated worktree can't write the main tree** (writes outside their worktree are denied). They write `ws-<id>.md` in their own worktree's `.claude/progress/<feature>/` and put its content in their report; the architect copies it to the main tree if needed. Every delegation prompt gives the exact `ws` path.
 
 GitHub issues are the plan of record (ADR-0014, skill `issues`); these files are local session state for resuming, and link the issues.
 

@@ -72,6 +72,7 @@ scripts/android-run.sh [--emulator|--device <ip:port>] [--apk] [--app-id <id>] [
 - Branch from fresh `origin/main` (`git fetch origin && git switch -c <name> origin/main`); **dash-only branch names** (`feat-udp-input`, no slashes).
 - Conventional Commits for commits and PR titles (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `ci:`, `build:`, `chore:`, `perf:`); validated by `.githooks/commit-msg` and CI. release-please derives versions from them (skill `release`).
 - Every PR references its issue in the body: `Closes #N` (or `Refs #N` if it doesn't finish it).
+- When a phase is delivered (its epic closes), update `README.md` (status, features, usage).
 - **No Claude/AI attribution** in commits or PRs (no `Co-Authored-By: Claude`, no "Generated with").
 - **Never push, create PRs, or create remotes/repos without explicit user approval.** Subagents never commit unless told.
 - The user's global GitLab/`master`/`glab`/MR/prod rules do **not** apply here — only dash branches, Conventional Commits and no attribution carry over. There is no "Production" environment.
@@ -83,3 +84,4 @@ scripts/android-run.sh [--emulator|--device <ip:port>] [--apk] [--app-id <id>] [
 - **Mac**: needs the Accessibility permission (TCC). Sign with the dev cert so rebuilds keep the grant; `--reset-tcc` if it gets stuck. Verify pressure/tilt in a pressure-aware app (Krita). Skill `mac-build-run`.
 - **Android**: emulator (`PenBridge_Tablet`) for UI/flow — no stylus, no mDNS (Mac = `10.0.2.2`, manual host entry is dev-only). **Real S23 Ultra over wireless adb** for stylus and discovery. Skill `android-build-run`.
 - Without a phone: `tools/PenBridge.SimClient` drives the Mac server.
+- Only one agent uses a physical device at a time (the architect grants turns); parallel emulator agents use their own AVD and ApplicationId.

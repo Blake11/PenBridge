@@ -5,7 +5,7 @@ description: Internals and gotchas of the PenBridge.Core network engine (src/Pen
 
 # Net engine (`src/PenBridge.Core/Net`)
 
-Design and timings: `docs/specs/phase-1-core.md` (connection flow), ADR-0012/0013. Read the `<remarks>` on `SessionInput`, `PenBridgeServer`, `ControlChannel` before changing them. Tests: `tests/PenBridge.Core.Tests/Net/` (skill `core-testing`, "Fake time with real sockets").
+Design and timings: `docs/specs/phase-1-core.md` (connection flow), ADR-0012/0013. Read the `<remarks>` on `SessionInput`, `PenBridgeServer`, `ControlChannel` before changing them. Tests: `tests/PenBridge.Core.Tests/Net/` (skill `core-testing`, "Fake time with real sockets" and "Soak"); a timing change isn't done until it survives a soak under full CPU load.
 
 ## Threads and timers
 - Server: accept loop, UDP receive loop, one async task per TCP connection. Client: one read loop + one background fallback writer. No polling anywhere (idle ≈ 0% CPU).
@@ -20,6 +20,7 @@ Design and timings: `docs/specs/phase-1-core.md` (connection flow), ADR-0012/001
 ## Control channel (TLS)
 - Reads: per-read deadline + 10 s pre-auth handshake deadline; any failure is terminal (dispose, close). `ControlChannel` arms deadlines as `TimeProvider` timers (`_readDeadline`/`_writeDeadline`), the testable equivalent of `CancelAfter`.
 - Writes: `Socket.SendTimeout` does **not** apply to async writes. Give each write its own deadline (2 s), and on expiry **close the socket** (`AbortHard`) — cancellation alone doesn't unstick a write blocked on a full send buffer.
+- **Closing with Bye (takeover, unpair, shutdown):** write the Bye, half-close (`Shutdown(Send)`), stop the ping timer, then linger up to `ControlChannel.LingerTimeout` (1 s) draining until the peer closes, and only then abort. Aborting right after the Bye sends an RST that can discard it unread, so the client never learns it was taken over (#80).
 - Client fallback sends go through a bounded latest-wins queue + single writer, so `SendState` never blocks the caller.
 - TLS: macOS `SslStream` servers negotiate only TLS 1.2 (forcing 1.3 fails; ADR-0013). Accept 1.2+, never assert 1.3; tests assert the negotiated protocol is `Tls12 or Tls13`.
 

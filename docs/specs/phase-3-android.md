@@ -54,12 +54,14 @@ Wave 2 composes the wave-1 types. P3-C is the only workstream that edits the csp
   - a tiny dim dot in a corner: green = Connected (UDP), amber = Connected (TLS fallback) or reconnecting, red = disconnected;
   - tapping it, or swiping in from the edge, opens a small menu: latency, transport, orientation, Disconnect, Change Mac;
   - system Back leaves the pad, and the dot ignores pen input.
+  - **Accepted deviation:** the menu opens only from the status dot (tap, or a swipe that starts on it). A swipe in from the screen edge conflicts with the system back gesture, so it isn't used.
+- **Touch-size readout (#76):** an optional overlay (Settings ▸ "Show touch size on the pad") shows each finger's live normalized contact size and the last touch's peak, amber while a contact counts as a palm. It draws only, never takes input, and allocates nothing per event; it's for tuning the palm threshold.
 - **Contract for P3-A:** P3-B defines `IPadOutput` and an observable `PadConnectionState` the overlay renders. P3-A implements them.
 
 ## P3-C — Connect flow + composition
-- **Navigation:** single-Activity (`MainActivity`) with simple screens: **Mac list** → **Pair** (PIN entry or Scan QR) → **Pad**. Advanced ▸ Connect manually (host, port, PIN). There's also a small About/settings screen (finger pressure, orientation default, forget paired Macs).
+- **Navigation:** single-Activity (`MainActivity`) with simple screens: **Mac list** → **Pair** (PIN entry or Scan QR) → **Pad**. Advanced ▸ Connect manually (host, port, PIN). There's also a small Settings screen: finger pressure, finger hold before drawing (`FingerFallbackArmDelay`; a second finger within it starts a gesture), palm size threshold (`PalmSizeThreshold`, or Off), the touch-size readout toggle (#76), pad orientation, paired Macs (Forget), and About (app and protocol version).
 - **QR:** CameraX + Google ML Kit barcode scanning (**bundled** model, no Play Services dependency). The CAMERA permission is requested only when "Scan QR" is tapped. Only `penbridge://pair` payloads are accepted (Core parser).
-- **Manifest:** INTERNET, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE, CHANGE_WIFI_MULTICAST_STATE, CAMERA (runtime), plus NEARBY_WIFI_DEVICES if NSD needs it on API 33+ (verify). Network-security config allows no cleartext.
+- **Manifest:** INTERNET, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE, CHANGE_WIFI_MULTICAST_STATE, CAMERA (runtime). NEARBY_WIFI_DEVICES is not needed: NSD discovery works without it on API 33+. Network-security config allows no cleartext.
 - **Startup:** if a last-used paired Mac is discovered within ~3 s, go straight to the Pad; otherwise show the Mac list.
 - **Theme:** dark, Material 3 basics, no heavy UI framework.
 

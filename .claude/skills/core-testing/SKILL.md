@@ -48,13 +48,34 @@ DOTNET_TC_QuickJitForLoops=1 DOTNET_OSR_HitLimit=1 scripts/test.sh -c Release   
 ## General
 - Inject time (`ManualTimeProvider` in `Input/TestSupport.cs`) and randomness; no real sleeps.
 - Network tests: loopback or fakes with timeouts, never fixed delays.
+- `scripts/test.sh` lists the names of failing tests after the summary (from `TestResults/junit.xml`).
+
+## Time-based filters (hold-back)
+A filter that holds input back until a deadline (`InputFilter` holds a lone finger for `FingerFallbackArmDelay`) can't
+rely on the next event: a still finger sends none. Give it a deadline API (`PendingDeadline`) and have the head arm a
+timer that calls `Process` again then (Android: `DrawSurfaceView` arm runnable). Test both: the deadline value, and
+that a `Process` call at the deadline with no new input releases the held samples.
+
+## Soak (flaky timing tests)
+Before calling a timing test fixed, run it under full CPU load, in parallel:
+```bash
+scripts/test.sh -c Release                                             # build once (and a baseline)
+for i in $(seq "$(sysctl -n hw.ncpu)"); do yes > /dev/null & done     # load every core
+for i in 1 2 3 4; do (dotnet test --project tests/PenBridge.Core.Tests -c Release --no-build \
+  > /tmp/soak-$i.log 2>&1 || echo "run $i FAILED") & done; wait
+pkill yes
+```
+Parallel runs share the build output, so pass `--no-build`; read failures from each log. Repeat a few rounds.
 
 ## Fake time with real sockets (Net tests)
 - `Net/NetTestSupport.cs` has `FakeTime` (a TimeProvider whose timers fire only inside `Advance`, in due order, on the
   calling thread) plus `Wait.Until` / `Wait.AdvanceUntil` / `Wait.Step` (bounded real-time polling).
 - Never jump past a deadline in one `Advance` while I/O must happen in between (pings, acks): every timer that comes
-  due fires before any socket I/O runs. Advance at most one ping interval per step (e.g. 100 ms) with a tiny real
-  pause between steps: use `Wait.Step(time, total)`.
+  due fires before any socket I/O runs. Step with `Wait.Step(time, total[, step, settled])` (≤ 1 s, below the 2 s
+  write timeout): after each step it waits, bounded by `Wait.Limit`, until real I/O caught up (`Wait.Settled`: pings
+  re-armed the peer timeouts, no control write in flight; built on `FakeTime.CountDeadlines`).
+- **Never a fixed real sleep after a fake-time step.** "Advance 2 s, sleep 10 ms" passed alone and failed under load
+  (#83): the pong hadn't arrived, so the next step fired the 6 s peer timeout. Wait for a condition, with a bound.
 - **Test the moment the stream stops, right after an ack.** Rate-limited or batched protocol messages (UdpAck at most
   1/s) leave the tail unanswered unless something flushes it (a trailing ack). Steady streaming hides that bug;
   "stream, stop right after an ack, step 6 s, assert still on UDP" catches it.
