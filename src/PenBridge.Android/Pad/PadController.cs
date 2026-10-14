@@ -45,6 +45,9 @@ public sealed class PadController : IDisposable
     private PadOrientationMode? _pendingOrientation;
     private bool _fingerFallbackEnabled;
     private ushort _fingerFallbackPressure;
+    private readonly TimeSpan _armDelay;
+    private readonly float _palmSizeThreshold;
+    private readonly TouchSizeReadoutView? _readout;
     private ScreenOrientation _hostOrientation;
     private bool _started;
     private volatile bool _disposed;
@@ -59,11 +62,15 @@ public sealed class PadController : IDisposable
         _orientation = options.Orientation;
         _fingerFallbackEnabled = options.FingerFallbackEnabled;
         _fingerFallbackPressure = options.FingerFallbackPressure;
+        _armDelay = options.FingerFallbackArmDelay;
+        _palmSizeThreshold = options.PalmSizeThreshold;
+        _readout = options.ShowTouchSize ? new TouchSizeReadoutView(activity, options.PalmSizeThreshold) : null;
 
         _queue = new PadSendQueue(output);
         _ink = options.InkEcho ? new InkEchoView(activity) : null;
         _surface = new DrawSurfaceView(activity, _queue, _ink, CreateFilterOptions())
         {
+            TouchSizeReadout = _readout,
             ActiveChanged = OnActiveChanged,
             SurfaceSizeChanged = OnSurfaceSizeChanged,
             WindowFocusRegained = OnWindowFocusRegained,
@@ -81,6 +88,13 @@ public sealed class PadController : IDisposable
         {
             // Above the surface for drawing only: it never consumes touches or hover, so input reaches the surface.
             _root.AddView(_ink, new FrameLayout.LayoutParams(match, match));
+        }
+
+        if (_readout is not null)
+        {
+            // Drawing only, like the ink layer: never takes input.
+            _root.AddView(_readout, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent, GravityFlags.Bottom | GravityFlags.Start));
         }
 
         int dotSize = Dp(40);
@@ -188,6 +202,8 @@ public sealed class PadController : IDisposable
     {
         FingerFallbackEnabled = _fingerFallbackEnabled,
         FingerFallbackPressure = _fingerFallbackPressure,
+        FingerFallbackArmDelay = _armDelay,
+        PalmSizeThreshold = _palmSizeThreshold,
     };
 
     private int Dp(float dp) => (int)((dp * (_activity.Resources?.DisplayMetrics?.Density ?? 1f)) + 0.5f);

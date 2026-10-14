@@ -51,6 +51,9 @@ internal sealed class PadScreen : Screen
         {
             Orientation = ToPad(Host.Settings.Orientation),
             FingerFallbackPressure = Host.Settings.FingerPressure,
+            FingerFallbackArmDelay = TimeSpan.FromMilliseconds(Host.Settings.FingerArmDelayMs),
+            PalmSizeThreshold = Host.Settings.PalmSizeThreshold,
+            ShowTouchSize = Host.Settings.ShowTouchSize,
         };
         _controller = new PadController(Activity, _output, options);
         _controller.DisconnectRequested += OnDisconnectRequested;

@@ -76,6 +76,9 @@ internal sealed class DrawSurfaceView : View
     /// <summary>Raised from <see cref="OnSizeChanged"/> with the new size in pixels.</summary>
     public Action<int, int>? SurfaceSizeChanged { get; set; }
 
+    /// <summary>Optional debug readout of each finger's normalized contact size.</summary>
+    public TouchSizeReadoutView? TouchSizeReadout { get; set; }
+
     /// <summary>Raised when the window regains focus (re-apply immersive mode).</summary>
     public Action? WindowFocusRegained { get; set; }
 
@@ -182,6 +185,7 @@ internal sealed class DrawSurfaceView : View
             }
         }
 
+        TouchSizeReadout?.Update(_fingers, cancelAll || action == MotionEventActions.Up ? 0 : _fingerCount);
         Emit(e.EventTime, history, stylus >= 0 ? 0 : CollectFingerHistory(e));
 
         // Canceled pointers were reported once (so the filter suppresses them); they are gone afterwards.

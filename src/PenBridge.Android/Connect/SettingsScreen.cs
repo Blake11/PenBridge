@@ -15,6 +15,10 @@ internal sealed class SettingsScreen : Screen
 {
     private const int MinPressurePercent = 5;
     private const long NoFlags = 0;
+    private const int ArmStepMs = 10;
+
+    /// <summary>Palm slider in hundredths: 5..100 is the threshold, this last step means off.</summary>
+    private const int PalmOffStep = 101;
 
     private LinearLayout? _paired;
     private TextView? _pressureValue;
@@ -52,6 +56,29 @@ internal sealed class SettingsScreen : Screen
         pressureRow.AddView(_pressureValue, new LinearLayout.LayoutParams(Ui.Dp(ctx, 56), ViewGroup.LayoutParams.WrapContent));
         content.AddView(pressureRow, Ui.FullWidthLp(ctx, 8));
 
+        // Finger and palm filtering (InputFilter): tune on the phone with the touch-size readout.
+        content.AddView(Ui.Text(ctx, "Fingers and palm", TextRole.Label));
+        content.AddView(Ui.Text(ctx, "Finger hold before drawing: a second finger in this time starts a gesture instead of a stroke."));
+        content.AddView(SliderRow(
+            0,
+            SettingsStore.MaxFingerArmDelayMs / ArmStepMs,
+            settings.FingerArmDelayMs / ArmStepMs,
+            static step => (step * ArmStepMs).ToString(CultureInfo.InvariantCulture) + " ms",
+            step => settings.FingerArmDelayMs = step * ArmStepMs), Ui.FullWidthLp(ctx, 8));
+        content.AddView(Ui.Text(ctx, "Palm size: a contact at least this large (0 to 1 of the sensor range) is ignored as a palm. Higher lets bigger fingers through."), Ui.FullWidthLp(ctx, 12));
+        content.AddView(SliderRow(
+            (int)(SettingsStore.MinPalmSizeThreshold * 100),
+            PalmOffStep,
+            settings.PalmSizeThreshold > 1f ? PalmOffStep : (int)MathF.Round(settings.PalmSizeThreshold * 100),
+            static step => step >= PalmOffStep ? "Off" : (step / 100.0).ToString("0.00", CultureInfo.InvariantCulture),
+            step => settings.PalmSizeThreshold = step >= PalmOffStep ? SettingsStore.PalmSizeThresholdOff : step / 100f), Ui.FullWidthLp(ctx, 8));
+        var readout = new Switch(ctx) { Text = "Show touch size on the pad (for tuning)", Checked = settings.ShowTouchSize };
+        readout.SetTextColor(Ui.ColorOf(ctx, Resource.Color.pb_on_surface));
+        readout.SetTextSize(global::Android.Util.ComplexUnitType.Sp, 15);
+        readout.SetMinHeight(Ui.Dp(ctx, 48));
+        readout.CheckedChange += (_, e) => settings.ShowTouchSize = e.IsChecked;
+        content.AddView(readout, Ui.FullWidthLp(ctx, 8));
+
         // Default orientation of the pad (also changeable from the pad's menu).
         content.AddView(Ui.Text(ctx, "Pad orientation", TextRole.Label));
         var group = new RadioGroup(ctx) { Orientation = global::Android.Widget.Orientation.Vertical };
@@ -77,6 +104,27 @@ internal sealed class SettingsScreen : Screen
             "PenBridge " + AppVersion() + " · protocol " + ProtocolInfo.Version.ToString()
                 + "\nTurns this phone into a pressure-sensitive drawing tablet for your Mac. Input is encrypted and only paired Macs receive it."));
         return page;
+    }
+
+    /// <summary>A slider with a value label; <paramref name="changed"/> runs on user changes only.</summary>
+    private LinearLayout SliderRow(int min, int max, int value, Func<int, string> format, Action<int> changed)
+    {
+        var ctx = Activity;
+        LinearLayout row = Ui.Row(ctx);
+        var seek = new SeekBar(ctx) { Max = max, Min = min };
+        seek.Progress = Math.Clamp(value, min, max);
+        TextView label = Ui.Text(ctx, format(seek.Progress), TextRole.Title);
+        seek.ProgressChanged += (_, e) =>
+        {
+            label.Text = format(e.Progress);
+            if (e.FromUser)
+            {
+                changed(e.Progress);
+            }
+        };
+        row.AddView(seek, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
+        row.AddView(label, new LinearLayout.LayoutParams(Ui.Dp(ctx, 72), ViewGroup.LayoutParams.WrapContent));
+        return row;
     }
 
     private void AddChoice(RadioGroup group, string label, OrientationMode mode, OrientationMode current)
