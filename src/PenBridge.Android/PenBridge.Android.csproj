@@ -22,11 +22,11 @@
     runtime-permission contract.
   -->
   <ItemGroup>
-    <PackageReference Include="Xamarin.AndroidX.Activity" VersionOverride="1.13.0.1" />
-    <PackageReference Include="Xamarin.AndroidX.Camera.Camera2" VersionOverride="1.6.2" />
-    <PackageReference Include="Xamarin.AndroidX.Camera.Lifecycle" VersionOverride="1.6.2" />
-    <PackageReference Include="Xamarin.AndroidX.Camera.View" VersionOverride="1.6.2" />
-    <PackageReference Include="Xamarin.Google.MLKit.BarcodeScanning" VersionOverride="117.3.0.9" />
+    <PackageReference Include="Xamarin.AndroidX.Activity" />
+    <PackageReference Include="Xamarin.AndroidX.Camera.Camera2" />
+    <PackageReference Include="Xamarin.AndroidX.Camera.Lifecycle" />
+    <PackageReference Include="Xamarin.AndroidX.Camera.View" />
+    <PackageReference Include="Xamarin.Google.MLKit.BarcodeScanning" />
   </ItemGroup>
 
 </Project>

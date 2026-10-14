@@ -8,5 +8,11 @@
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
     <PackageVersion Include="xunit.v3" Version="4.0.2" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.1" />
+    <!-- Android head: CameraX + ML Kit (bundled model) for QR pairing; AndroidX Activity for the activity host. -->
+    <PackageVersion Include="Xamarin.AndroidX.Activity" Version="1.13.0.1" />
+    <PackageVersion Include="Xamarin.AndroidX.Camera.Camera2" Version="1.6.2" />
+    <PackageVersion Include="Xamarin.AndroidX.Camera.Lifecycle" Version="1.6.2" />
+    <PackageVersion Include="Xamarin.AndroidX.Camera.View" Version="1.6.2" />
+    <PackageVersion Include="Xamarin.Google.MLKit.BarcodeScanning" Version="117.3.0.9" />
   </ItemGroup>
 </Project>
