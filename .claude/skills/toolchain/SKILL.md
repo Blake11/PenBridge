@@ -22,6 +22,7 @@ bootstrap: Homebrew `openjdk@17` + `android-commandlinetools` cask (seed), Andro
   sudo xcodebuild -license accept
   sudo xcodebuild -runFirstLaunch
   ```
+  `-runFirstLaunch` installs `XcodeSystemResources.pkg` (CoreSimulator framework, device types, CoreDevice DDIs), `MobileDevice*.pkg` (usbmuxd, device frameworks) and `CoreTypes.pkg`. `dotnet build` of the Mac and iOS heads needs none of them: they call only clang/ld/`install_name_tool`/codesign/`mdimport` (+ `mono-aot-cross` for iOS), and the iOS head builds with zero simulator runtimes installed. Running on a simulator/device does need them (plus a runtime: `xcodebuild -downloadPlatform iOS`), so doctor only warns (!) when `xcodebuild -checkFirstLaunchStatus` fails (#25). Revisit if the iOS head gains asset catalogs/storyboards (actool/ibtool use a simulator runtime).
   Version-mismatch error → install the Xcode it names; temporary escape hatch for a minor mismatch: `-p:ValidateXcodeVersion=false`.
 - **`scripts/mac-dev-cert.sh`** — prompts for the login password (skill `mac-build-run`). Once it exists, every Mac build (`dotnet build`/`run`, Rider, scripts) signs with "PenBridge Dev" automatically (csproj target, #55); without it builds sign ad-hoc and print a hint.
 - **Wireless adb pairing** — needs the code shown on the phone (skill `android-build-run`).
