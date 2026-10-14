@@ -101,20 +101,30 @@ public sealed class PenStateTracker
     public PenTool Tool => _inRange ? _tool : PenTool.None;
 
     /// <summary>
-    /// Time until <see cref="CheckWatchdog"/> would fire, or null when nothing is active (no timer needed).
-    /// Zero when already due.
+    /// Time until <see cref="CheckWatchdog"/> has work to do, or null when nothing is pending (no timer needed): the
+    /// watchdog timeout, or the gesture recognizer's held-tap deadline
+    /// (<see cref="GestureRecognizer.PendingDeadlineUs"/>) if that comes first. Zero when already due.
     /// </summary>
     public TimeSpan? WatchdogDueIn
     {
         get
         {
-            if (!TryGetTimeout(out TimeSpan timeout))
+            TimeSpan? due = null;
+            if (TryGetTimeout(out TimeSpan timeout))
             {
-                return null;
+                due = timeout - _time.GetElapsedTime(_lastFrameTimestamp);
             }
 
-            TimeSpan remaining = timeout - _time.GetElapsedTime(_lastFrameTimestamp);
-            return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+            if (Gestures.PendingDeadlineUs is { } deadline)
+            {
+                TimeSpan gestureDue = TimeSpan.FromMicroseconds(deadline - EstimatedNowUs());
+                if (due is not { } d || gestureDue < d)
+                {
+                    due = gestureDue;
+                }
+            }
+
+            return due is { } r ? (r > TimeSpan.Zero ? r : TimeSpan.Zero) : null;
         }
     }
 
@@ -156,11 +166,21 @@ public sealed class PenStateTracker
     }
 
     /// <summary>
-    /// Fires the watchdog if the active timeout elapsed since the last frame: synthesizes the full release
-    /// (see <see cref="Reset"/>). Returns true if it fired.
+    /// Resolves a held gesture tap whose deadline passed (<see cref="GestureRecognizer.CheckDeadline"/>, at the
+    /// estimated current frame time), then fires the watchdog if the active timeout elapsed since the last frame:
+    /// synthesizes the full release (see <see cref="Reset"/>). Returns true if the watchdog fired.
     /// </summary>
     public bool CheckWatchdog()
     {
+        if (Gestures.PendingDeadlineUs is { } deadline)
+        {
+            long nowUs = EstimatedNowUs();
+            if (nowUs >= deadline)
+            {
+                Gestures.CheckDeadline(EventTime(nowUs));
+            }
+        }
+
         if (!TryGetTimeout(out TimeSpan timeout) || _time.GetElapsedTime(_lastFrameTimestamp) < timeout)
         {
             return false;
@@ -188,6 +208,13 @@ public sealed class PenStateTracker
         {
             EmitLeave(synthetic: true);
         }
+    }
+
+    /// <summary>The frame clock now: the last frame's time plus the host time elapsed since it arrived.</summary>
+    private long EstimatedNowUs()
+    {
+        long elapsedUs = _time.GetElapsedTime(_lastFrameTimestamp).Ticks / TimeSpan.TicksPerMicrosecond;
+        return _frameTimeUs + Math.Max(0, elapsedUs);
     }
 
     private long Unwrap(uint raw)

@@ -246,11 +246,13 @@ public class ScrollMomentumTests
     [Theory]
     [InlineData(GestureKind.Pinch)]
     [InlineData(GestureKind.Tap)]
+    [InlineData(GestureKind.TouchDown)]
+    [InlineData(GestureKind.Drag)]
     public void Observe_other_gestures_stop_the_coast(GestureKind kind)
     {
         long release = Feed(20, 0, 8) + FrameUs;
         Assert.True(_m.TryStart(release));
-        Assert.False(_m.Observe(new GestureEvent(kind, GesturePhase.Ended, 0, 0, 1, 0, default, false, release + 1)));
+        Assert.False(_m.Observe(new GestureEvent(kind, GesturePhase.Ended, 0, 0, 1, 0, GestureDirection.None, 0, default, false, release + 1)));
         Assert.False(_m.IsCoasting);
     }
 
@@ -297,13 +299,13 @@ public class ScrollMomentumTests
         Alloc.AssertZero(2_000, i =>
         {
             long t0 = (long)i * 10_000_000; // longer than any coast
-            m.Observe(new GestureEvent(GestureKind.Scroll, GesturePhase.Began, 0, 50, 1, 0, default, false, t0));
+            m.Observe(new GestureEvent(GestureKind.Scroll, GesturePhase.Began, 0, 50, 1, 0, GestureDirection.None, 0, default, false, t0));
             for (int k = 1; k <= 12; k++)
             {
-                m.Observe(new GestureEvent(GestureKind.Scroll, GesturePhase.Changed, 3, 8 + (i % 5), 1, 0, default, false, t0 + (k * FrameUs)));
+                m.Observe(new GestureEvent(GestureKind.Scroll, GesturePhase.Changed, 3, 8 + (i % 5), 1, 0, GestureDirection.None, 0, default, false, t0 + (k * FrameUs)));
             }
 
-            if (m.Observe(new GestureEvent(GestureKind.Scroll, GesturePhase.Ended, 0, 0, 1, 0, default, false, t0 + (13 * FrameUs))))
+            if (m.Observe(new GestureEvent(GestureKind.Scroll, GesturePhase.Ended, 0, 0, 1, 0, GestureDirection.None, 0, default, false, t0 + (13 * FrameUs))))
             {
                 long t = 0;
                 while (m.Step(t += 16_667, out _, out _))
@@ -318,5 +320,5 @@ public class ScrollMomentumTests
     }
 
     private static GestureEvent Scroll(GesturePhase phase, double dx, double dy, long t) =>
-        new(GestureKind.Scroll, phase, dx, dy, 1, 0, default, false, t);
+        new(GestureKind.Scroll, phase, dx, dy, 1, 0, GestureDirection.None, 0, default, false, t);
 }

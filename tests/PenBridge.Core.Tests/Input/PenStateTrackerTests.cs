@@ -338,6 +338,48 @@ public class PenStateTrackerTests
     }
 
     [Fact]
+    public void Held_tap_deadline_drives_the_timer_and_fires_without_frames()
+    {
+        // Square maps 1 normalized unit to 1 point; fingers 200 pt apart.
+        Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000)); // t = 10 ms
+        Frame(null); // lift at 15 ms: the tap is held for 300 ms
+        Assert.DoesNotContain(_sink.Gestures, g => g.Kind == GestureKind.Tap);
+        Assert.Equal(TimeSpan.FromMilliseconds(300), _tracker.WatchdogDueIn);
+
+        _time.Advance(TimeSpan.FromMilliseconds(299));
+        Assert.False(_tracker.CheckWatchdog());
+        Assert.DoesNotContain(_sink.Gestures, g => g.Kind == GestureKind.Tap);
+        Assert.Equal(TimeSpan.FromMilliseconds(1), _tracker.WatchdogDueIn);
+
+        _time.Advance(TimeSpan.FromMilliseconds(1));
+        Assert.False(_tracker.CheckWatchdog()); // the watchdog itself didn't fire
+        GestureEvent tap = Assert.Single(_sink.Gestures, g => g.Kind == GestureKind.Tap);
+        Assert.Equal(315_000, tap.TimestampUs);
+        Assert.Null(_tracker.WatchdogDueIn); // idle again: no timer
+    }
+
+    [Fact]
+    public void Watchdog_comes_first_when_it_is_sooner_than_the_tap_deadline()
+    {
+        Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000));
+        Frame(null); // held tap: deadline in 300 ms
+        Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000)); // second touch: 200 ms + 1 µs
+        Assert.Equal(TimeSpan.FromMilliseconds(150), _tracker.WatchdogDueIn); // contact watchdog
+    }
+
+    [Fact]
+    public void Reset_drops_a_held_tap()
+    {
+        Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000));
+        Frame(null);
+        _tracker.Reset();
+        Assert.Null(_tracker.WatchdogDueIn);
+        _time.Advance(TimeSpan.FromSeconds(1));
+        _tracker.CheckWatchdog();
+        Assert.DoesNotContain(_sink.Gestures, g => g.Kind == GestureKind.Tap);
+    }
+
+    [Fact]
     public void Gesture_events_share_the_frame_clock()
     {
         _tracker.ProcessFrame(7_000, null, [], [new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 20000, 10000)]);

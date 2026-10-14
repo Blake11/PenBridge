@@ -14,7 +14,8 @@ public class GestureRecognizerTests
 
     public GestureRecognizerTests()
     {
-        _rec = new GestureRecognizer(_sink) { Mapper = Square };
+        // Acceleration off: these tests check the raw 1:1 deltas (GestureAccelerationTests covers the curve).
+        _rec = new GestureRecognizer(_sink, new GestureRecognizerOptions { ScrollAcceleration = GestureAcceleration.None }) { Mapper = Square };
     }
 
     private static ushort N(double points) => (ushort)Math.Round(points * 65535.0 / 1000.0);
@@ -130,7 +131,7 @@ public class GestureRecognizerTests
     [Fact]
     public void Thresholds_are_configurable()
     {
-        var rec = new GestureRecognizer(_sink, new GestureRecognizerOptions { ScrollThreshold = 0.005 }) { Mapper = Square };
+        var rec = new GestureRecognizer(_sink, new GestureRecognizerOptions { ScrollThreshold = 0.005, ScrollAcceleration = GestureAcceleration.None }) { Mapper = Square };
         rec.Process([new TouchSample(1, true, N(400), N(500)), new TouchSample(2, true, N(600), N(500))], false, 0);
         rec.Process([new TouchSample(1, true, N(400), N(510)), new TouchSample(2, true, N(600), N(510))], false, 0);
         Assert.Equal(GestureKind.Scroll, Assert.Single(Gestures).Kind);
@@ -165,32 +166,36 @@ public class GestureRecognizerTests
     }
 
     [Fact]
-    public void Third_finger_is_ignored_and_lifting_a_tracked_finger_ends()
+    public void Finger_landing_after_the_lock_is_ignored_and_lifting_a_gesture_finger_ends()
     {
         Two(400, 500, 600, 500);
-        _rec.Process([new TouchSample(1, true, N(400), N(560)), new TouchSample(2, true, N(600), N(560)), new TouchSample(3, true, N(100), N(100))], false, 0);
-        Assert.Equal(GestureKind.Scroll, Assert.Single(Gestures).Kind);
-        Assert.Equal(60, Gestures[0].DeltaY, 0.1);
+        Two(400, 560, 600, 560); // scroll locked
+        _rec.Process([new TouchSample(1, true, N(400), N(580)), new TouchSample(2, true, N(600), N(580)), new TouchSample(3, true, N(100), N(100))], false, 0);
+        Assert.All(Gestures, g => Assert.Equal(GestureKind.Scroll, g.Kind));
+        Assert.Equal(20, Gestures[^1].DeltaY, 0.1);
 
-        // Finger 2 lifts; 1 and 3 remain -> Ended, then a new undecided gesture on (1, 3).
-        _rec.Process([new TouchSample(1, true, N(400), N(560)), new TouchSample(3, true, N(100), N(100))], false, 0);
+        // Finger 2 lifts; 1 and 3 remain -> Ended, and nothing new until all lift.
+        _rec.Process([new TouchSample(1, true, N(400), N(580)), new TouchSample(3, true, N(100), N(100))], false, 0);
         Assert.Equal(GesturePhase.Ended, Gestures[^1].Phase);
         Assert.False(_rec.IsActive);
         Assert.Equal(2, _rec.ContactCount);
+        int count = Gestures.Count;
+        _rec.Process([new TouchSample(1, true, N(400), N(700)), new TouchSample(3, true, N(100), N(220))], false, 0);
+        Assert.Equal(count, Gestures.Count);
     }
 
     [Fact]
-    public void Tracks_first_two_contacts_by_landing_order_not_span_order()
+    public void Locked_gesture_tracks_its_own_fingers_not_span_order()
     {
         _rec.Process([new TouchSample(5, true, N(400), N(500))], false, 0);
-        // Fingers 2 and 9 land together after 5; span order puts 2 and 9 first.
-        _rec.Process([new TouchSample(2, true, N(600), N(500)), new TouchSample(9, true, N(900), N(900)), new TouchSample(5, true, N(400), N(500))], false, 0);
-        _rec.Process([new TouchSample(2, true, N(600), N(560)), new TouchSample(9, true, N(900), N(900)), new TouchSample(5, true, N(400), N(560))], false, 0);
+        _rec.Process([new TouchSample(2, true, N(600), N(500)), new TouchSample(5, true, N(400), N(500))], false, 0);
+        _rec.Process([new TouchSample(2, true, N(600), N(560)), new TouchSample(5, true, N(400), N(560))], false, 0); // scroll on (5, 2)
+        // A third finger lands first in span order; the scroll keeps following 5 and 2.
+        _rec.Process([new TouchSample(9, true, N(900), N(900)), new TouchSample(2, true, N(600), N(600)), new TouchSample(5, true, N(400), N(600))], false, 0);
 
-        GestureEvent began = Assert.Single(Gestures);
-        Assert.Equal(GestureKind.Scroll, began.Kind);
-        Assert.Equal(60, began.DeltaY, 0.1);
-        Assert.Equal(500, began.Center.X, 0.1);
+        Assert.All(Gestures, g => Assert.Equal(GestureKind.Scroll, g.Kind));
+        Assert.Equal(40, Gestures[^1].DeltaY, 0.1);
+        Assert.Equal(500, Gestures[^1].Center.X, 0.1);
     }
 
     [Fact]

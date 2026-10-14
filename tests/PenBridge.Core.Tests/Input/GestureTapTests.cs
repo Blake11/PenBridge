@@ -2,7 +2,10 @@ using PenBridge.Core.Input;
 
 namespace PenBridge.Core.Tests.Input;
 
-/// <summary>Two-finger tap (ADR-0023): timing, slop, third finger, pen and cancel rules.</summary>
+/// <summary>
+/// Two-finger tap rules (ADR-0023): timing, slop, landings, pen and cancel. The double-tap window is off here so a tap
+/// is emitted on its lift; GestureDoubleTapTests covers holding it.
+/// </summary>
 public class GestureTapTests
 {
     // Square 1000x1000 surface onto a 1000x1000 display: tap slop 2% = 20 pt.
@@ -11,11 +14,12 @@ public class GestureTapTests
 
     /// <summary>Recorded gestures without the TouchDown landing events (covered by GestureTouchDownTests).</summary>
     private List<GestureEvent> Gestures => _sink.Gestures.Where(g => g.Kind != GestureKind.TouchDown).ToList();
+    private static readonly GestureRecognizerOptions Immediate = new() { DoubleTapWindow = TimeSpan.Zero };
     private readonly GestureRecognizer _rec;
 
     public GestureTapTests()
     {
-        _rec = new GestureRecognizer(_sink) { Mapper = Square };
+        _rec = new GestureRecognizer(_sink, Immediate) { Mapper = Square };
     }
 
     private static ushort N(double points) => (ushort)Math.Round(points * 65535.0 / 1000.0);
@@ -102,7 +106,7 @@ public class GestureTapTests
     [Fact]
     public void Tap_slop_scales_with_the_mapped_short_side()
     {
-        var rec = new GestureRecognizer(_sink) { Mapper = new CoordinateMapper(1000, 1000, new DisplayRect(0, 0, 2000, 2000)) };
+        var rec = new GestureRecognizer(_sink, Immediate) { Mapper = new CoordinateMapper(1000, 1000, new DisplayRect(0, 0, 2000, 2000)) };
         rec.Process([new TouchSample(1, true, 20000, 30000), new TouchSample(2, true, 40000, 30000)], false, 0);
         rec.Process([new TouchSample(1, true, 20000, 30000), new TouchSample(2, true, 40000, 30983)], false, Ms(40)); // ~30 pt < 40
         rec.Process([], false, Ms(80));
@@ -138,7 +142,7 @@ public class GestureTapTests
     [Fact]
     public void A_started_gesture_is_no_tap()
     {
-        var rec = new GestureRecognizer(_sink, new GestureRecognizerOptions { ScrollThreshold = 0.01 }) { Mapper = Square };
+        var rec = new GestureRecognizer(_sink, Immediate with { ScrollThreshold = 0.01 }) { Mapper = Square };
         rec.Process([F(1, 400, 500), F(2, 600, 500)], false, 0);
         rec.Process([F(1, 400, 515), F(2, 600, 515)], false, Ms(30)); // 15 pt: a scroll, but within the tap slop
         rec.Process([], false, Ms(60));
@@ -200,7 +204,7 @@ public class GestureTapTests
     [Fact]
     public void Tap_duration_and_slop_are_configurable()
     {
-        var rec = new GestureRecognizer(_sink, new GestureRecognizerOptions { TapMaxDuration = TimeSpan.FromMilliseconds(400), TapSlop = 0.03 })
+        var rec = new GestureRecognizer(_sink, Immediate with { TapMaxDuration = TimeSpan.FromMilliseconds(400), TapSlop = 0.03 })
         {
             Mapper = Square,
         };

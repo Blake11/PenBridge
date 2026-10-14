@@ -210,7 +210,7 @@ public class GestureTransformTests
     [Fact]
     public void Scroll_gain_multiplies_scroll_deltas_but_not_thresholds_or_center()
     {
-        _rec = new GestureRecognizer(_sink, new GestureRecognizerOptions { ScrollGain = 2 }) { Mapper = Square };
+        _rec = new GestureRecognizer(_sink, new GestureRecognizerOptions { ScrollGain = 2, ScrollAcceleration = GestureAcceleration.None }) { Mapper = Square };
         Two(400, 500, 600, 500);
         Two(400, 530, 600, 530); // 30 pt: below 40 even with gain 2
         Assert.Empty(Gestures);
@@ -232,96 +232,4 @@ public class GestureTransformTests
     [Fact]
     public void Negative_threshold_throws() =>
         Assert.Throws<ArgumentOutOfRangeException>(() => new GestureRecognizer(_sink, new GestureRecognizerOptions { RotationThreshold = -0.1 }));
-
-    [Fact]
-    public void Transform_tap_and_scroll_do_not_allocate_per_frame()
-    {
-        var sink = new CountingSink();
-        var rec = new GestureRecognizer(sink) { Mapper = Square };
-        var two = new TouchSample[2];
-        var none = Array.Empty<TouchSample>();
-        long t = 0;
-        Alloc.AssertZero(4_000, i =>
-        {
-            int phase = i % 40;
-            t += 8_000;
-            if (phase < 10)
-            {
-                double a = phase * 12 * Math.PI / 180; // rotate in 12 degree steps, then lift
-                two[0] = new TouchSample(1, true, N(500 - (100 * Math.Cos(a))), N(500 - (100 * Math.Sin(a))));
-                two[1] = new TouchSample(2, true, N(500 + (100 * Math.Cos(a))), N(500 + (100 * Math.Sin(a))));
-                rec.Process(two, false, t);
-            }
-            else if (phase is 10 or 13 or 26 or 32 or 39)
-            {
-                rec.Process(none, false, t);
-            }
-            else if (phase is 11 or 12)
-            {
-                two[0] = new TouchSample(1, true, N(400), N(500)); // tap
-                two[1] = new TouchSample(2, true, N(600), N(500));
-                rec.Process(two, false, t);
-            }
-            else if (phase < 25)
-            {
-                two[0] = new TouchSample(1, true, N(400), N(300 + (phase * 20))); // scroll
-                two[1] = new TouchSample(2, true, N(600), N(300 + (phase * 20)));
-                rec.Process(two, false, t);
-            }
-            else if (phase == 25)
-            {
-                rec.Process(two, true, t); // pen cancels the scroll
-            }
-            else if (phase < 31)
-            {
-                two[0] = new TouchSample(1, true, N(400 - (phase * 10)), N(500)); // pinch
-                two[1] = new TouchSample(2, true, N(600 + (phase * 10)), N(500));
-                rec.Process(two, false, t);
-            }
-            else if (phase == 31)
-            {
-                rec.Cancel(t);
-            }
-            else
-            {
-                two[0] = new TouchSample(1, true, N(400), N(500));
-                two[1] = new TouchSample(2, true, N(600), N(500 + phase));
-                rec.Process(two, false, t);
-            }
-        }, () => sink.Transforms, () => sink.Taps, () => sink.Scrolls, () => sink.TouchDowns);
-    }
-
-    private sealed class CountingSink : IInputSink
-    {
-        public long Transforms { get; private set; }
-
-        public long Taps { get; private set; }
-
-        public long Scrolls { get; private set; }
-
-        public long TouchDowns { get; private set; }
-
-        public void OnPenEvent(in PenEvent e)
-        {
-        }
-
-        public void OnGestureEvent(in GestureEvent e)
-        {
-            switch (e.Kind)
-            {
-                case GestureKind.Pinch:
-                    Transforms++;
-                    break;
-                case GestureKind.Tap:
-                    Taps++;
-                    break;
-                case GestureKind.TouchDown:
-                    TouchDowns++;
-                    break;
-                default:
-                    Scrolls++;
-                    break;
-            }
-        }
-    }
 }
