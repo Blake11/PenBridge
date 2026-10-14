@@ -13,7 +13,14 @@ internal static class DrawScripts
     public static readonly TimeSpan FrameInterval = TimeSpan.FromMilliseconds(8);
 
     public static readonly string[] Names =
-        ["line", "circle", "pressure-ramp", "tilt-sweep", "hover", "button-click", "two-finger-scroll", "pinch", "rotate", "two-finger-tap", PacketLoss];
+        [
+            "line", "circle", "pressure-ramp", "tilt-sweep", "hover", "button-click", "two-finger-scroll", "pinch", "rotate",
+            "two-finger-tap", "smart-zoom", "three-finger-drag", "swipe-up", "swipe-down", "swipe-left", "swipe-right",
+            "four-finger-pinch-in", "four-finger-pinch-out", PacketLoss,
+        ];
+
+    /// <summary>Long enough after a tap for the server's double-tap window (300 ms) to pass before the script ends.</summary>
+    private static readonly TimeSpan TapSettle = TimeSpan.FromMilliseconds(500);
 
     // The SimClient's surface (Program.Surface), for scripts laid out in phone pixels.
     private const double SurfaceWidth = 1440;
@@ -36,6 +43,14 @@ internal static class DrawScripts
             "pinch" => Pinch(),
             "rotate" => Rotate(),
             "two-finger-tap" => TwoFingerTap(),
+            "smart-zoom" => SmartZoom(),
+            "three-finger-drag" => ThreeFingerDrag(),
+            "swipe-up" => FourFingerSwipe(0, -1),
+            "swipe-down" => FourFingerSwipe(0, 1),
+            "swipe-left" => FourFingerSwipe(-1, 0),
+            "swipe-right" => FourFingerSwipe(1, 0),
+            "four-finger-pinch-in" => FourFingerPinch(300, 120),
+            "four-finger-pinch-out" => FourFingerPinch(120, 300),
             PacketLoss => Batched(CirclePoints()),
             _ => [],
         };
@@ -200,15 +215,79 @@ internal static class DrawScripts
         yield return Frame(null);
     }
 
-    /// <summary>Two fingers landing together and lifting after about 50 ms with a little jitter: a right-click.</summary>
-    private static IEnumerable<ScriptFrame> TwoFingerTap()
+    /// <summary>
+    /// Two fingers landing together and lifting after about 50 ms with a little jitter: a right-click once the
+    /// double-tap window passed.
+    /// </summary>
+    private static IEnumerable<ScriptFrame> TwoFingerTap() => TapFrames(TapSettle);
+
+    /// <summary>Two two-finger taps 150 ms apart at nearly the same place: a smart zoom (no right-click).</summary>
+    private static IEnumerable<ScriptFrame> SmartZoom()
+    {
+        foreach (ScriptFrame f in TapFrames(TimeSpan.FromMilliseconds(150)))
+        {
+            yield return f;
+        }
+
+        foreach (ScriptFrame f in TapFrames(TapSettle, dx: 10))
+        {
+            yield return f;
+        }
+    }
+
+    private static IEnumerable<ScriptFrame> TapFrames(TimeSpan after, double dx = 0)
     {
         for (int i = 0; i < 6; i++)
         {
             double jitter = i % 2;
-            yield return Fingers(Finger(1, 520 + jitter, 1500), Finger(2, 920, 1520 - jitter));
+            yield return Fingers(Finger(1, 520 + dx + jitter, 1500), Finger(2, 920 + dx, 1520 - jitter));
+        }
+
+        yield return new ScriptFrame(null, NoTouches, NoHistory, after);
+    }
+
+    /// <summary>Three fingers landing a frame apart, then moving right and down together: a left drag.</summary>
+    private static IEnumerable<ScriptFrame> ThreeFingerDrag()
+    {
+        yield return Fingers(Finger(1, 420, 1400), Finger(2, 720, 1350));
+        yield return Fingers(Finger(1, 420, 1400), Finger(2, 720, 1350), Finger(3, 1020, 1400));
+        for (int i = 1; i <= 40; i++)
+        {
+            double dx = i * 8;
+            double dy = i * 4;
+            yield return Fingers(Finger(1, 420 + dx, 1400 + dy), Finger(2, 720 + dx, 1350 + dy), Finger(3, 1020 + dx, 1400 + dy));
         }
 
         yield return Frame(null);
     }
+
+    /// <summary>Four fingers on a square, moving 600 px in (sx, sy) over 30 frames.</summary>
+    private static IEnumerable<ScriptFrame> FourFingerSwipe(int sx, int sy)
+    {
+        for (int i = 0; i <= 30; i++)
+        {
+            double cx = (SurfaceWidth / 2) + (sx * i * 20);
+            double cy = (SurfaceHeight / 2) + (sy * i * 20);
+            yield return FourFingers(cx, cy, 200);
+        }
+
+        yield return Frame(null);
+    }
+
+    /// <summary>Four fingers on a square around the centre whose half-size goes from r0 to r1 px.</summary>
+    private static IEnumerable<ScriptFrame> FourFingerPinch(double r0, double r1)
+    {
+        for (int i = 0; i <= 30; i++)
+        {
+            yield return FourFingers(SurfaceWidth / 2, SurfaceHeight / 2, r0 + ((r1 - r0) * i / 30));
+        }
+
+        yield return Frame(null);
+    }
+
+    private static ScriptFrame FourFingers(double cx, double cy, double r) => Fingers(
+        Finger(1, cx - r, cy - r),
+        Finger(2, cx + r, cy - r),
+        Finger(3, cx + r, cy + r),
+        Finger(4, cx - r, cy + r));
 }

@@ -37,7 +37,7 @@ internal sealed class LoggingInputSink(TextWriter output) : IInputSink
         Interlocked.Increment(ref _gestures);
         output.WriteLine(string.Create(
             CultureInfo.InvariantCulture,
-            $"gest {e.Kind,-6} {e.Phase,-9} t={e.TimestampUs / 1000.0,9:F1}ms d=({e.DeltaX:F3}, {e.DeltaY:F3}) scale={e.ScaleDelta:F4} rot={e.RotationDelta:F2}deg center=({e.Center.X:F3}, {e.Center.Y:F3}){(e.Synthetic ? " [synthetic]" : string.Empty)}"));
+            $"gest {e.Kind,-6} {e.Phase,-9} t={e.TimestampUs / 1000.0,9:F1}ms d=({e.DeltaX:F3}, {e.DeltaY:F3}) scale={e.ScaleDelta:F4} rot={e.RotationDelta:F2}deg{(e.Direction != GestureDirection.None ? string.Create(CultureInfo.InvariantCulture, $" dir={e.Direction} progress={e.Progress:F3}") : string.Empty)} center=({e.Center.X:F3}, {e.Center.Y:F3}){(e.Synthetic ? " [synthetic]" : string.Empty)}"));
         if (_momentum.Observe(e))
         {
             double vx = _momentum.ReleaseVelocityX;

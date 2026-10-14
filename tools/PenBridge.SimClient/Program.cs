@@ -38,7 +38,9 @@ internal static class Program
         2 s, so draw for a few seconds (--repeat) to get a clock-offset estimate.
 
         Scripts: line, circle, pressure-ramp, tilt-sweep, hover, button-click, two-finger-scroll (ends in a
-                 flick), pinch, rotate, two-finger-tap, packet-loss (a circle with 20% of datagrams dropped)
+                 flick), pinch, rotate, two-finger-tap (right-click), smart-zoom (two-finger double tap),
+                 three-finger-drag, swipe-up, swipe-down, swipe-left, swipe-right, four-finger-pinch-in,
+                 four-finger-pinch-out, packet-loss (a circle with 20% of datagrams dropped)
         """;
 
     private static readonly SurfaceInfoMessage Surface = new(1440, 3088, 500f, 500f, SurfaceOrientation.Portrait, SurfaceCapabilities.None);
