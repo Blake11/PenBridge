@@ -15,4 +15,18 @@
     <ProjectReference Include="..\PenBridge.Core\PenBridge.Core.csproj" />
   </ItemGroup>
 
+  <!--
+    QR pairing (ADR-0019): CameraX for the preview/analysis pipeline and ML Kit barcode scanning with the
+    bundled model (com.google.mlkit:barcode-scanning, no Play Services dependency at runtime).
+    AndroidX Activity gives MainActivity a LifecycleOwner (CameraX), the back dispatcher and the
+    runtime-permission contract.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Xamarin.AndroidX.Activity" />
+    <PackageReference Include="Xamarin.AndroidX.Camera.Camera2" />
+    <PackageReference Include="Xamarin.AndroidX.Camera.Lifecycle" />
+    <PackageReference Include="Xamarin.AndroidX.Camera.View" />
+    <PackageReference Include="Xamarin.Google.MLKit.BarcodeScanning" />
+  </ItemGroup>
+
 </Project>

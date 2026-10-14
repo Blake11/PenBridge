@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Material 3 dark colour roles (baseline tonal palette around a blue seed). -->
+<resources>
+  <color name="pb_primary">#FF9ECAFF</color>
+  <color name="pb_on_primary">#FF003258</color>
+  <color name="pb_primary_container">#FF1F3A55</color>
+  <color name="pb_on_primary_container">#FFD1E4FF</color>
+  <color name="pb_background">#FF111318</color>
+  <color name="pb_surface_container">#FF1D2024</color>
+  <color name="pb_surface_container_high">#FF272A2F</color>
+  <color name="pb_on_surface">#FFE2E2E6</color>
+  <color name="pb_on_surface_variant">#FFC3C6CF</color>
+  <color name="pb_outline">#FF8D9199</color>
+  <color name="pb_error_container">#FF93000A</color>
+  <color name="pb_on_error_container">#FFFFDAD6</color>
+  <color name="pb_ripple">#33E2E2E6</color>
+</resources>

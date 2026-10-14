@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- Dark, no action bar: the platform Material base with the Material 3 colour roles (no UI framework). -->
+  <style name="PenBridgeTheme" parent="@android:style/Theme.Material.NoActionBar">
+    <item name="android:colorPrimary">@color/pb_primary</item>
+    <item name="android:colorPrimaryDark">@color/pb_background</item>
+    <item name="android:colorAccent">@color/pb_primary</item>
+    <item name="android:colorControlActivated">@color/pb_primary</item>
+    <item name="android:colorControlHighlight">@color/pb_ripple</item>
+    <item name="android:colorBackground">@color/pb_background</item>
+    <item name="android:windowBackground">@color/pb_background</item>
+    <item name="android:textColorPrimary">@color/pb_on_surface</item>
+    <item name="android:textColorSecondary">@color/pb_on_surface_variant</item>
+    <item name="android:textColorHint">@color/pb_outline</item>
+    <item name="android:statusBarColor">@color/pb_background</item>
+    <item name="android:navigationBarColor">@color/pb_background</item>
+    <item name="android:windowLightStatusBar">false</item>
+    <item name="android:windowLightNavigationBar">false</item>
+    <item name="android:alertDialogTheme">@style/PenBridgeDialog</item>
+  </style>
+
+  <style name="PenBridgeDialog" parent="@android:style/Theme.Material.Dialog.Alert">
+    <item name="android:colorAccent">@color/pb_primary</item>
+    <item name="android:colorBackground">@color/pb_surface_container_high</item>
+    <item name="android:textColorPrimary">@color/pb_on_surface</item>
+  </style>
+</resources>

@@ -1,4 +1,5 @@
 using Android.Content.PM;
+using Android.OS;
 using Android.Views;
 using Android.Widget;
 using PenBridge.Core.Input;
@@ -36,11 +37,17 @@ public sealed class PadController : IDisposable
     private readonly InkEchoView? _ink;
     private readonly StatusDotView _dot;
     private readonly Java.Lang.Runnable _stateRunnable;
+
+    /// <summary>Owned main-looper handler: removing from it always works, attached view or not (#78).</summary>
+    private readonly Handler _handler = new(Looper.MainLooper!);
     private readonly Lock _postLock = new();
     private PadOrientationMode _orientation;
     private PadOrientationMode? _pendingOrientation;
     private bool _fingerFallbackEnabled;
     private ushort _fingerFallbackPressure;
+    private readonly TimeSpan _armDelay;
+    private readonly float _palmSizeThreshold;
+    private readonly TouchSizeReadoutView? _readout;
     private ScreenOrientation _hostOrientation;
     private bool _started;
     private volatile bool _disposed;
@@ -55,11 +62,15 @@ public sealed class PadController : IDisposable
         _orientation = options.Orientation;
         _fingerFallbackEnabled = options.FingerFallbackEnabled;
         _fingerFallbackPressure = options.FingerFallbackPressure;
+        _armDelay = options.FingerFallbackArmDelay;
+        _palmSizeThreshold = options.PalmSizeThreshold;
+        _readout = options.ShowTouchSize ? new TouchSizeReadoutView(activity, options.PalmSizeThreshold) : null;
 
         _queue = new PadSendQueue(output);
         _ink = options.InkEcho ? new InkEchoView(activity) : null;
         _surface = new DrawSurfaceView(activity, _queue, _ink, CreateFilterOptions())
         {
+            TouchSizeReadout = _readout,
             ActiveChanged = OnActiveChanged,
             SurfaceSizeChanged = OnSurfaceSizeChanged,
             WindowFocusRegained = OnWindowFocusRegained,
@@ -77,6 +88,13 @@ public sealed class PadController : IDisposable
         {
             // Above the surface for drawing only: it never consumes touches or hover, so input reaches the surface.
             _root.AddView(_ink, new FrameLayout.LayoutParams(match, match));
+        }
+
+        if (_readout is not null)
+        {
+            // Drawing only, like the ink layer: never takes input.
+            _root.AddView(_readout, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent, GravityFlags.Bottom | GravityFlags.Start));
         }
 
         int dotSize = Dp(40);
@@ -174,15 +192,18 @@ public sealed class PadController : IDisposable
         }
 
         _dot.Tapped -= OnDotActivated;
-        _root.RemoveCallbacks(_stateRunnable);
+        _handler.RemoveCallbacks(_stateRunnable); // nothing can post it any more (see _postLock)
         _queue.Dispose();
         _stateRunnable.Dispose();
+        _handler.Dispose();
     }
 
     private InputFilterOptions CreateFilterOptions() => new()
     {
         FingerFallbackEnabled = _fingerFallbackEnabled,
         FingerFallbackPressure = _fingerFallbackPressure,
+        FingerFallbackArmDelay = _armDelay,
+        PalmSizeThreshold = _palmSizeThreshold,
     };
 
     private int Dp(float dp) => (int)((dp * (_activity.Resources?.DisplayMetrics?.Density ?? 1f)) + 0.5f);
@@ -193,7 +214,7 @@ public sealed class PadController : IDisposable
         {
             if (!_disposed)
             {
-                _root.Post(_stateRunnable);
+                _handler.Post(_stateRunnable);
             }
         }
     }

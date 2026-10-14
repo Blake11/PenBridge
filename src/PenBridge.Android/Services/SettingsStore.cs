@@ -1,5 +1,6 @@
 using System.Globalization;
 using Android.Content;
+using PenBridge.Core.Input;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
 
@@ -26,7 +27,7 @@ public sealed record KnownMac(byte[] Fingerprint, string Name, string Host, int 
 
 /// <summary>
 /// Non-secret preferences in SharedPreferences (<c>penbridge.settings</c>): last-used Mac, known Macs, orientation
-/// mode, synthetic finger pressure. Secrets (device id, device keys) live in <see cref="AndroidKeystoreSecretStore"/>.
+/// mode, synthetic finger pressure, finger arming delay, palm threshold, touch-size readout. Secrets (device id, device keys) live in <see cref="AndroidKeystoreSecretStore"/>.
 /// </summary>
 /// <remarks>Safe to call from any thread (SharedPreferences is thread-safe; writes use <c>Apply</c>, which never blocks).</remarks>
 public sealed class SettingsStore
@@ -39,7 +40,21 @@ public sealed class SettingsStore
     private const string KnownMacsKey = "mac.known";
     private const string OrientationKey = "pad.orientation";
     private const string FingerPressureKey = "pad.finger-pressure";
+    private const string ArmDelayKey = "pad.finger-arm-delay-ms";
+    private const string PalmThresholdKey = "pad.palm-size-threshold";
+    private const string ShowTouchSizeKey = "pad.show-touch-size";
     private const string MacPrefix = "mac.";
+
+    /// <summary>Longest selectable finger arming delay (Settings range 0..this).</summary>
+    public const int MaxFingerArmDelayMs = 250;
+
+    /// <summary>Smallest selectable palm threshold (normalized contact size).</summary>
+    public const float MinPalmSizeThreshold = 0.05f;
+
+    /// <summary>Stored threshold meaning "palm rejection by size off": above any contact size (sizes are 0..1).</summary>
+    public const float PalmSizeThresholdOff = 2f;
+
+    private static readonly InputFilterOptions FilterDefaults = new();
 
     private readonly ISharedPreferences _prefs;
 
@@ -73,6 +88,33 @@ public sealed class SettingsStore
     {
         get => (ushort)Math.Clamp(_prefs.GetInt(FingerPressureKey, DefaultFingerPressure), 1, ushort.MaxValue);
         set => Edit().PutInt(FingerPressureKey, Math.Max(1, (int)value))!.Apply();
+    }
+
+    /// <summary>
+    /// How long a lone finger is held before it draws (<c>InputFilterOptions.FingerFallbackArmDelay</c>), 0..250 ms;
+    /// a second finger inside it makes a gesture instead.
+    /// </summary>
+    public int FingerArmDelayMs
+    {
+        get => Math.Clamp(_prefs.GetInt(ArmDelayKey, (int)FilterDefaults.FingerFallbackArmDelay.TotalMilliseconds), 0, MaxFingerArmDelayMs);
+        set => Edit().PutInt(ArmDelayKey, Math.Clamp(value, 0, MaxFingerArmDelayMs))!.Apply();
+    }
+
+    /// <summary>
+    /// Contact size (0..1) at or above which a touch is a palm (<c>InputFilterOptions.PalmSizeThreshold</c>), 0.05..1;
+    /// <see cref="PalmSizeThresholdOff"/> (any value above 1) turns size-based palm rejection off.
+    /// </summary>
+    public float PalmSizeThreshold
+    {
+        get => Normalize(_prefs.GetFloat(PalmThresholdKey, FilterDefaults.PalmSizeThreshold));
+        set => Edit().PutFloat(PalmThresholdKey, Normalize(value))!.Apply();
+    }
+
+    /// <summary>Debug: show each contact's live normalized size on the pad (to tune <see cref="PalmSizeThreshold"/>).</summary>
+    public bool ShowTouchSize
+    {
+        get => _prefs.GetBoolean(ShowTouchSizeKey, false);
+        set => Edit().PutBoolean(ShowTouchSizeKey, value)!.Apply();
     }
 
     /// <summary>All Macs connected to before, most recent first.</summary>
@@ -157,6 +199,11 @@ public sealed class SettingsStore
 
     /// <summary>Clears only the last-used mark (e.g. "Change Mac"), so startup shows the Mac list.</summary>
     public void ClearLastMac() => Edit().Remove(LastMacKey)!.Apply();
+
+    private static float Normalize(float threshold) =>
+        float.IsNaN(threshold) ? FilterDefaults.PalmSizeThreshold
+        : threshold > 1f ? PalmSizeThresholdOff
+        : Math.Max(threshold, MinPalmSizeThreshold);
 
     private ISharedPreferencesEditor Edit() =>
         _prefs.Edit() ?? throw new InvalidOperationException("SharedPreferences editor unavailable.");
