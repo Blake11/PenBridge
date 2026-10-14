@@ -46,8 +46,20 @@ public readonly record struct PenEvent(
 /// <summary>Gesture kinds produced by <see cref="GestureRecognizer"/>.</summary>
 public enum GestureKind : byte
 {
+    /// <summary>Two-finger pan: centroid deltas (Began/Changed), then Ended or Cancelled. Exclusive.</summary>
     Scroll = 1,
+
+    /// <summary>
+    /// Pinch/rotate transform: scale and rotation deltas together (Began/Changed), then Ended or Cancelled. Starts
+    /// from a spread change, a rotation, or both (ADR-0023).
+    /// </summary>
     Pinch = 2,
+
+    /// <summary>
+    /// Two-finger tap: a single event with <see cref="GesturePhase.Ended"/> at the fingers' landing midpoint, emitted
+    /// when the last finger lifts. Never preceded by Began and never active.
+    /// </summary>
+    Tap = 3,
 }
 
 /// <summary>Gesture phase.</summary>
@@ -55,7 +67,7 @@ public enum GesturePhase : byte
 {
     Began = 1,
     Changed = 2,
-    /// <summary>The fingers lifted normally.</summary>
+    /// <summary>The fingers lifted normally (Scroll: momentum may follow). Also the phase of the single Tap event.</summary>
     Ended = 3,
     /// <summary>The gesture was aborted (pen came into range, or the watchdog fired). No momentum should follow.</summary>
     Cancelled = 4,
@@ -63,14 +75,22 @@ public enum GesturePhase : byte
 
 /// <summary>
 /// One gesture event. Deltas and the center are in global display points (via the recognizer's
-/// <see cref="CoordinateMapper"/>); a positive <see cref="DeltaY"/> means the fingers moved down.
+/// <see cref="CoordinateMapper"/>, top-left origin, y down); a positive <see cref="DeltaY"/> means the fingers moved down.
 /// </summary>
-/// <param name="Kind">Scroll or Pinch.</param>
-/// <param name="Phase">Began / Changed / Ended / Cancelled.</param>
-/// <param name="DeltaX">Scroll: centroid movement since the previous event (Began: since the fingers landed). 0 for Pinch and Ended/Cancelled.</param>
+/// <param name="Kind">Scroll, Pinch (pinch/rotate transform) or Tap.</param>
+/// <param name="Phase">Began / Changed / Ended / Cancelled (Tap: always Ended).</param>
+/// <param name="DeltaX">
+/// Scroll: centroid movement since the previous event (Began: since the fingers landed), multiplied by
+/// <see cref="GestureRecognizerOptions.ScrollGain"/>. 0 for Pinch, Tap and Ended/Cancelled.
+/// </param>
 /// <param name="DeltaY">Scroll: see <paramref name="DeltaX"/>.</param>
 /// <param name="ScaleDelta">Pinch: multiplicative finger-spread change since the previous event (Began: since landing). 1 otherwise.</param>
-/// <param name="Center">Current centroid of the two tracked fingers in display points.</param>
+/// <param name="RotationDelta">
+/// Pinch: change in the angle of the line between the two fingers since the previous event (Began: since landing), in
+/// degrees, unwrapped (never jumps at ±180°). Measured in display coordinates (y down), so a positive value is a
+/// <b>clockwise</b> turn as seen on the screen (AppKit's rotation is counterclockwise-positive: negate it). 0 otherwise.
+/// </param>
+/// <param name="Center">Current centroid of the two tracked fingers in display points (Tap: their landing midpoint).</param>
 /// <param name="Synthetic">True when synthesized by the watchdog or a reset.</param>
 /// <param name="TimestampUs">Monotonic µs since session start, same clock as <see cref="PenEvent.TimestampUs"/>.</param>
 public readonly record struct GestureEvent(
@@ -79,6 +99,7 @@ public readonly record struct GestureEvent(
     double DeltaX,
     double DeltaY,
     double ScaleDelta,
+    double RotationDelta,
     DisplayPoint Center,
     bool Synthetic,
     long TimestampUs);

@@ -37,8 +37,8 @@ internal static class Program
         latency-sim-*.tsv next to the Mac app's dumps; scripts/latency-report.sh prints them). Pings run every
         2 s, so draw for a few seconds (--repeat) to get a clock-offset estimate.
 
-        Scripts: line, circle, pressure-ramp, tilt-sweep, hover, button-click, two-finger-scroll, pinch,
-                 packet-loss (a circle with 20% of datagrams dropped)
+        Scripts: line, circle, pressure-ramp, tilt-sweep, hover, button-click, two-finger-scroll (ends in a
+                 flick), pinch, rotate, two-finger-tap, packet-loss (a circle with 20% of datagrams dropped)
         """;
 
     private static readonly SurfaceInfoMessage Surface = new(1440, 3088, 500f, 500f, SurfaceOrientation.Portrait, SurfaceCapabilities.None);
