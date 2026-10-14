@@ -474,7 +474,8 @@ internal sealed class DrawSurfaceView : View
         {
             PenSample current = result.Pen;
             bool contact = (current.State & PenState.Contact) != 0;
-            active = contact;
+            // A finger moving the cursor (pointer mode: in range, no contact) is active too, like a touch.
+            active = contact || (current.Tool == PenTool.FingerFallback && (current.State & PenState.InRange) != 0);
             if (current.Tool == PenTool.FingerFallback)
             {
                 // Held samples (after the arming delay) and this event's finger history, oldest first.

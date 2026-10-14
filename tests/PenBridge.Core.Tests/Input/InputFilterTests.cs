@@ -2,6 +2,7 @@ using PenBridge.Core.Input;
 
 namespace PenBridge.Core.Tests.Input;
 
+/// <summary>Pen, palm, gesture and arming rules, with the finger in draw mode (cursor mode: <see cref="InputFilterCursorTests"/>).</summary>
 public class InputFilterTests
 {
     private static readonly PenSample PenHover = Samples.Hover(100, 200);
@@ -9,7 +10,9 @@ public class InputFilterTests
 
     private static TimeSpan Ms(double ms) => TimeSpan.FromMilliseconds(ms);
 
-    private static readonly InputFilterOptions Immediate = new() { FingerFallbackArmDelay = TimeSpan.Zero };
+    private static readonly InputFilterOptions Draw = new() { FingerMode = FingerFallbackMode.Draw };
+
+    private static readonly InputFilterOptions Immediate = Draw with { FingerFallbackArmDelay = TimeSpan.Zero };
 
     private static RawTouch Finger(byte id, ushort x = 1000, ushort y = 2000, bool canceled = false, float size = 0.05f) =>
         new(id, true, canceled, x, y, size);
@@ -20,7 +23,7 @@ public class InputFilterTests
     [Fact]
     public void Pen_passes_through_and_suppresses_touches()
     {
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
         InputFilterResult r = f.Process(Ms(0), PenHover, [Finger(1), Finger(2)], _out);
         Assert.True(r.HasPen);
         Assert.Equal(PenHover, r.Pen);
@@ -30,7 +33,7 @@ public class InputFilterTests
     [Fact]
     public void Pen_sample_without_range_or_contact_counts_as_no_pen()
     {
-        var f = new InputFilter(new InputFilterOptions { FingerFallbackEnabled = false });
+        var f = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw, FingerFallbackEnabled = false });
         InputFilterResult r = f.Process(Ms(0), PenHover with { State = PenState.None }, [Finger(1)], _out);
         Assert.False(r.HasPen);
         Assert.Equal(1, r.TouchCount);
@@ -39,7 +42,7 @@ public class InputFilterTests
     [Fact]
     public void Touches_stay_suppressed_for_300ms_after_pen_leaves()
     {
-        var f = new InputFilter(new InputFilterOptions { FingerFallbackEnabled = false });
+        var f = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw, FingerFallbackEnabled = false });
         f.Process(Ms(1000), PenHover, [], _out);
 
         Assert.Equal(default, f.Process(Ms(1299.9), null, [Finger(5)], _out));
@@ -56,7 +59,7 @@ public class InputFilterTests
     [Fact]
     public void Fresh_finger_after_window_is_reported()
     {
-        var f = new InputFilter(new InputFilterOptions { FingerFallbackEnabled = false });
+        var f = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw, FingerFallbackEnabled = false });
         f.Process(Ms(0), Samples.Touch(1, 1), [], _out);
         Assert.Equal(1, f.Process(Ms(300), null, [Finger(7)], _out).TouchCount);
     }
@@ -64,7 +67,7 @@ public class InputFilterTests
     [Fact]
     public void Suppression_window_is_configurable()
     {
-        var f = new InputFilter(new InputFilterOptions { PenSuppression = Ms(50), FingerFallbackEnabled = false });
+        var f = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw, PenSuppression = Ms(50), FingerFallbackEnabled = false });
         f.Process(Ms(0), PenHover, [], _out);
         Assert.Equal(1, f.Process(Ms(50), null, [Finger(1)], _out).TouchCount);
     }
@@ -72,7 +75,7 @@ public class InputFilterTests
     [Fact]
     public void Canceled_pointer_is_dropped_until_it_lifts()
     {
-        var f = new InputFilter(new InputFilterOptions { FingerFallbackEnabled = false });
+        var f = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw, FingerFallbackEnabled = false });
         Assert.Equal(1, f.Process(Ms(0), null, [Finger(1), Finger(2, canceled: true)], _out).TouchCount);
         Assert.Equal(1, _out[0].PointerId);
 
@@ -104,7 +107,7 @@ public class InputFilterTests
     [Fact]
     public void Fallback_disabled_reports_single_finger_as_touch()
     {
-        var f = new InputFilter(new InputFilterOptions { FingerFallbackEnabled = false });
+        var f = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw, FingerFallbackEnabled = false });
         InputFilterResult r = f.Process(Ms(0), null, [Finger(3)], _out);
         Assert.False(r.HasPen);
         Assert.Equal(1, r.TouchCount);
@@ -141,7 +144,7 @@ public class InputFilterTests
     [Fact]
     public void Touch_count_is_capped_by_protocol_limit_and_destination()
     {
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
         var many = new RawTouch[12];
         for (int i = 0; i < many.Length; i++)
         {
@@ -155,14 +158,14 @@ public class InputFilterTests
     [Fact]
     public void Non_contact_touches_are_ignored()
     {
-        var f = new InputFilter(new InputFilterOptions { FingerFallbackEnabled = false });
+        var f = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw, FingerFallbackEnabled = false });
         Assert.Equal(default, f.Process(Ms(0), null, [new RawTouch(1, false, false, 1, 1)], _out));
     }
 
     [Fact]
     public void Reset_clears_suppression()
     {
-        var f = new InputFilter(new InputFilterOptions { FingerFallbackEnabled = false });
+        var f = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw, FingerFallbackEnabled = false });
         f.Process(Ms(0), PenHover, [Finger(1)], _out);
         f.Reset();
         Assert.Equal(1, f.Process(Ms(1), null, [Finger(1)], _out).TouchCount);
@@ -171,7 +174,7 @@ public class InputFilterTests
     [Fact]
     public void Process_is_allocation_free()
     {
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
         RawTouch[] two = [Finger(1), Finger(2)];
         RawTouch[] one = [Finger(1)];
         RawTouch[] none = [];
@@ -196,7 +199,7 @@ public class InputFilterTests
     [Fact]
     public void Lone_finger_arms_after_100ms_and_replays_held_samples_in_order()
     {
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
         for (int i = 0; i < 10; i++)
         {
             AssertNothing(f.Process(Ms(i * 10), null, [Finger(1, (ushort)(100 + i), 500)], _out));
@@ -226,7 +229,7 @@ public class InputFilterTests
     [Fact]
     public void Stationary_finger_arms_when_the_head_calls_again_at_the_deadline()
     {
-        var f = new InputFilter(new InputFilterOptions { FingerFallbackArmDelay = Ms(80) });
+        var f = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw, FingerFallbackArmDelay = Ms(80) });
         AssertNothing(f.Process(Ms(1000), null, [Finger(1)], _out));
         Assert.Equal(Ms(1080), f.PendingDeadline);
         AssertNothing(f.Process(Ms(1079), null, [Finger(1)], _out));
@@ -240,7 +243,7 @@ public class InputFilterTests
     [Fact]
     public void First_finger_of_a_two_finger_gesture_never_becomes_fallback_or_click()
     {
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
         var results = new List<InputFilterResult>
         {
             f.Process(Ms(0), null, [Finger(1, 100, 100)], _out),
@@ -270,7 +273,7 @@ public class InputFilterTests
     [Fact]
     public void Quick_tap_is_replayed_as_a_whole_stroke_ending_out_of_range()
     {
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
         AssertNothing(f.Process(Ms(0), null, [Finger(1, 100, 200)], _out));
         AssertNothing(f.Process(Ms(30), null, [Finger(1, 101, 200)], _out));
 
@@ -289,7 +292,7 @@ public class InputFilterTests
     [Fact]
     public void Held_finger_canceled_by_the_platform_is_dropped_not_tapped()
     {
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
         AssertNothing(f.Process(Ms(0), null, [Finger(1)], _out));
         AssertNothing(f.Process(Ms(20), null, [Finger(1, canceled: true)], _out));
         Assert.Equal(default, f.Process(Ms(30), null, [], _out));
@@ -298,7 +301,7 @@ public class InputFilterTests
     [Fact]
     public void Pen_arriving_during_the_hold_drops_the_held_finger()
     {
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
         AssertNothing(f.Process(Ms(0), null, [Finger(1)], _out));
         InputFilterResult r = f.Process(Ms(50), PenHover, [Finger(1)], _out);
         Assert.Equal(PenHover, r.Pen);
@@ -310,7 +313,7 @@ public class InputFilterTests
     [Fact]
     public void Hold_buffer_overflow_keeps_the_touch_down_point_and_the_latest_sample()
     {
-        var f = new InputFilter(new InputFilterOptions { FingerFallbackArmDelay = Ms(1000) });
+        var f = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw, FingerFallbackArmDelay = Ms(1000) });
         int n = InputFilter.MaxHeldSamples + 20;
         for (int i = 0; i < n; i++)
         {
@@ -327,7 +330,7 @@ public class InputFilterTests
     [Fact]
     public void Palm_landing_before_the_pen_never_leaks()
     {
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
         var results = new List<InputFilterResult>();
 
         // The palm lands in pieces over 0.36 s (up to 5 ids), its first contact small, before the pen is in range.
@@ -352,7 +355,7 @@ public class InputFilterTests
     [Fact]
     public void Palm_suppresses_every_finger_until_all_lift()
     {
-        var f = new InputFilter(new InputFilterOptions { FingerFallbackEnabled = false });
+        var f = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw, FingerFallbackEnabled = false });
         Assert.Equal(1, f.Process(Ms(0), null, [Finger(1)], _out).TouchCount);
         AssertNothing(f.Process(Ms(10), null, [Finger(1), Palm(2)], _out));
 
@@ -389,7 +392,7 @@ public class InputFilterTests
     [Fact]
     public void Palm_window_is_configurable()
     {
-        var f = new InputFilter(new InputFilterOptions { PalmSuppression = Ms(50), FingerFallbackEnabled = false });
+        var f = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw, PalmSuppression = Ms(50), FingerFallbackEnabled = false });
         AssertNothing(f.Process(Ms(0), null, [Palm(1)], _out));
         f.Process(Ms(10), null, [], _out);
         AssertNothing(f.Process(Ms(59), null, [Finger(2)], _out));
@@ -413,24 +416,24 @@ public class InputFilterTests
     [InlineData(float.NaN, false)]
     public void Default_palm_threshold_is_point_two(float size, bool palm)
     {
-        var f = new InputFilter(new InputFilterOptions { FingerFallbackEnabled = false });
+        var f = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw, FingerFallbackEnabled = false });
         Assert.Equal(palm ? 0 : 1, f.Process(Ms(0), null, [Finger(1, size: size)], _out).TouchCount);
     }
 
     [Fact]
     public void Palm_threshold_is_configurable_and_above_one_disables_it()
     {
-        var low = new InputFilter(new InputFilterOptions { PalmSizeThreshold = 0.05f, FingerFallbackEnabled = false });
+        var low = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw, PalmSizeThreshold = 0.05f, FingerFallbackEnabled = false });
         Assert.Equal(0, low.Process(Ms(0), null, [Finger(1, size: 0.05f)], _out).TouchCount);
 
-        var off = new InputFilter(new InputFilterOptions { PalmSizeThreshold = 1.01f, FingerFallbackEnabled = false });
+        var off = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw, PalmSizeThreshold = 1.01f, FingerFallbackEnabled = false });
         Assert.Equal(1, off.Process(Ms(0), null, [Finger(1, size: 1f)], _out).TouchCount);
     }
 
     [Fact]
     public void Reset_clears_palm_and_hold()
     {
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
         f.Process(Ms(0), null, [Palm(1)], _out);
         f.Reset();
         AssertNothing(f.Process(Ms(1), null, [Finger(2)], _out));
@@ -461,7 +464,7 @@ public class InputFilterTests
     {
         var sink = new RecordingSink();
         var tracker = new PenStateTracker(sink, new ManualTimeProvider()) { Mapper = new(1, 1, new DisplayRect(0, 0, 65535, 65535)) };
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
         uint us = 10_000;
         Send(tracker, f, f.Process(Ms(0), null, [Finger(1, 100, 100)], _out), _out, ref us);
         Send(tracker, f, f.Process(Ms(50), null, [Finger(1, 110, 100)], _out), _out, ref us);
@@ -476,7 +479,7 @@ public class InputFilterTests
     {
         var sink = new RecordingSink();
         var tracker = new PenStateTracker(sink, new ManualTimeProvider()) { Mapper = new(1, 1, new DisplayRect(0, 0, 65535, 65535)) };
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
         uint us = 10_000;
         Send(tracker, f, f.Process(Ms(0), null, [Finger(1, 100, 100)], _out), _out, ref us);
         Send(tracker, f, f.Process(Ms(40), null, [Finger(1, 100, 100)], _out), _out, ref us);
@@ -489,7 +492,7 @@ public class InputFilterTests
     [Fact]
     public void Held_event_history_is_replayed_in_order_without_loss()
     {
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
 
         // Event 1: two batched positions before the current one; another finger's entries are ignored.
         AssertNothing(f.Process(Ms(0), null, [Finger(1, 3, 0)], _out, [Finger(1, 1, 0), Finger(9, 500, 0), Finger(1, 2, 0)]));
@@ -523,7 +526,7 @@ public class InputFilterTests
     [Fact]
     public void Held_history_overflow_keeps_the_bounded_buffer_policy()
     {
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
         var history = new RawTouch[InputFilter.MaxHeldSamples + 50];
         for (int i = 0; i < history.Length; i++)
         {
@@ -541,7 +544,7 @@ public class InputFilterTests
     [Fact]
     public void Held_finger_replaced_in_the_same_snapshot_flushes_its_tap_then_holds_the_new_one()
     {
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
         AssertNothing(f.Process(Ms(0), null, [Finger(1, 10, 0)], _out));
         AssertNothing(f.Process(Ms(30), null, [Finger(1, 11, 0)], _out));
 
@@ -568,7 +571,7 @@ public class InputFilterTests
     [Fact]
     public void Three_fingers_are_touches_and_never_a_stroke()
     {
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
         AssertNothing(f.Process(Ms(0), null, [Finger(1)], _out));
         InputFilterResult three = f.Process(Ms(20), null, [Finger(1), Finger(2), Finger(3)], _out);
         Assert.False(three.HasPen);
@@ -585,7 +588,7 @@ public class InputFilterTests
     [Fact]
     public void Dropping_from_two_fingers_to_one_stays_in_touch_mode_with_the_arm_delay()
     {
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
         Assert.Equal(2, f.Process(Ms(0), null, [Finger(1), Finger(2)], _out).TouchCount);
 
         for (int t = 10; t <= 500; t += 50)
@@ -606,7 +609,7 @@ public class InputFilterTests
     [Fact]
     public void Hold_arm_tap_and_palm_paths_are_allocation_free()
     {
-        var f = new InputFilter();
+        var f = new InputFilter(Draw);
         RawTouch[][] frames =
         [
             [Finger(1, 100, 100)],

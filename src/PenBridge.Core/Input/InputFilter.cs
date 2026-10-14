@@ -12,6 +12,19 @@ namespace PenBridge.Core.Input;
 /// </param>
 public readonly record struct RawTouch(byte PointerId, bool Contact, bool Canceled, ushort X, ushort Y, float Size = 0f);
 
+/// <summary>What a lone finger does with finger fallback (<see cref="InputFilterOptions.FingerMode"/>).</summary>
+public enum FingerFallbackMode : byte
+{
+    /// <summary>
+    /// The finger moves the cursor without pressing (hover samples, absolute position). A quick tap clicks;
+    /// double-tap-and-hold starts a left drag until lift (ADR-0022). The default.
+    /// </summary>
+    Cursor = 0,
+
+    /// <summary>The finger draws like a pen with <see cref="InputFilterOptions.FingerFallbackPressure"/>.</summary>
+    Draw = 1,
+}
+
 /// <summary>Options for <see cref="InputFilter"/>.</summary>
 public sealed record InputFilterOptions
 {
@@ -21,7 +34,31 @@ public sealed record InputFilterOptions
     /// <summary>When true and no pen is present, a single finger is reported as a <see cref="PenTool.FingerFallback"/> pen sample.</summary>
     public bool FingerFallbackEnabled { get; init; } = true;
 
-    /// <summary>Synthetic pressure (0..65535) for finger-fallback samples.</summary>
+    /// <summary>Whether a lone finger moves the cursor (default) or draws.</summary>
+    public FingerFallbackMode FingerMode { get; init; } = FingerFallbackMode.Cursor;
+
+    /// <summary>
+    /// Cursor mode: a touch that lifts sooner than this after landing (and within <see cref="TapSlop"/>) is a tap,
+    /// i.e. a click. A longer touch is never a click.
+    /// </summary>
+    public TimeSpan TapMaxDuration { get; init; } = TimeSpan.FromMilliseconds(200);
+
+    /// <summary>
+    /// Cursor mode: how far a tap may move from where it landed, as a fraction of the surface (normalized units:
+    /// 0.02 is 2% of the width on x and of the height on y, combined as a distance).
+    /// </summary>
+    public float TapSlop { get; init; } = 0.02f;
+
+    /// <summary>
+    /// Cursor mode: a touch landing within this time after a tap lifted, and within <see cref="DoubleTapSlop"/> of it,
+    /// is the second touch of a double tap: it clicks again (a double-click) when it is a tap too, else it drags.
+    /// </summary>
+    public TimeSpan DoubleTapWindow { get; init; } = TimeSpan.FromMilliseconds(300);
+
+    /// <summary>Cursor mode: how near a double tap's second touch must land to the first, as for <see cref="TapSlop"/>.</summary>
+    public float DoubleTapSlop { get; init; } = 0.05f;
+
+    /// <summary>Synthetic pressure (0..65535) for finger-fallback contact samples.</summary>
     public ushort FingerFallbackPressure { get; init; } = 0x8000;
 
     /// <summary>
@@ -64,12 +101,22 @@ public readonly record struct InputFilterResult(bool HasPen, PenSample Pen, int 
 /// landing in that window is suppressed until it lifts and restarts the window.</para>
 /// <para>Finger fallback: with no pen, a lone finger is held for <see cref="InputFilterOptions.FingerFallbackArmDelay"/>.
 /// If a second finger lands first, it is a gesture: the held samples are dropped and the fingers are reported as raw
-/// touches until all lift. Otherwise the stroke starts and the held samples are replayed
-/// (<see cref="InputFilterResult.ReplayCount"/>); a finger that lifts within the delay is replayed as a whole tap
+/// touches until all lift. Otherwise the finger arms and the held samples are replayed
+/// (<see cref="InputFilterResult.ReplayCount"/>); a finger that lifts within the delay is replayed as a whole touch
 /// ending in a sample with <see cref="PenState.None"/>, also when a new lone finger replaces it in the same snapshot
 /// (the new finger's hold starts at once). Each event's batched finger history is held too, so nothing is lost; once
-/// armed, the stroke finger's history comes back through <see cref="ReplaySamples"/> as well. A finger that does not
-/// move produces no event, so the head calls <see cref="Process"/> again at <see cref="PendingDeadline"/>.</para>
+/// armed, the finger's history comes back through <see cref="ReplaySamples"/> as well. A finger that does not move
+/// produces no event, so the head calls <see cref="Process"/> again at <see cref="PendingDeadline"/>.</para>
+/// <para>Cursor mode (<see cref="FingerFallbackMode.Cursor"/>, the default, ADR-0022): the finger's samples are
+/// hover samples (in range, no contact), so it moves the cursor and the client's hover keepalive keeps it alive. A tap
+/// (lifts sooner than <see cref="InputFilterOptions.TapMaxDuration"/> after landing, moved at most
+/// <see cref="InputFilterOptions.TapSlop"/>) is replayed as a click where it landed: a hover sample, a contact sample,
+/// then <see cref="PenState.None"/>. Any other lift ends with <see cref="PenState.None"/>. A touch that lands within
+/// <see cref="InputFilterOptions.DoubleTapWindow"/> after a tap and within <see cref="InputFilterOptions.DoubleTapSlop"/>
+/// of it is held until decided: lifting as a tap clicks again at the first tap's point (so the host counts a
+/// double-click); moving beyond the tap slop or staying down for the tap duration (never before the arming delay)
+/// starts a contact stroke from where it landed, a left drag until lift.</para>
+/// <para>Draw mode (<see cref="FingerFallbackMode.Draw"/>): the finger's samples are contact samples, a stroke.</para>
 /// <para>Not thread-safe; allocation-free per call.</para>
 /// </remarks>
 public sealed class InputFilter
@@ -88,12 +135,15 @@ public sealed class InputFilter
     private readonly bool[] _suppressed = new bool[256];
     private readonly bool[] _present = new bool[256];
     private readonly byte[] _previousIds = new byte[256];
+    private readonly long _tapSlopSq;
+    private readonly long _doubleTapSlopSq;
     private PenSample[] _held = new PenSample[MaxHeldSamples];
     private PenSample[] _replay = new PenSample[MaxHeldSamples];
     private int _previousCount;
     private bool _penSeen;
     private TimeSpan _lastPenTime;
     private FingerMode _mode;
+    private FingerKind _kind;
     private int _heldCount;
     private byte _heldId;
     private TimeSpan _holdStart;
@@ -102,21 +152,48 @@ public sealed class InputFilter
     private bool _palmTouching;
     private TimeSpan _palmLiftTime;
 
+    // The current finger: where it landed and whether it moved beyond the tap slop since.
+    private bool _downSet;
+    private ushort _downX;
+    private ushort _downY;
+    private bool _moved;
+    private PenSample _lastPointer;
+
+    // The last tap (pointer mode), for double-tap detection.
+    private bool _tapValid;
+    private TimeSpan _tapTime;
+    private ushort _tapX;
+    private ushort _tapY;
+
     public InputFilter(InputFilterOptions? options = null)
     {
         _options = options ?? new InputFilterOptions();
+        _tapSlopSq = SlopSquared(_options.TapSlop);
+        _doubleTapSlopSq = SlopSquared(_options.DoubleTapSlop);
     }
 
     private enum FingerMode : byte
     {
         /// <summary>No unsuppressed finger down.</summary>
         Idle,
-        /// <summary>A lone finger is being held back before arming finger fallback.</summary>
+        /// <summary>A lone finger is being held back (arming delay; a double tap's second touch until decided).</summary>
         Holding,
-        /// <summary>A finger-fallback stroke is in progress.</summary>
+        /// <summary>A finger-fallback contact stroke is in progress (drawing, or a double-tap drag).</summary>
         Fallback,
+        /// <summary>Cursor mode: the finger moves the cursor (hover samples).</summary>
+        Pointer,
         /// <summary>Raw touches (gesture, or fallback disabled) until all fingers lift.</summary>
         Touches,
+    }
+
+    private enum FingerKind : byte
+    {
+        /// <summary>Draw mode: contact samples.</summary>
+        Draw,
+        /// <summary>Cursor mode: hover samples; a tap clicks.</summary>
+        Pointer,
+        /// <summary>Cursor mode, a double tap's second touch: a tap clicks again, else a contact stroke (drag).</summary>
+        Press,
     }
 
     public InputFilterOptions Options => _options;
@@ -125,7 +202,7 @@ public sealed class InputFilter
     /// When a lone finger is held back: the time at which it arms. If no input event arrives before then, call
     /// <see cref="Process"/> again with the unchanged state at (or after) this time. Null otherwise.
     /// </summary>
-    public TimeSpan? PendingDeadline => _mode == FingerMode.Holding ? _holdStart + _options.FingerFallbackArmDelay : null;
+    public TimeSpan? PendingDeadline => _mode == FingerMode.Holding ? _holdStart + HoldDuration(_kind) : null;
 
     /// <summary>
     /// The finger-fallback samples to send before the result's pen sample, oldest first (held samples and this event's
@@ -140,7 +217,7 @@ public sealed class InputFilter
     /// <param name="touchesOut">Destination for touches to send; at most <see cref="MaxTouches"/> are written.</param>
     /// <param name="history">
     /// Earlier finger positions batched into this event (e.g. Android historical samples), each pointer's entries in
-    /// time order. Only the lone finger's entries are used (held, or replayed while it draws).
+    /// time order. Only the lone finger's entries are used (held, or replayed while it is armed).
     /// </param>
     public InputFilterResult Process(
         TimeSpan timestamp,
@@ -233,13 +310,19 @@ public sealed class InputFilter
 
         if (active == 0)
         {
-            bool tap = _mode == FingerMode.Holding && !anyContact && _heldCount > 0;
-            if (tap)
+            if (_mode is FingerMode.Holding or FingerMode.Fallback or FingerMode.Pointer)
             {
-                return EndTap();
+                if (anyContact)
+                {
+                    // The finger was canceled (or suppressed), not lifted: never a tap.
+                    ClearFingerMode();
+                    return default;
+                }
+
+                return FinishFinger(timestamp);
             }
 
-            ClearFingerMode();
+            _mode = FingerMode.Idle;
             return default;
         }
 
@@ -256,44 +339,46 @@ public sealed class InputFilter
             return new InputFilterResult(false, default, written);
         }
 
-        PenSample sample = FallbackSample(single);
-        if (_mode == FingerMode.Idle && _options.FingerFallbackArmDelay <= TimeSpan.Zero)
+        if (_mode is FingerMode.Holding or FingerMode.Pointer && single.PointerId != _heldId)
         {
-            _mode = FingerMode.Fallback;
-        }
+            // The finger lifted and another lone finger landed in the same snapshot: end the first one (a tap is
+            // replayed), then start the new one.
+            InputFilterResult ended = FinishFinger(timestamp);
+            StartFinger(timestamp, single);
+            if (_mode == FingerMode.Holding)
+            {
+                AppendHistory(_held, ref _heldCount, history, single.PointerId);
+                Append(_held, ref _heldCount, FingerSample(single));
+            }
 
-        if (_mode == FingerMode.Fallback)
-        {
-            AppendHistory(_replay, ref _replayCount, history, single.PointerId);
-            return new InputFilterResult(true, sample, 0, _replayCount);
-        }
-
-        if (_mode == FingerMode.Holding && single.PointerId != _heldId)
-        {
-            // The held finger lifted and another lone finger landed in the same snapshot: the first one was a tap.
-            InputFilterResult tap = EndTap();
-            StartHold(timestamp, single.PointerId);
-            AppendHistory(_held, ref _heldCount, history, single.PointerId);
-            Append(_held, ref _heldCount, sample);
-            return tap;
+            return ended;
         }
 
         if (_mode == FingerMode.Idle)
         {
-            StartHold(timestamp, single.PointerId);
+            StartFinger(timestamp, single);
+        }
+
+        if (_mode is FingerMode.Fallback or FingerMode.Pointer)
+        {
+            AppendHistory(_replay, ref _replayCount, history, single.PointerId);
+            PenSample live = FingerSample(single);
+            _lastPointer = live;
+            return new InputFilterResult(true, live, 0, _replayCount);
         }
 
         AppendHistory(_held, ref _heldCount, history, single.PointerId);
-        Append(_held, ref _heldCount, sample);
-        if (timestamp - _holdStart < _options.FingerFallbackArmDelay)
+        Append(_held, ref _heldCount, FingerSample(single));
+        if (!ShouldArm(timestamp))
         {
             return default;
         }
 
-        // Armed: replay everything held before the newest sample, then continue the stroke live.
-        _mode = FingerMode.Fallback;
+        // Armed: replay everything held before the newest sample, then continue live.
+        _mode = _kind == FingerKind.Pointer ? FingerMode.Pointer : FingerMode.Fallback;
         int n = TakeHeld();
         _replayCount = n - 1;
+        _lastPointer = _replay[n - 1];
         return new InputFilterResult(true, _replay[n - 1], 0, _replayCount);
     }
 
@@ -311,9 +396,129 @@ public sealed class InputFilter
         _palmLiftTime = default;
     }
 
-    private PenSample FallbackSample(in RawTouch t) => new(
-        t.X,
-        t.Y,
+    private static long SlopSquared(float fraction)
+    {
+        double units = (fraction > 0f ? Math.Min(fraction, 2f) : 0f) * (double)ushort.MaxValue;
+        return (long)(units * units);
+    }
+
+    private static long DistanceSquared(ushort x0, ushort y0, ushort x1, ushort y1)
+    {
+        long dx = x1 - x0;
+        long dy = y1 - y0;
+        return (dx * dx) + (dy * dy);
+    }
+
+    /// <summary>How long a finger of <paramref name="kind"/> is held before it can arm.</summary>
+    private TimeSpan HoldDuration(FingerKind kind)
+    {
+        TimeSpan arm = _options.FingerFallbackArmDelay;
+        return kind == FingerKind.Press && _options.TapMaxDuration > arm ? _options.TapMaxDuration : arm;
+    }
+
+    private bool ShouldArm(TimeSpan timestamp)
+    {
+        TimeSpan elapsed = timestamp - _holdStart;
+        if (elapsed < _options.FingerFallbackArmDelay)
+        {
+            return false;
+        }
+
+        // A double tap's second touch stays held while it may still be a tap; moving or staying down makes it a drag.
+        return _kind != FingerKind.Press || _moved || elapsed >= _options.TapMaxDuration;
+    }
+
+    private bool IsTap(TimeSpan timestamp) => _downSet && !_moved && timestamp - _holdStart < _options.TapMaxDuration;
+
+    /// <summary>A new lone finger: picks its kind (second touch of a double tap or not) and holds it, or arms at once.</summary>
+    private void StartFinger(TimeSpan timestamp, in RawTouch t)
+    {
+        bool second = _options.FingerMode == FingerFallbackMode.Cursor
+            && _tapValid
+            && timestamp - _tapTime <= _options.DoubleTapWindow
+            && DistanceSquared(_tapX, _tapY, t.X, t.Y) <= _doubleTapSlopSq;
+        _kind = _options.FingerMode == FingerFallbackMode.Draw ? FingerKind.Draw
+            : second ? FingerKind.Press
+            : FingerKind.Pointer;
+        _tapValid = second; // a tap counts only for the very next touch
+
+        _heldId = t.PointerId;
+        _holdStart = timestamp;
+        _heldCount = 0;
+        _downSet = false;
+        _moved = false;
+        _mode = HoldDuration(_kind) > TimeSpan.Zero ? FingerMode.Holding
+            : _kind == FingerKind.Pointer ? FingerMode.Pointer
+            : FingerMode.Fallback;
+    }
+
+    /// <summary>The current finger lifted (not canceled): replays a click or the held touch, or ends the pointer.</summary>
+    private InputFilterResult FinishFinger(TimeSpan timestamp)
+    {
+        bool tap = IsTap(timestamp);
+        FingerMode mode = _mode;
+        FingerKind kind = _kind;
+        _mode = FingerMode.Idle;
+        _tapValid = false;
+
+        if (tap && kind == FingerKind.Pointer)
+        {
+            _heldCount = 0;
+            return Click(timestamp, _downX, _downY);
+        }
+
+        if (tap && kind == FingerKind.Press && mode == FingerMode.Holding)
+        {
+            // Second tap of a double tap: click again where the first tap clicked, so the host counts a double-click.
+            _heldCount = 0;
+            return Click(timestamp, _tapX, _tapY);
+        }
+
+        if (mode == FingerMode.Holding && _heldCount > 0)
+        {
+            return EndHeld();
+        }
+
+        _heldCount = 0;
+        return mode == FingerMode.Pointer
+            ? new InputFilterResult(true, _lastPointer with { Pressure = 0, State = PenState.None }, 0)
+            : default;
+    }
+
+    /// <summary>A click at (x, y): hover there, touch, then out of range. Records it as the last tap.</summary>
+    private InputFilterResult Click(TimeSpan timestamp, ushort x, ushort y)
+    {
+        PenSample hover = PointerSample(x, y);
+        _replay[0] = hover;
+        _replay[1] = ContactSample(x, y);
+        _replayCount = 2;
+        _tapValid = true;
+        _tapTime = timestamp;
+        _tapX = x;
+        _tapY = y;
+        return new InputFilterResult(true, hover with { State = PenState.None }, 0, _replayCount);
+    }
+
+    /// <summary>The sample for the current finger (hover for a pointer, contact otherwise); tracks its movement.</summary>
+    private PenSample FingerSample(in RawTouch t)
+    {
+        if (!_downSet)
+        {
+            _downSet = true;
+            _downX = t.X;
+            _downY = t.Y;
+        }
+        else if (!_moved && DistanceSquared(_downX, _downY, t.X, t.Y) > _tapSlopSq)
+        {
+            _moved = true;
+        }
+
+        return _kind == FingerKind.Pointer ? PointerSample(t.X, t.Y) : ContactSample(t.X, t.Y);
+    }
+
+    private PenSample ContactSample(ushort x, ushort y) => new(
+        x,
+        y,
         _options.FingerFallbackPressure,
         0,
         0,
@@ -321,6 +526,9 @@ public sealed class InputFilter
         PenTool.FingerFallback,
         PenState.InRange | PenState.Contact,
         PenButtons.None);
+
+    private static PenSample PointerSample(ushort x, ushort y) =>
+        new(x, y, 0, 0, 0, 0, PenTool.FingerFallback, PenState.InRange, PenButtons.None);
 
     private static void Append(PenSample[] buffer, ref int count, in PenSample sample)
     {
@@ -341,17 +549,9 @@ public sealed class InputFilter
             RawTouch h = history[i];
             if (h.PointerId == pointerId && h.Contact && !h.Canceled)
             {
-                Append(buffer, ref count, FallbackSample(h));
+                Append(buffer, ref count, FingerSample(h));
             }
         }
-    }
-
-    private void StartHold(TimeSpan timestamp, byte pointerId)
-    {
-        _mode = FingerMode.Holding;
-        _heldId = pointerId;
-        _holdStart = timestamp;
-        _heldCount = 0;
     }
 
     /// <summary>Moves the held samples into the replay buffer (swap, no copy) and returns their count.</summary>
@@ -363,8 +563,8 @@ public sealed class InputFilter
         return n;
     }
 
-    /// <summary>The held finger lifted before arming: replay the whole tap and end it out of range.</summary>
-    private InputFilterResult EndTap()
+    /// <summary>The held finger lifted before arming (and was no click): replay the whole touch, end out of range.</summary>
+    private InputFilterResult EndHeld()
     {
         _replayCount = TakeHeld();
         PenSample last = _replay[_replayCount - 1];
@@ -377,6 +577,7 @@ public sealed class InputFilter
     {
         _mode = FingerMode.Idle;
         _heldCount = 0;
+        _tapValid = false;
     }
 
     /// <summary>Un-suppresses ids that were present in the previous call but are gone now (the finger lifted).</summary>

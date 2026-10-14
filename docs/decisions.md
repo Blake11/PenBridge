@@ -116,7 +116,7 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
 - **Consequence:** platform heads must keep Core free of macOS assumptions: no Apple-specific coordinate conventions in Core, and the display model stays generic.
 
 ## ADR-0016 — Mac server UX defaults for Phase 2
-**Status:** accepted (2026-10-13)
+**Status:** accepted (2026-10-13); the side-button-while-touching rule is amended by ADR-0022 (2026-10-14)
 - **S Pen side button:** right-click, following the Wacom side-switch default. Pressing it posts right-down at the current point and releasing posts right-up, both while hovering and while touching. The mapping becomes configurable in Phase 5.
 - **Eraser:** the eraser tool is reported as the eraser pointer type in tablet proximity events, so drawing apps switch tools themselves.
 - **Pairing UI:** a floating panel. Opening it opens the pairing window (ADR-0009), and it closes on success.
@@ -174,3 +174,15 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
   - A **major** bump (`!` / `BREAKING CHANGE`) needs an explicit user decision; otherwise reword the commit or pin the version with `Release-As`.
 - **Why not keep Phase 6:** users would wait for phases 4 and 5 with a working app already on `main`, and the release pipeline would first run under pressure at the end.
 - **Consequences:** each phase's Ship step includes the README update and merging the release PR (skill `feature-workflow`). The Phase 6 epic (#15) closes as superseded by #88; its scope moves into #88. The 0.x line is skipped: no 0.2.0 is published.
+
+## ADR-0022 — Finger move/tap-click and side-button right-drag
+**Status:** accepted (2026-10-14). Amends the finger-fallback behaviour of ADR-0006 and the side-button-while-touching rule of ADR-0016.
+- **Context:** in the S23 test (P3-D), a finger touch pressed the mouse button, so moving the cursor alone was impossible and dragging selected text (#91). The side button right-clicked while hovering but did nothing useful while the tip touched (#90).
+- **Decision (finger, #91):** with finger fallback, one finger moves the cursor without pressing (`FingerFallbackMode.Cursor`, the default). Core's phone-side `InputFilter` does it, so the wire format and the Mac are unchanged:
+  - while the finger moves it emits hover samples (in range, no contact), so the client's hover keepalive keeps the cursor alive;
+  - a tap (shorter than `TapMaxDuration`, 200 ms, and moving at most `TapSlop`, 2% of the surface) is replayed as a click where it landed: hover, contact, out of range;
+  - a touch within `DoubleTapWindow` (300 ms) of a tap and within `DoubleTapSlop` (5%) of it is held until decided. Lifting as a tap clicks again at the first tap's point, so the Mac counts a double-click. Moving beyond the tap slop or staying down for the tap duration starts a contact stroke from where it landed, a left drag until lift;
+  - the #68 arming delay, palm rejection, pen suppression and two-finger touches are unchanged. A second finger during any hold makes it a gesture. `FingerFallbackMode.Draw` keeps the old drawing behaviour.
+- **Decision (side button, #90):** if the side button is held at contact-down, the stroke is a right-button press/drag/release (RightMouseDown/Dragged/Up with the tablet subtype, pressure and tilt included), like Wacom. The button is **latched at contact-down**: pressing or releasing it during contact posts nothing, in either kind of stroke. Hover right-click is unchanged. This lives in Core's `TabletEventPlanner`, which decides from the held buttons of the Down sample.
+- **Why not on the Mac:** cursor mode would need a new tool or a capability, which is a protocol change. Taps on the phone also have the exact touch timing.
+- **Consequences / deferred:** a double-tap-hold drag starts near the first tap within the system double-click interval, so its press may get click count 2. Most apps treat that as a drag, but some select by word. There is no Settings toggle for the finger mode yet; it needs a `SettingsStore` key. Button mapping still becomes configurable in Phase 5.

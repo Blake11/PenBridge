@@ -45,7 +45,8 @@ Wave 2 composes the wave-1 types. P3-C is the only workstream that edits the csp
     - Write it as a pure static function, `TiltConverter`, in Core `Input/` with tests. P3-B may add that one Core file.
   - **Rotation:** use the orientation axis.
   - **Hover:** `ActionHoverEnter`/`Move`/`Exit` → InRange without Contact.
-  - **Button:** `MotionEventButtonState.StylusPrimary` → Primary (the Mac maps it to right-click).
+  - **Button:** `MotionEventButtonState.StylusPrimary` → Primary (the Mac maps it to right-click while hovering and to a right-drag when held at contact-down, ADR-0022).
+- **Finger (ADR-0022, #91):** by default one finger moves the cursor (Core `InputFilter` cursor mode: hover samples; a tap clicks; double-tap-and-hold drags). The pad counts a finger moving the cursor as active (orientation stays locked and filter options aren't swapped mid-touch). There is no Settings toggle for the finger mode yet: it needs a `SettingsStore` key (`InputFilterOptions.FingerMode = Draw` restores drawing).
   - **Coordinates:** x/y are normalized over the view's size in its current orientation.
 - **Keepalives:** handled by `PenBridgeClient` (50 ms with contact or touches, 250 ms hover). The pad only reports state changes and samples.
 - **Ink echo:** a faint trail of the last ~1 s of pen positions, fading out, rendered on a separate lightweight layer (`SurfaceView`/`TextureView`, or invalidating only the dirty rect). It must never block input dispatch.

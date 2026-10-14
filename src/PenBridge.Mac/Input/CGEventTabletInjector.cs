@@ -14,7 +14,8 @@ namespace PenBridge.Mac.Input;
 /// <summary>
 /// Injects pen input into macOS as CGEvent tablet events (ADR-0003): proximity events announce a pen or eraser, then
 /// mouse events with the tablet-point subtype carry position, pressure, tilt and rotation. The side button is a
-/// right-click (ADR-0016). Gesture events are accepted and ignored until Phase 4.
+/// right-click while hovering (ADR-0016); held at contact-down it makes the stroke a right-button drag, latched until
+/// the tip lifts (ADR-0022). Gesture events are accepted and ignored until Phase 4.
 /// </summary>
 /// <remarks>
 /// <para><b>Threading.</b> <see cref="ServerHost"/> wraps the injector in a <see cref="PausableInputSink"/>, so
@@ -226,7 +227,7 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IDisposable
             }
 
             Span<TabletStep> steps = stackalloc TabletStep[TabletEventPlanner.MaxSteps];
-            int count = TabletEventPlanner.Plan(ref _state, e.Kind, e.Button, e.Sample.Tool, steps);
+            int count = TabletEventPlanner.Plan(ref _state, e.Kind, e.Button, e.Sample.Tool, steps, e.Sample.Buttons);
             _lastPoint = e.Position;
             _lastSample = e.Sample;
             if (count == 0)
