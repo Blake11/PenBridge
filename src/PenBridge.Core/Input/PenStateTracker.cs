@@ -192,7 +192,8 @@ public sealed class PenStateTracker
 
     /// <summary>
     /// Releases everything with synthetic events, in order: Up and ButtonUps, gesture Cancelled (touches-up), then
-    /// ProximityLeave. Used by the watchdog and on session end.
+    /// ProximityLeave. Used by the watchdog and on session end. A two-finger tap still held for its double-tap window
+    /// is dropped (<see cref="GestureRecognizer.Cancel"/>), so no late right-click follows a link loss.
     /// </summary>
     public void Reset()
     {
