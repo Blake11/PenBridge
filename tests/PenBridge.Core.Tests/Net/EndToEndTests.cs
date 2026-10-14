@@ -309,6 +309,69 @@ public class EndToEndTests
         await AssertStrokeAsync(h.Sink);
     }
 
+    /// <summary>
+    /// Regression for #74: on takeover the old device or the server sometimes reported PeerClosed instead of
+    /// TakenOver. Two paired devices take the session from each other back to back; every displaced session must end
+    /// as TakenOver on both sides. A fixed number of takeovers (no wall-clock budget, so a loaded runner can't make it
+    /// run fewer); every step is bounded by <see cref="Wait.Limit"/>.
+    /// </summary>
+    [Fact]
+    public async Task Repeated_takeovers_always_report_taken_over_on_both_sides()
+    {
+        await using var h = new NetHarness(o => new PenBridgeServerOptions
+        {
+            Identity = o.Identity,
+            Registry = o.Registry,
+            InputSink = o.InputSink,
+            BindAddress = o.BindAddress,
+            Port = 0,
+            TimeProvider = o.TimeProvider,
+            AllowTakeover = true,
+        });
+        var clientEnds = new List<(SessionEndReason Reason, ByeReason? Bye)>();
+        var serverEnds = new List<SessionEndReason>();
+        var gone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnGone(object? sender, ClientDisconnectedEventArgs e)
+        {
+            lock (clientEnds)
+            {
+                clientEnds.Add((e.Reason, e.ByeReason));
+            }
+
+            gone.TrySetResult();
+        }
+
+        h.Server.SessionEnded += (_, e) => { lock (serverEnds) { serverEnds.Add(e.Reason); } };
+        PenBridgeClient a = await h.PairAsync();
+        a.Disconnected += OnGone;
+        PenBridgeClient b = await h.PairAsync(); // the first takeover
+        b.Disconnected += OnGone;
+        await gone.Task.Bounded();
+        byte[] fingerprint = h.Identity.Fingerprint.ToArray();
+
+        const int takeovers = 6; // the pairing above, then five reconnects back to back
+        for (int i = 1; i < takeovers; i++)
+        {
+            PenBridgeClient next = i % 2 == 1 ? a : b;
+            gone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            await next.ConnectAsync("127.0.0.1", h.Port, fingerprint).Bounded();
+            await gone.Task.Bounded();
+        }
+
+        await Wait.Until(() => { lock (serverEnds) { return serverEnds.Count >= takeovers; } }, "SessionEnded for every displaced session");
+        lock (clientEnds)
+        {
+            Assert.Equal(takeovers, clientEnds.Count);
+            Assert.All(clientEnds, e => Assert.Equal((SessionEndReason.TakenOver, (ByeReason?)ByeReason.TakenOver), e));
+        }
+
+        lock (serverEnds)
+        {
+            Assert.Equal(takeovers, serverEnds.Count);
+            Assert.All(serverEnds, r => Assert.Equal(SessionEndReason.TakenOver, r));
+        }
+    }
+
     [Fact]
     public async Task The_same_device_reconnecting_replaces_its_stale_session()
     {

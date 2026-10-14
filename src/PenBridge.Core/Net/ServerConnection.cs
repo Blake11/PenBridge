@@ -75,15 +75,26 @@ internal sealed class ServerConnection
     public void Start() => _ = RunAsync();
 
     /// <summary>Closes the connection (Bye if a session is running). Completes when the connection is fully torn down.</summary>
+    /// <remarks>
+    /// The requested reason is recorded before anything is sent, so however the connection then ends (the peer
+    /// closing after it read the Bye, a failed read, the abort) it is reported with <paramref name="reason"/>. The Bye
+    /// is followed by a half-close and a bounded wait for the peer to close first: closing while the peer's frames
+    /// are still unread would reset the connection, and a reset can discard the Bye before the peer reads it.
+    /// </remarks>
     public async Task CloseAsync(ByeReason bye, SessionEndReason reason)
     {
         if (Interlocked.CompareExchange(ref _requestedReason, (int)reason + 1, 0) == 0)
         {
             // Release the input first so the next session starts from a clean state.
             Input?.Shutdown();
-            if (Volatile.Read(ref _sessionStarted))
+
+            // No more pings: a write after the half-close would fail and abort, cutting the linger short.
+            Volatile.Read(ref _pingTimer)?.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            if (Volatile.Read(ref _sessionStarted)
+                && await _channel.TryWriteFarewellAsync(new ByeMessage(bye), shutdownSend: true).ConfigureAwait(false))
             {
-                await _channel.TryWriteFarewellAsync(new ByeMessage(bye)).ConfigureAwait(false);
+                // The session loop drains (and ignores) the peer's last frames until the peer closes its side.
+                await _done.Task.WaitAsync(ControlChannel.LingerTimeout).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
             }
 
             _channel.Abort();
@@ -116,7 +127,10 @@ internal sealed class ServerConnection
 
             await _handshake!.DisposeAsync().ConfigureAwait(false);
             _handshake = null;
-            reason = await SessionLoopAsync().ConfigureAwait(false);
+            SessionEndReason ended = await SessionLoopAsync().ConfigureAwait(false);
+
+            // A close we requested wins over how the stream then ended (e.g. the peer closing after our Bye).
+            reason = RequestedReason ?? ended;
         }
         catch (OperationCanceledException)
         {
@@ -371,14 +385,17 @@ internal sealed class ServerConnection
                 return false;
             }
 
+            // Flag the session before SessionStart can reach the client: a close from here on must send Bye, or a
+            // client that already holds its SessionStart would only see the stream end. The write lock orders the
+            // two frames; a Bye that wins it just fails the client's connect.
+            Volatile.Write(ref _sessionStarted, true);
             await _channel.WriteAsync(new SessionStartMessage((ushort)_server.Port, sessionId, serverNonce)).ConfigureAwait(false);
             _info = new SessionInfo(DeviceId, DeviceName, _remote);
-            Volatile.Write(ref _sessionStarted, true);
             NetLog.SessionStarted(_log, DeviceId, PeerText.Sanitize(DeviceName));
             _server.RaiseSessionStarted(_info);
             if (_options.PingInterval != Timeout.InfiniteTimeSpan)
             {
-                _pingTimer = _time.CreateTimer(PingCallback, this, _options.PingInterval, _options.PingInterval);
+                Volatile.Write(ref _pingTimer, _time.CreateTimer(PingCallback, this, _options.PingInterval, _options.PingInterval));
             }
 
             return true;
@@ -398,6 +415,12 @@ internal sealed class ServerConnection
             if (await _channel.ReadAsync(_options.PeerTimeout).ConfigureAwait(false) is not { } frame)
             {
                 return SessionEndReason.PeerClosed;
+            }
+
+            if (RequestedReason is not null)
+            {
+                // Closing (Bye sent, send side shut): drain until the peer closes, act on nothing.
+                continue;
             }
 
             switch (frame.Type)
@@ -481,6 +504,12 @@ internal sealed class ServerConnection
 
     private async Task PingAsync()
     {
+        if (RequestedReason is not null)
+        {
+            // Closing: covers a ping timer created or firing while CloseAsync stops it.
+            return;
+        }
+
         try
         {
             await _channel.WriteAsync(new PingMessage(NowUs())).ConfigureAwait(false);
