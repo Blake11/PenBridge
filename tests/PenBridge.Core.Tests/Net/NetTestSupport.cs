@@ -76,6 +76,27 @@ internal sealed class FakeTime : TimeProvider
         }
     }
 
+    /// <summary>
+    /// True when no one-shot timer (a deadline) comes due within <paramref name="window"/> from now; periodic timers
+    /// (pings) are ignored. Lets a test wait for real I/O to re-arm a deadline instead of guessing a real delay.
+    /// </summary>
+    public bool NoDeadlineDueWithin(TimeSpan window)
+    {
+        lock (_lock)
+        {
+            long limit = _ticks + window.Ticks;
+            foreach (FakeTimer t in _timers)
+            {
+                if (t.Period == 0 && t.Due < limit)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+    }
+
     private sealed class FakeTimer(FakeTime owner, TimerCallback callback, object? state) : ITimer
     {
         public TimerCallback Callback { get; } = callback;
