@@ -82,7 +82,6 @@ Rule: platform apps contain only platform glue; anything testable without a devi
 | 3 | Android client: discovery, pairing (QR + PIN), drawing surface, S Pen pressure/tilt/hover/button, finger fallback |
 | 4 | Gestures: two-finger scroll, pinch-zoom |
 | 5 | Settings: display/region mapping, button mapping (synced Mac ⇄ phone) |
-| 6 | Release pipeline live: unsigned .dmg + signed APK on GitHub Releases |
 | Later | **Windows host app** (tray app, `InjectSyntheticPointerInput` pen injection, ADR-0015), Mac screen mirroring onto the phone (video stream), DriverKit virtual digitizer, iOS client, S Pen Air Actions, relative (trackpad) mode, Developer ID signing + notarization, Google Play |
 
-MVP = phases 1–5.
+MVP = phases 1–5. **Each phase ends with a release** (ADR-0021): an ad-hoc signed `.dmg`/`.zip` and a release-signed APK on GitHub Releases. Phase 3 is **1.0.0**; each later phase bumps the minor version (1.1.0, 1.2.0 …), and bug-fix releases between phases bump the patch.

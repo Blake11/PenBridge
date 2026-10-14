@@ -6,7 +6,7 @@ Turns a phone (primary: Samsung Galaxy S23 Ultra + S Pen) into a pressure-sensit
 
 | Doc | What |
 |---|---|
-| `docs/architecture.md` | Components, protocol, platform details, roadmap (phases 0–6) |
+| `docs/architecture.md` | Components, protocol, platform details, roadmap (phases 0–5, each ends with a release) |
 | `docs/decisions.md` | ADRs — append-only; supersede, never rewrite |
 | `docs/development.md` | Toolchain setup, build/run/debug per platform |
 | `docs/releasing.md` | release-please + build-release pipeline |
@@ -70,6 +70,7 @@ scripts/android-run.sh [--emulator|--device <ip:port>] [--apk] [--app-id <id>] [
 
 - GitHub, default branch `main`, PRs via `gh`, squash merge (skill `pr`).
 - Branch from fresh `origin/main` (`git fetch origin && git switch -c <name> origin/main`); **dash-only branch names** (`feat-udp-input`, no slashes).
+- **Every phase ends with a release** (ADR-0021): Phase 3 = 1.0.0, each later phase bumps minor, bug fixes between phases bump patch; a major needs the user (skill `release`).
 - Conventional Commits for commits and PR titles (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `ci:`, `build:`, `chore:`, `perf:`); validated by `.githooks/commit-msg` and CI. release-please derives versions from them (skill `release`).
 - Every PR references its issue in the body: `Closes #N` (or `Refs #N` if it doesn't finish it).
 - When a phase is delivered (its epic closes), update `README.md` (status, features, usage).

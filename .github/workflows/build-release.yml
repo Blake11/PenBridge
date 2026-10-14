@@ -1,21 +1,44 @@
 name: Build release
 
 # Builds the distributable apps and attaches them to a GitHub release.
-# - Called by release-please.yml when a release is created (tag given).
-# - Run manually with a tag to (re)build assets for an existing release, or
-#   without a tag to just produce workflow artifacts (nothing is uploaded).
+# - Called by release-please.yml when a release is created (tag given, dry_run false).
+# - Run manually as a dry run (the default): builds the release artifacts from the selected
+#   ref (or `tag`) and keeps them as workflow artifacts only; no release is touched.
+#   `version` stamps a future version (e.g. 1.0.0) so the dry run matches the real assets.
+# - Run manually with `tag` and dry_run=false to rebuild and re-upload the assets of an
+#   existing release.
 
 on:
   workflow_call:
     inputs:
       tag:
-        description: Release tag to upload assets to (e.g. v0.2.0)
+        description: Release tag to upload assets to (e.g. v1.0.0)
         required: true
         type: string
+      dry_run:
+        description: Build workflow artifacts only; never upload to a release
+        required: false
+        type: boolean
+        default: false
+      version:
+        description: Dry run only. Version to stamp instead of Directory.Build.props
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to upload to (empty = build artifacts only)
+        description: Existing release tag to build (empty = the selected branch)
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: Dry run. Build workflow artifacts only; never upload to a release
+        required: false
+        type: boolean
+        default: true
+      version:
+        description: Dry run only. Version to stamp instead of Directory.Build.props (e.g. 1.0.0)
         required: false
         type: string
         default: ""
@@ -37,32 +60,61 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
       version_code: ${{ steps.v.outputs.version_code }}
+      publish: ${{ steps.v.outputs.publish }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
 
       - id: v
-        name: Read version from Directory.Build.props
+        name: Resolve version
         env:
           TAG: ${{ inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          VERSION_OVERRIDE: ${{ inputs.version }}
         run: |
-          version=$(sed -n 's:.*<Version>\([^<]*\)</Version>.*:\1:p' Directory.Build.props | head -n1)
-          if [ -z "$version" ]; then
-            echo "::error::Could not read <Version> from Directory.Build.props"
+          if [ "$DRY_RUN" != "true" ] && [ -z "$TAG" ]; then
+            echo "::error::A release build (dry_run=false) needs a tag; use dry_run=true to build artifacts only"
             exit 1
           fi
-          if [ -n "$TAG" ] && [ "v$version" != "$TAG" ]; then
-            echo "::error::Tag $TAG does not match Directory.Build.props version $version"
+          if [ -n "$VERSION_OVERRIDE" ]; then
+            if [ "$DRY_RUN" != "true" ]; then
+              echo "::error::'version' is for dry runs only; a release takes its version from the tag"
+              exit 1
+            fi
+            version=$VERSION_OVERRIDE
+          else
+            version=$(sed -n 's:.*<Version>\([^<]*\)</Version>.*:\1:p' Directory.Build.props | head -n1)
+            if [ -z "$version" ]; then
+              echo "::error::Could not read <Version> from Directory.Build.props"
+              exit 1
+            fi
+            if [ -n "$TAG" ] && [ "v$version" != "$TAG" ]; then
+              echo "::error::Tag $TAG does not match Directory.Build.props version $version"
+              exit 1
+            fi
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Version '$version' is not X.Y.Z[-prerelease]"
             exit 1
           fi
           core=${version%%-*}
           IFS=. read -r major minor patch <<< "$core"
-          # Android versionCode: monotonically increasing integer derived from semver.
+          # Android versionCode = major*1000000 + minor*1000 + patch. It grows with the version
+          # only while minor and patch stay below 1000; Google Play caps it at 2100000000.
+          if [ "$minor" -gt 999 ] || [ "$patch" -gt 999 ] || [ "$major" -gt 2099 ]; then
+            echo "::error::Version $version does not fit the Android versionCode scheme"
+            exit 1
+          fi
           version_code=$(( major * 1000000 + minor * 1000 + patch ))
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
-          echo "Version $version (Android versionCode $version_code)"
+          publish=false
+          if [ "$DRY_RUN" != "true" ]; then publish=true; fi
+          {
+            echo "version=$version"
+            echo "version_code=$version_code"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+          echo "Version $version (Android versionCode $version_code); upload to release: $publish ${TAG:-}"
 
   mac:
     name: macOS app (.zip + .dmg)
@@ -126,6 +178,11 @@ jobs:
           mkdir -p dist/stage
           ditto "$app" dist/stage/PenBridge.app
           echo "APP=dist/stage/PenBridge.app" >> "$GITHUB_ENV"
+          shown=$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")
+          if [ "$shown" != "$VERSION" ]; then
+            echo "::error::Info.plist CFBundleShortVersionString is '$shown', expected '$VERSION'"
+            exit 1
+          fi
 
       # ---- Developer ID signing + notarization (off until vars.MACOS_NOTARIZE == 'true') ----
       - name: Import Developer ID certificate
@@ -205,6 +262,16 @@ jobs:
         if: always() && env.NOTARIZE == 'true'
         run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
 
+      - name: Summary
+        working-directory: dist
+        run: |
+          {
+            echo "### macOS $VERSION"
+            echo '```'
+            shasum -a 256 -- *.zip *.dmg
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/upload-artifact@v7
         with:
           name: release-mac
@@ -221,6 +288,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
       VERSION_CODE: ${{ needs.version.outputs.version_code }}
+      PUBLISH: ${{ needs.version.outputs.publish }}
       HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v7
@@ -253,11 +321,9 @@ jobs:
           -p:AcceptAndroidSDKLicenses=true
 
       - name: Check signing secrets
-        env:
-          TAG: ${{ inputs.tag }}
         run: |
           if [ "$HAS_KEYSTORE" != "true" ]; then
-            if [ -n "$TAG" ]; then
+            if [ "$PUBLISH" = "true" ]; then
               echo "::error::ANDROID_KEYSTORE_BASE64 is not set; a release APK must be signed. See docs/releasing.md."
               exit 1
             fi
@@ -322,6 +388,36 @@ jobs:
           [ "$HAS_KEYSTORE" = "true" ] || suffix="-unsigned"
           mkdir -p dist/out
           cp "$apk" "dist/out/PenBridge-$VERSION-android$suffix.apk"
+          echo "APK=dist/out/PenBridge-$VERSION-android$suffix.apk" >> "$GITHUB_ENV"
+
+      # Never ship a debug-keystore APK: a release-signed update can't install over it.
+      - name: Verify APK signature
+        if: env.HAS_KEYSTORE == 'true'
+        run: |
+          build_tools=$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n1)
+          if [ -z "$build_tools" ] || [ ! -x "$build_tools/apksigner" ]; then
+            echo "::error::apksigner not found under $ANDROID_SDK_ROOT/build-tools"
+            exit 1
+          fi
+          "$build_tools/apksigner" verify --print-certs "$APK" | tee "$RUNNER_TEMP/apksigner.txt"
+          if grep -q 'CN=Android Debug' "$RUNNER_TEMP/apksigner.txt"; then
+            echo "::error::$APK is signed with the Android debug keystore"
+            exit 1
+          fi
+
+      - name: Summary
+        run: |
+          {
+            echo "### Android $VERSION (versionCode $VERSION_CODE)"
+            echo '```'
+            sha256sum -- "$APK"
+            if [ -f "$RUNNER_TEMP/apksigner.txt" ]; then
+              grep -E 'certificate (DN|SHA-256 digest)' "$RUNNER_TEMP/apksigner.txt" || true
+            else
+              echo "unsigned (no ANDROID_KEYSTORE_BASE64)"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove keystore
         if: always()
@@ -335,8 +431,8 @@ jobs:
 
   publish:
     name: Upload to GitHub release
-    needs: [mac, android]
-    if: inputs.tag != ''
+    needs: [version, mac, android]
+    if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
