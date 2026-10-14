@@ -24,6 +24,7 @@ The main session does **not** implement. It clarifies, specifies, delegates, rev
 - Each workstream: an issue, owner agent (`core-dev`, `mac-dev`, `android-dev`, `ci-dev`), **disjoint file globs**, acceptance criteria, test plan.
 - Order dependencies: Core contracts first (types/interfaces), then heads in parallel.
 - Prefer one branch + worktree per workstream (skill `parallel-worktrees`). Shared tree only when ownership is strictly disjoint and no commits are needed.
+- **Devices:** only one agent uses a physical device (S23, Mac injection) at a time; the architect grants turns in the prompt. Parallel emulator agents each get their own AVD and ApplicationId (skill `android-build-run`, "Parallel agents").
 
 ## 5. Delegate
 Launch independent workstreams in one message (parallel). Prompt template:
@@ -35,21 +36,22 @@ Goal: <what and why>.
 You own ONLY: <file globs>. Do not touch anything else; if you need a change elsewhere, stop and report it.
 Acceptance: <criteria>. Tests: <which; scripts/test.sh must pass>.
 Branch/worktree: <name or "shared tree, do not commit">.
-Write your state ONLY to <main-tree>/.claude/progress/<feature>/ws-<id>.md (status, notes, follow-ups, learnings); never edit progress.md.
+Write your state ONLY to <ws path: your worktree root if isolated, else the main tree>/.claude/progress/<feature>/ws-<id>.md (status, notes, follow-ups, learnings) and include its content in your report. Never edit progress.md.
 Bugs you find outside your scope: report them (or file per skill `issues`, `type: bug`), don't fix them.
 Do not push or open PRs. <Commit with Conventional Commits, no AI attribution | Do not commit>.
 Report in <200 words: what changed (paths), test results, deviations, bugs found, open questions, learnings worth a skill.
 ```
 
 ## 6. Review
-- Read the diff (`git diff`, or the worktree branch). Run `reviewer` agent for hot-path perf, security (pairing/injection), protocol versioning.
+- Read the diff (`git diff`, or the worktree branch). Run the `reviewer` agent before **every** PR (hot-path perf, security of pairing/injection, protocol versioning).
 - Verify: `scripts/test.sh`, `dotnet build PenBridge.slnx`, device checks per skill `mac-build-run` / `android-build-run`. Ask the user to do device checks you can't do.
-- Send fixes back to the same agent (SendMessage) rather than fixing in the main session.
+- Send fixes back to the same agent (SendMessage) rather than fixing in the main session — minor findings too.
 - Reviewer findings not fixed in the same PR become issues (`type: bug` or `type: chore`, right milestone) — never only a note in progress.md.
 
 ## 7. Ship
 - PR per workstream or per feature (skill `pr`) — only after the user approves pushing. The body says `Closes #<workstream issue>`.
 - Set `status: in progress` on the issue while in review; update progress.md; tick the epic task list when merged. Close the epic when all its tasks are done.
+- **Phase delivered (epic closes) → update `README.md`** (status, features, usage) in a `docs:` PR. User rule.
 
 ## 8. Learn
 - Run skill `capture-skill` on anything that surprised you or the subagents (flagged "learnings").

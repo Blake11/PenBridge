@@ -56,6 +56,12 @@ Default deploy is `dotnet build -t:Run` (fast deployment). It builds, installs a
 - `scripts/android-emulator.sh` is single-emulator: `--stop` kills **every** emulator, and the boot wait uses `adb -e`, which fails once two emulators run. With another agent's emulator up, start yours with `AVD_NAME=… scripts/android-emulator.sh --no-wait`, wait with `adb -s emulator-<port> wait-for-device`, stop it with `adb -s emulator-<port> emu kill`.
 - **Only one agent uses the physical S23 at a time**; the architect grants turns. Without a turn, don't `connect`, install to, or inject on the phone.
 
+## Java interop gotchas
+- **Never dispose a `Java.Lang.Runnable` while it's posted.** `View.RemoveCallbacks` misses runnables already queued once the view is detached, so a disposed one can still run and crash (#78). Post timers on an owned `new Handler(Looper.MainLooper!)` and `handler.RemoveCallbacks(r)` before disposing.
+- **ML Kit results are Java objects:** cast list items with `JavaCast<Barcode>()`, not C# `is`/`as` (the runtime type is a generic `Java.Lang.Object` peer, so the type test fails silently).
+- ML Kit pulls in `com.google.android.datatransport` telemetry; the manifest strips it with `tools:node="remove"` (ADR-0020). Keep those entries when touching the manifest or ML Kit packages; logcat then shows only "Transport backend 'cct' is not registered".
+- **Activity recreation** (rotation, config change): the old activity's `OnStop` already left the host `Idle`, so decide "mid-session?" from `Host.CurrentMac` (kept target), never from the host state.
+
 ## Release APK (what CI does)
 `dotnet publish src/PenBridge.Android/PenBridge.Android.csproj -c Release -p:AndroidPackageFormat=apk -p:AndroidKeyStore=false -o <dir>` (+ SDK/JDK dirs locally) → `<dir>/com.blake11.penbridge.apk` (**unsigned**, `apksigner` says "DOES NOT VERIFY") **and** `com.blake11.penbridge-Signed.apk` (signed with the **debug** key, installable). Release trims (ILLink "Optimizing assemblies for size" notice is informational, not a warning). Check version fields: `$ANDROID_HOME/build-tools/36.0.0/aapt2 dump badging <apk> | head -3`.
 

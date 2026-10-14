@@ -23,7 +23,14 @@ scripts/test.sh && dotnet build PenBridge.slnx
 git log --oneline origin/main..HEAD
 git diff origin/main...HEAD --stat
 ```
-Run the `reviewer` agent on non-trivial diffs.
+Run the `reviewer` agent before every PR.
+
+**Stale remote branch:** check `git ls-remote --heads origin <branch>` first. If one is left from an earlier attempt, the push is rejected while `gh pr create` still opens a PR against the old remote commit. Force-push is denied, so reconcile without rewriting:
+```bash
+git fetch origin <branch>
+git merge -s ours origin/<branch> -m "chore: reconcile with stale remote branch"   # keeps our tree
+git diff <reviewed-sha> HEAD          # must be empty: the pushed tree is the reviewed one
+```
 
 ## Create
 ```bash
@@ -61,6 +68,6 @@ A `Detect changes` job (`dorny/paths-filter@v3`) gates the jobs with job-level `
 Keep required check names (`name:`) unchanged when editing jobs, and add new projects or build-affecting root files to the filters.
 
 ## After
-- `gh pr checks <n>`, `gh run view <id> --log-failed` for failures. Every check must be green before merging, not just the required ones: a non-required iOS check once let a broken trimmed build merge (#27). All head builds (macOS, Android, iOS) are now required; check with `gh api repos/Blake11/PenBridge/branches/main/protection/required_status_checks --jq .contexts`.
+- `gh pr checks <n>`, `gh run view <id> --log-failed` for failures. Before fixing a PR with auto-merge on, `gh pr merge <n> --disable-auto`, so it can't merge half-fixed. Every check must be green before merging, not just the required ones: a non-required iOS check once let a broken trimmed build merge (#27). All head builds (macOS, Android, iOS) are now required; check with `gh api repos/Blake11/PenBridge/branches/main/protection/required_status_checks --jq .contexts`.
 - Merge only on user request: `gh pr merge <n> --squash --delete-branch`.
 - Update progress.md with the PR link and status; tick the workstream in the epic's task list.
