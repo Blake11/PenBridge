@@ -240,6 +240,35 @@ public class InputFilterCursorTests
     }
 
     [Fact]
+    public void Draw_mode_double_tap_a_few_pixels_apart_is_snapped_to_a_double_click()
+    {
+        var f = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw });
+        Feed(f, 0, Finger(1, 10000, 20000));
+        Feed(f, 50);
+        Feed(f, 150, Finger(2, 10200, 20100)); // about 5 pt away
+        Feed(f, 170, Finger(2, 10250, 20100));
+        InputFilterResult second = Feed(f, 200);
+        Assert.All(f.ReplaySamples.ToArray(), s => Assert.Equal((10000, 20000), (s.X, s.Y)));
+        Assert.Equal((10000, 20000), (second.Pen.X, second.Pen.Y));
+        Assert.Equal([1L, 2L], _clicks.LeftDownClickStates);
+
+        // A third tap far away is not snapped and starts a new click.
+        Feed(f, 300, Finger(3, 40000, 20000));
+        Assert.Equal(40000, Feed(f, 330).Pen.X);
+        Assert.Equal([1L, 2L, 1L], _clicks.LeftDownClickStates);
+    }
+
+    [Fact]
+    public void Draw_mode_tap_after_the_double_tap_window_is_not_snapped()
+    {
+        var f = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw });
+        Feed(f, 0, Finger(1, 10000, 20000));
+        Feed(f, 50);
+        Feed(f, 400, Finger(2, 10200, 20100));
+        Assert.Equal(10200, Feed(f, 450).Pen.X);
+    }
+
+    [Fact]
     public void Finger_presses_repeat_the_click_count_only_at_the_exact_point()
     {
         Assert.Equal(0, TabletEventMath.ClickSlopFor(PenTool.FingerFallback, 6));

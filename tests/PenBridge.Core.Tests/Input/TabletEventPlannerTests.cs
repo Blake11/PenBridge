@@ -92,6 +92,25 @@ public class TabletEventPlannerTests
     }
 
     [Fact]
+    public void Failed_right_up_after_a_right_drag_never_makes_the_next_stroke_a_right_drag()
+    {
+        Plan(PenEventKind.ProximityEnter);
+        Plan(PenEventKind.ButtonDown, PenButtons.Primary);
+        Plan(PenEventKind.Down, held: PenButtons.Primary);
+        TabletStep up = Steps(PenEventKind.Up)[0];
+        Assert.Equal(TabletAction.RightUp, up.Action);
+        TabletEventPlanner.Revert(ref _state, up); // the post failed: the host may still hold the right button
+        Assert.True(_state.Right);
+
+        // The button is no longer held at the next tip-down: release the right button, then a left stroke.
+        Assert.Equal([TabletAction.RightUp, TabletAction.LeftDown], Plan(PenEventKind.Down));
+        Assert.True(_state.Left);
+        Assert.False(_state.Right);
+        Assert.False(_state.RightStroke);
+        Assert.Equal([TabletAction.LeftDragged], Plan(PenEventKind.Drag));
+    }
+
+    [Fact]
     public void Button_pressed_mid_left_stroke_is_ignored()
     {
         Plan(PenEventKind.ProximityEnter);

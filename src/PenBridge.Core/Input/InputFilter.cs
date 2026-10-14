@@ -118,7 +118,9 @@ public readonly record struct InputFilterResult(bool HasPen, PenSample Pen, int 
 /// starts a contact stroke from where it landed, a left drag until lift. That press never lands exactly on the tap's
 /// point (nudged by one unit if it would), so the host starts the drag with click state 1
 /// (<see cref="TabletEventMath.ClickSlopFor"/>).</para>
-/// <para>Draw mode (<see cref="FingerFallbackMode.Draw"/>): the finger's samples are contact samples, a stroke.</para>
+/// <para>Draw mode (<see cref="FingerFallbackMode.Draw"/>): the finger's samples are contact samples, a stroke. A held
+/// tap landing within <see cref="InputFilterOptions.DoubleTapWindow"/> and <see cref="InputFilterOptions.DoubleTapSlop"/>
+/// of the previous tap is replayed at exactly that tap's point, so the host counts a double-click.</para>
 /// <para>Not thread-safe; allocation-free per call.</para>
 /// </remarks>
 public sealed class InputFilter
@@ -161,7 +163,8 @@ public sealed class InputFilter
     private bool _moved;
     private PenSample _lastPointer;
 
-    // The last tap (pointer mode), for double-tap detection.
+    // The last tap, for double-tap detection (cursor mode) and double-click snapping (draw mode).
+    private bool _snapTap;
     private bool _tapValid;
     private TimeSpan _tapTime;
     private ushort _tapX;
@@ -435,14 +438,15 @@ public sealed class InputFilter
     /// <summary>A new lone finger: picks its kind (second touch of a double tap or not) and holds it, or arms at once.</summary>
     private void StartFinger(TimeSpan timestamp, in RawTouch t)
     {
-        bool second = _options.FingerMode == FingerFallbackMode.Cursor
-            && _tapValid
+        bool near = _tapValid
             && timestamp - _tapTime <= _options.DoubleTapWindow
             && DistanceSquared(_tapX, _tapY, t.X, t.Y) <= _doubleTapSlopSq;
-        _kind = _options.FingerMode == FingerFallbackMode.Draw ? FingerKind.Draw
-            : second ? FingerKind.Press
+        bool draw = _options.FingerMode == FingerFallbackMode.Draw;
+        _kind = draw ? FingerKind.Draw
+            : near ? FingerKind.Press
             : FingerKind.Pointer;
-        _tapValid = second; // a tap counts only for the very next touch
+        _snapTap = draw && near;
+        _tapValid = near; // a tap counts only for the very next touch
 
         _heldId = t.PointerId;
         _holdStart = timestamp;
@@ -474,6 +478,30 @@ public sealed class InputFilter
             // Second tap of a double tap: click again where the first tap clicked, so the host counts a double-click.
             _heldCount = 0;
             return Click(timestamp, _tapX, _tapY);
+        }
+
+        if (tap && kind == FingerKind.Draw && mode == FingerMode.Holding && _heldCount > 0)
+        {
+            // Draw mode: a tap near the previous one is replayed at exactly its point, so the host (which repeats a
+            // finger's click count only at the same point) counts a double-click.
+            ushort x = _snapTap ? _tapX : _downX;
+            ushort y = _snapTap ? _tapY : _downY;
+            InputFilterResult held = EndHeld();
+            if (_snapTap)
+            {
+                for (int i = 0; i < _replayCount; i++)
+                {
+                    _replay[i] = _replay[i] with { X = x, Y = y };
+                }
+
+                held = held with { Pen = held.Pen with { X = x, Y = y } };
+            }
+
+            _tapValid = true;
+            _tapTime = timestamp;
+            _tapX = x;
+            _tapY = y;
+            return held;
         }
 
         if (mode == FingerMode.Holding && _heldCount > 0)

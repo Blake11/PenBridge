@@ -56,10 +56,11 @@ public struct TabletPostedState
 /// <item>Down posts LeftDown, Up posts LeftUp, only when the posted left state differs (no unmatched up/down).</item>
 /// <item>Side button (Primary) while hovering: ButtonDown posts RightDown at the current point and ButtonUp posts
 /// RightUp (ADR-0016). Secondary is reserved and ignored.</item>
-/// <item>Right-drag (ADR-0022): when the side button is held at contact-down (a RightDown is posted, or the event's
-/// held buttons include Primary), the stroke is a right-button stroke: Down posts RightDown if needed (never
+/// <item>Right-drag (ADR-0022): when the side button is held at contact-down (the event's held buttons include
+/// Primary), the stroke is a right-button stroke: Down posts RightDown if needed (never
 /// LeftDown), motion posts RightDragged and Up posts RightUp. The choice is latched at contact-down: button changes
-/// during contact post nothing, in either kind of stroke.</item>
+/// during contact post nothing, in either kind of stroke. A right-down still posted at a Down without the button held
+/// (its RightUp failed) is released first, and the stroke is a left one.</item>
 /// <item>Motion posts LeftDragged while the tip is down, else RightDragged while the side button is down, else
 /// MouseMoved. A Drag after the button was released (pause mid-stroke) becomes a hover move until the next Down.</item>
 /// <item>Each step's <see cref="TabletStep.Contact"/> is true while the tip is down in either kind of stroke, so pressure
@@ -111,7 +112,7 @@ public static class TabletEventPlanner
                 {
                     steps[n++] = new TabletStep(MotionAction(state.Left, state.Right), state.Tool, true, state.Right);
                 }
-                else if (state.Right || (held & PenButtons.Primary) != 0)
+                else if ((held & PenButtons.Primary) != 0)
                 {
                     // Side button held at contact-down: a right-drag stroke, latched until Up.
                     state.RightStroke = true;
@@ -127,6 +128,14 @@ public static class TabletEventPlanner
                 }
                 else
                 {
+                    if (state.Right)
+                    {
+                        // A right-down is still posted although the button isn't held (e.g. the RightUp ending a
+                        // right-drag failed and was reverted): release it now instead of starting a right-drag.
+                        state.Right = false;
+                        steps[n++] = new TabletStep(TabletAction.RightUp, state.Tool, false, false);
+                    }
+
                     state.Left = true;
                     steps[n++] = new TabletStep(TabletAction.LeftDown, state.Tool, true, false);
                 }
