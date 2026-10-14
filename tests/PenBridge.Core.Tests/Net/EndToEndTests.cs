@@ -11,6 +11,10 @@ namespace PenBridge.Core.Tests.Net;
 /// <summary>Loopback end-to-end: pairing, auth, streaming, Busy/takeover, reconnect.</summary>
 public class EndToEndTests
 {
+    // Takeover stress: STRESS_TAKEOVERS / STRESS_SECONDS override the CI-sized defaults for local soak runs.
+    private static readonly int StressTakeovers = int.Parse(Environment.GetEnvironmentVariable("STRESS_TAKEOVERS") ?? "40", System.Globalization.CultureInfo.InvariantCulture);
+    private static readonly TimeSpan StressBudget = TimeSpan.FromSeconds(double.Parse(Environment.GetEnvironmentVariable("STRESS_SECONDS") ?? "0.8", System.Globalization.CultureInfo.InvariantCulture));
+
     internal static void DrawStroke(PenBridgeClient client)
     {
         Assert.True(client.SendState(Pens.Hover(1000, 1000), []));
@@ -307,6 +311,71 @@ public class EndToEndTests
         h.Sink.Clear();
         DrawStroke(second);
         await AssertStrokeAsync(h.Sink);
+    }
+
+    /// <summary>
+    /// Regression for #74: on takeover the old device or the server sometimes reported PeerClosed instead of
+    /// TakenOver. Two paired devices take the session from each other back to back; every displaced session must end
+    /// as TakenOver on both sides. Bounded by iterations and wall time so it stays well under 2 s.
+    /// </summary>
+    [Fact]
+    public async Task Repeated_takeovers_always_report_taken_over_on_both_sides()
+    {
+        await using var h = new NetHarness(o => new PenBridgeServerOptions
+        {
+            Identity = o.Identity,
+            Registry = o.Registry,
+            InputSink = o.InputSink,
+            BindAddress = o.BindAddress,
+            Port = 0,
+            TimeProvider = o.TimeProvider,
+            AllowTakeover = true,
+        });
+        var clientEnds = new List<(SessionEndReason Reason, ByeReason? Bye)>();
+        var serverEnds = new List<SessionEndReason>();
+        var gone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnGone(object? sender, ClientDisconnectedEventArgs e)
+        {
+            lock (clientEnds)
+            {
+                clientEnds.Add((e.Reason, e.ByeReason));
+            }
+
+            gone.TrySetResult();
+        }
+
+        h.Server.SessionEnded += (_, e) => { lock (serverEnds) { serverEnds.Add(e.Reason); } };
+        PenBridgeClient a = await h.PairAsync();
+        a.Disconnected += OnGone;
+        PenBridgeClient b = await h.PairAsync(); // the first takeover
+        b.Disconnected += OnGone;
+        await gone.Task.Bounded();
+        byte[] fingerprint = h.Identity.Fingerprint.ToArray();
+
+        var budget = System.Diagnostics.Stopwatch.StartNew();
+        int takeovers = 1;
+        while (takeovers < StressTakeovers && budget.Elapsed < StressBudget)
+        {
+            PenBridgeClient next = takeovers % 2 == 1 ? a : b;
+            gone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            await next.ConnectAsync("127.0.0.1", h.Port, fingerprint).Bounded();
+            await gone.Task.Bounded();
+            takeovers++;
+        }
+
+        await Wait.Until(() => { lock (serverEnds) { return serverEnds.Count >= takeovers; } }, "SessionEnded for every displaced session");
+        Assert.True(takeovers >= 5, "too few takeovers ran: " + takeovers);
+        lock (clientEnds)
+        {
+            Assert.Equal(takeovers, clientEnds.Count);
+            Assert.All(clientEnds, e => Assert.Equal((SessionEndReason.TakenOver, (ByeReason?)ByeReason.TakenOver), e));
+        }
+
+        lock (serverEnds)
+        {
+            Assert.Equal(takeovers, serverEnds.Count);
+            Assert.All(serverEnds, r => Assert.Equal(SessionEndReason.TakenOver, r));
+        }
     }
 
     [Fact]

@@ -16,6 +16,12 @@ internal sealed class ControlChannel : IAsyncDisposable
     private static readonly TimeSpan FarewellTimeout = TimeSpan.FromSeconds(1);
 
     /// <summary>
+    /// Wall-clock bound for waiting, after a farewell and a half-close, for the peer to close its side. Real time like
+    /// <see cref="FarewellTimeout"/>: a peer that never closes must not hold up a takeover or shutdown.
+    /// </summary>
+    public static readonly TimeSpan LingerTimeout = TimeSpan.FromSeconds(1);
+
+    /// <summary>
     /// Backstop for any synchronous socket send: all control writes are async and cancellable, so this only bounds a
     /// write that bypasses them.
     /// </summary>
@@ -134,13 +140,24 @@ internal sealed class ControlChannel : IAsyncDisposable
         }
     }
 
-    /// <summary>Best-effort write of a final message (Error, Bye, Busy) bounded by a short wall-clock timeout. Never throws.</summary>
-    public async ValueTask TryWriteFarewellAsync<T>(T message)
+    /// <summary>
+    /// Best-effort write of a final message (Error, Bye, Busy) bounded by a short wall-clock timeout. Never throws.
+    /// True when the whole frame was handed to the socket (and, with <paramref name="shutdownSend"/>, the send side
+    /// was half-closed right behind it).
+    /// </summary>
+    /// <param name="message">The farewell.</param>
+    /// <param name="shutdownSend">
+    /// Half-close after the frame, still holding the write lock: the FIN is queued behind the farewell, so the peer
+    /// reads it before the end of the stream and no other write can slip in between. Reads keep working, so the owner
+    /// can wait for the peer to close its side (a close with unread input would reset the connection, and a reset can
+    /// discard the farewell before the peer reads it).
+    /// </param>
+    public async ValueTask<bool> TryWriteFarewellAsync<T>(T message, bool shutdownSend = false)
         where T : IControlMessage<T>
     {
         if (Volatile.Read(ref _disposed) != 0)
         {
-            return;
+            return false;
         }
 
         using var cts = new CancellationTokenSource(FarewellTimeout);
@@ -151,9 +168,15 @@ internal sealed class ControlChannel : IAsyncDisposable
             if (locked)
             {
                 await ControlFrameWriter.WriteAsync(_ssl, message, cts.Token).ConfigureAwait(false);
+                if (shutdownSend)
+                {
+                    _socket.Shutdown(SocketShutdown.Send);
+                }
+
+                return true;
             }
         }
-        catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException or InvalidOperationException or NotSupportedException)
+        catch (Exception ex) when (ex is IOException or SocketException or OperationCanceledException or ObjectDisposedException or InvalidOperationException or NotSupportedException)
         {
             // Best effort: the channel is being closed anyway.
         }
@@ -164,6 +187,8 @@ internal sealed class ControlChannel : IAsyncDisposable
                 _writeLock.Release();
             }
         }
+
+        return false;
     }
 
     /// <summary>Cancels all pending reads and writes; the channel is dead afterwards.</summary>
