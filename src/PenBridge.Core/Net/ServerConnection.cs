@@ -87,6 +87,9 @@ internal sealed class ServerConnection
         {
             // Release the input first so the next session starts from a clean state.
             Input?.Shutdown();
+
+            // No more pings: a write after the half-close would fail and abort, cutting the linger short.
+            Volatile.Read(ref _pingTimer)?.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             if (Volatile.Read(ref _sessionStarted)
                 && await _channel.TryWriteFarewellAsync(new ByeMessage(bye), shutdownSend: true).ConfigureAwait(false))
             {
@@ -392,7 +395,7 @@ internal sealed class ServerConnection
             _server.RaiseSessionStarted(_info);
             if (_options.PingInterval != Timeout.InfiniteTimeSpan)
             {
-                _pingTimer = _time.CreateTimer(PingCallback, this, _options.PingInterval, _options.PingInterval);
+                Volatile.Write(ref _pingTimer, _time.CreateTimer(PingCallback, this, _options.PingInterval, _options.PingInterval));
             }
 
             return true;
@@ -501,6 +504,12 @@ internal sealed class ServerConnection
 
     private async Task PingAsync()
     {
+        if (RequestedReason is not null)
+        {
+            // Closing: covers a ping timer created or firing while CloseAsync stops it.
+            return;
+        }
+
         try
         {
             await _channel.WriteAsync(new PingMessage(NowUs())).ConfigureAwait(false);
