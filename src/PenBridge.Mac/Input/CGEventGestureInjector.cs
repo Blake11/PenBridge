@@ -18,7 +18,10 @@ namespace PenBridge.Mac.Input;
 /// any stop), so nothing runs while idle.</para>
 /// <para><b>Allocation.</b> None per event: raw CGEvent handles, created, filled, posted and released. A flick
 /// allocates its timer once.</para>
-/// <para><b>Accessibility.</b> Without the grant the posts are skipped and the state still advances, as for pen events.</para>
+/// <para><b>Accessibility.</b> Without the grant the posts are skipped and the state still advances, as for pen events.
+/// The window server may then still hold a phase opened before the revoke (its end was skipped), so the injector
+/// remembers which phases it actually posted open and <see cref="RepairAfterGrant"/> closes them when the grant
+/// returns. A revoke is only noticed on the system broadcast, so posts in that short window count as delivered.</para>
 /// <para>Three-finger drag and the four-finger system gestures (Drag, SystemSwipe, SystemPinch) are not posted here
 /// yet; they reach <see cref="OnOtherGesture"/>, which only stops momentum.</para>
 /// </remarks>
@@ -98,6 +101,12 @@ internal sealed class CGEventGestureInjector : IDisposable
     private bool _momentumBegun;
     private bool _disposed;
 
+    // Phases the window server saw open: set when a Began actually posted, cleared when its end actually posted.
+    private bool _postedScrollOpen;
+    private bool _postedMomentumOpen;
+    private bool _postedMagnifyOpen;
+    private bool _postedRotateOpen;
+
     /// <param name="gate">The owner's lock; held on every call, taken by the coast timer.</param>
     /// <param name="source">The owner's CGEventSource handle (HID system state), alive for this object's lifetime.</param>
     /// <param name="trusted">Whether posting is allowed (Accessibility granted); read per post.</param>
@@ -172,6 +181,47 @@ internal sealed class CGEventGestureInjector : IDisposable
         }
 
         ClosePinch(PhaseCancelled);
+    }
+
+    /// <summary>
+    /// The Accessibility grant returned: drops the current gesture (its later events are ignored until a new Began)
+    /// and closes every phase the window server may still hold open from before the revoke. Call with the owner's
+    /// lock held, while trusted.
+    /// </summary>
+    public void RepairAfterGrant()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        StopMomentum();
+        _momentum.Reset();
+        _scrollOpen = false;
+        _pinchActive = false;
+        _magnifyOpen = false;
+        _rotateOpen = false;
+        _heldMagnification = 0;
+        _heldDegrees = 0;
+        if (_postedScrollOpen)
+        {
+            PostScroll(0, 0, 0, 0, PhaseCancelled, 0);
+        }
+
+        if (_postedMomentumOpen)
+        {
+            PostScroll(0, 0, 0, 0, 0, MomentumEnd);
+        }
+
+        if (_postedMagnifyOpen)
+        {
+            PostGesture(HidZoom, PhaseCancelled, FieldGestureMagnification, 0);
+        }
+
+        if (_postedRotateOpen)
+        {
+            PostGesture(HidRotation, PhaseCancelled, FieldGestureRotation, 0);
+        }
     }
 
     /// <summary>Cancels everything and stops accepting events. Call with the owner's lock held.</summary>
@@ -452,10 +502,32 @@ internal sealed class CGEventGestureInjector : IDisposable
             NativeMethods.CGEventSetIntegerValueField(ev, FieldScrollInvertedFromDevice, _natural ? 1 : 0);
             NativeMethods.CGEventSetTimestamp(ev, now);
             NativeMethods.CGEventPost(HidEventTap, ev);
+            TrackPosted(ref _postedScrollOpen, scrollPhase);
+            if (momentumPhase == MomentumBegin)
+            {
+                _postedMomentumOpen = true;
+            }
+            else if (momentumPhase == MomentumEnd)
+            {
+                _postedMomentumOpen = false;
+            }
         }
         finally
         {
             NativeMethods.CFRelease(ev);
+        }
+    }
+
+    /// <summary>Follows a posted phase: Began opens, Ended/Cancelled close, anything else leaves it.</summary>
+    private static void TrackPosted(ref bool open, long phase)
+    {
+        if (phase == PhaseBegan)
+        {
+            open = true;
+        }
+        else if (phase is PhaseEnded or PhaseCancelled)
+        {
+            open = false;
         }
     }
 
@@ -489,6 +561,14 @@ internal sealed class CGEventGestureInjector : IDisposable
 
             NativeMethods.CGEventSetTimestamp(ev, NowNs());
             NativeMethods.CGEventPost(HidEventTap, ev);
+            if (hidType == HidZoom)
+            {
+                TrackPosted(ref _postedMagnifyOpen, phase);
+            }
+            else if (hidType == HidRotation)
+            {
+                TrackPosted(ref _postedRotateOpen, phase);
+            }
         }
         finally
         {

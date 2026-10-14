@@ -333,7 +333,7 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
         }
     }
 
-    /// <summary>After the grant returns: release whatever the window server may still hold.</summary>
+    /// <summary>After the grant returns: release whatever the window server may still hold (buttons, gesture phases).</summary>
     private void RepairLocked()
     {
         if (_disposed)
@@ -341,6 +341,7 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
             return;
         }
 
+        _gestures.RepairAfterGrant(); // close gesture phases the window server may still hold open
         Span<TabletStep> steps = stackalloc TabletStep[TabletEventPlanner.MaxSteps];
         int count = _postsDropped
             ? TabletEventPlanner.Repair(ref _state, steps)
