@@ -118,13 +118,46 @@ public class GestureDoubleTapTests
     }
 
     [Fact]
-    public void Pen_in_range_drops_a_held_tap()
+    public void Pen_or_cursor_hover_emits_a_held_tap_at_once()
     {
         Tap(0);
-        Frame(100, pen: true);
+        Frame(100, pen: true); // also a one-finger cursor move: hover samples
+        GestureEvent tap = Assert.Single(Gestures);
+        Assert.Equal(GestureKind.Tap, tap.Kind);
+        Assert.Equal(Ms(100), tap.TimestampUs);
         Assert.Null(_rec.PendingDeadlineUs);
         _rec.CheckDeadline(Ms(1000));
+        Assert.Single(Gestures);
+    }
+
+    [Fact]
+    public void A_held_tap_comes_before_the_cancel_of_an_interrupted_gesture()
+    {
+        Tap(0);
+        Frame(100, false, F(1, 400, 500), F(2, 600, 500));
+        Frame(116, false, F(1, 400, 560), F(2, 600, 560)); // scroll: Tap, then Began
+        Frame(130, true, F(1, 400, 570), F(2, 600, 570)); // pen: Cancelled
+        Assert.Equal([GestureKind.Tap, GestureKind.Scroll, GestureKind.Scroll], Gestures.Select(g => g.Kind));
+        Assert.Equal([GesturePhase.Ended, GesturePhase.Began, GesturePhase.Cancelled], Gestures.Select(g => g.Phase));
+    }
+
+    [Fact]
+    public void A_third_finger_emits_a_held_tap_before_its_touch_down()
+    {
+        Tap(0);
+        Frame(100, false, F(1, 400, 500), F(2, 600, 500));
         Assert.Empty(Gestures);
+        Frame(110, false, F(1, 400, 500), F(2, 600, 500), F(3, 500, 300));
+        Assert.Equal([GestureKind.TouchDown, GestureKind.TouchDown, GestureKind.Tap, GestureKind.TouchDown], _sink.Gestures.Select(g => g.Kind));
+    }
+
+    [Fact]
+    public void Three_fingers_landing_together_emit_a_held_tap_first()
+    {
+        Tap(0);
+        Frame(100, false, F(1, 400, 500), F(2, 600, 500), F(3, 500, 300));
+        Assert.Equal(GestureKind.Tap, _sink.Gestures[^2].Kind);
+        Assert.Equal(GestureKind.TouchDown, _sink.Gestures[^1].Kind);
     }
 
     [Fact]
@@ -137,14 +170,15 @@ public class GestureDoubleTapTests
     }
 
     [Fact]
-    public void A_gesture_beginning_drops_a_held_tap()
+    public void A_gesture_beginning_emits_a_held_tap_first()
     {
         Tap(0);
         Frame(100, false, F(1, 400, 500), F(2, 600, 500));
         Frame(116, false, F(1, 400, 560), F(2, 600, 560)); // scroll
         Frame(130);
         _rec.CheckDeadline(Ms(1000));
-        Assert.Equal([GestureKind.Scroll, GestureKind.Scroll], Gestures.Select(g => g.Kind));
+        Assert.Equal([GestureKind.Tap, GestureKind.Scroll, GestureKind.Scroll], Gestures.Select(g => g.Kind));
+        Assert.Equal(Ms(116), Gestures[0].TimestampUs);
     }
 
     [Fact]

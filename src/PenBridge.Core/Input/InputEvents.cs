@@ -65,8 +65,10 @@ public enum GestureKind : byte
 
     /// <summary>
     /// Two-finger tap, a secondary click at the current cursor. One event with <see cref="GesturePhase.Ended"/>,
-    /// emitted only once the double-tap window passed without a second tap (so it comes after the lift by up to
-    /// <see cref="GestureRecognizerOptions.DoubleTapWindow"/>).
+    /// emitted once it can no longer become a double tap: the double-tap window passed (up to
+    /// <see cref="GestureRecognizerOptions.DoubleTapWindow"/> after the lift), or other input interrupts it (pen or
+    /// cursor hover, a gesture, a third finger), in which case it comes just before that input's events. Only a cancel
+    /// (watchdog, pause, session end) drops it.
     /// </summary>
     Tap = 3,
 

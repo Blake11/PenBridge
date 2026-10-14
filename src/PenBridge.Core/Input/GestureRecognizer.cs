@@ -83,8 +83,9 @@ public sealed record GestureRecognizerOptions
 /// gesture began. It is held for <see cref="GestureRecognizerOptions.DoubleTapWindow"/>: a second tap landing in that
 /// window within <see cref="GestureRecognizerOptions.DoubleTapSlop"/> emits SmartZoom on its lift. Otherwise Tap is
 /// emitted when the window passes with no touch down (<see cref="PendingDeadlineUs"/>, <see cref="CheckDeadline"/>),
-/// or when the next touch sequence ends or outlasts the tap duration without being that second tap. The pen coming
-/// into range, <see cref="Cancel"/>, or a gesture beginning drops a held tap.
+/// or as soon as it can no longer become a double tap, before the event that interrupts it: the pen (or a one-finger
+/// cursor hover) comes into range, a gesture begins, a third finger lands, or the next touch sequence ends or
+/// outlasts the tap duration without being that second tap. Only <see cref="Cancel"/> drops a held tap.
 /// </para>
 /// <para>
 /// <b>Touch down.</b> In each frame where a contact appears that was not in the previous frame (and gestures are not
@@ -257,15 +258,20 @@ public sealed class GestureRecognizer
 
         if (penInRange)
         {
+            FlushPendingTap(timestampUs); // the tap happened; the pen only rules out a double tap
             if (IsActive)
             {
                 Emit(GesturePhase.Cancelled, 0, 0, 1, 0, _prevCenter, synthetic: false, timestampUs);
             }
 
             _tapCandidate = false;
-            _pendingTap = false;
             _state = State.Blocked;
             return;
+        }
+
+        if (_pendingTap && (count > 2 || (_tapCandidate && _tapLandings + _landed > 2)))
+        {
+            FlushPendingTap(timestampUs); // a third finger: no double tap, emit before its TouchDown
         }
 
         if (_landed > 0 && _state != State.Blocked)
@@ -507,7 +513,7 @@ public sealed class GestureRecognizer
             bool rotate = arc >= _options.RotationThreshold * reference && arc >= travel;
             if (pinch || rotate)
             {
-                Lock(State.Pinching);
+                Lock(State.Pinching, timestampUs);
                 double scale = spread / Math.Max(_startSpread, MinSpread);
                 Emit(GesturePhase.Began, 0, 0, scale, rotation, center, synthetic: false, timestampUs);
             }
@@ -525,14 +531,14 @@ public sealed class GestureRecognizer
         }
         else if (spreadChange >= _options.SystemPinchThreshold * reference && spreadChange >= travel)
         {
-            Lock(State.SystemPinching);
+            Lock(State.SystemPinching, timestampUs);
             _direction = spread < _startSpread ? GestureDirection.In : GestureDirection.Out;
             _progress = SystemProgress(center, spread);
             Emit(GesturePhase.Began, 0, 0, 1, 0, center, synthetic: false, timestampUs);
         }
         else if (travel >= _options.SwipeThreshold * reference)
         {
-            Lock(State.Swiping);
+            Lock(State.Swiping, timestampUs);
             _direction = Math.Abs(dx) >= Math.Abs(dy)
                 ? (dx < 0 ? GestureDirection.Left : GestureDirection.Right)
                 : (dy < 0 ? GestureDirection.Up : GestureDirection.Down);
@@ -543,18 +549,18 @@ public sealed class GestureRecognizer
 
     private void BeginRelative(State state, double dx, double dy, double travel, DisplayPoint center, long timestampUs)
     {
-        Lock(state);
+        Lock(state, timestampUs);
         _speed = travel * 1e6 / Math.Max(timestampUs - _startUs, MinSpeedIntervalUs);
         double gain = Gain(_speed);
         Emit(GesturePhase.Began, dx * gain, dy * gain, 1, 0, center, synthetic: false, timestampUs);
     }
 
-    /// <summary>Locks the gesture kind: a gesture began, so this touch sequence is no tap and a held tap is dropped.</summary>
-    private void Lock(State state)
+    /// <summary>Locks the gesture kind: a gesture began, so this touch sequence is no tap and a held tap is emitted first.</summary>
+    private void Lock(State state, long timestampUs)
     {
+        FlushPendingTap(timestampUs);
         _state = state;
         _tapCandidate = false;
-        _pendingTap = false;
         _direction = GestureDirection.None;
         _progress = 0;
     }
