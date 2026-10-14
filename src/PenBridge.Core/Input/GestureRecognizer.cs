@@ -53,6 +53,13 @@ public sealed record GestureRecognizerOptions
 
     /// <summary>How near the second tap's landing midpoint must be to the first's for a SmartZoom.</summary>
     public double DoubleTapSlop { get; init; } = 0.05;
+
+    /// <summary>
+    /// Added to the double-tap window for the timer-driven deadline (<see cref="GestureRecognizer.PendingDeadlineUs"/>),
+    /// which runs on host time estimated from the last frame: a second tap's landing datagram delayed by network
+    /// jitter still arrives before the timer gives up on it. Frames themselves are judged on the frame clock, without it.
+    /// </summary>
+    public TimeSpan TapDeadlineJitterAllowance { get; init; } = TimeSpan.FromMilliseconds(50);
 }
 
 /// <summary>
@@ -82,10 +89,12 @@ public sealed record GestureRecognizerOptions
 /// of the first landing, each finger within <see cref="GestureRecognizerOptions.TapSlop"/> of where it landed, and no
 /// gesture began. It is held for <see cref="GestureRecognizerOptions.DoubleTapWindow"/>: a second tap landing in that
 /// window within <see cref="GestureRecognizerOptions.DoubleTapSlop"/> emits SmartZoom on its lift. Otherwise Tap is
-/// emitted when the window passes with no touch down (<see cref="PendingDeadlineUs"/>, <see cref="CheckDeadline"/>),
-/// or as soon as it can no longer become a double tap, before the event that interrupts it: the pen (or a one-finger
+/// emitted when the window passes with no touch down (judged on the frame clock by the next frame, or by the timer
+/// deadline <see cref="PendingDeadlineUs"/>/<see cref="CheckDeadline"/> with a jitter allowance), or as soon as it can no longer become a double tap, before the event that interrupts it: the pen (or a one-finger
 /// cursor hover) comes into range, a gesture begins, a third finger lands, or the next touch sequence ends or
-/// outlasts the tap duration without being that second tap. Only <see cref="Cancel"/> drops a held tap.
+/// outlasts the tap duration without being that second tap. While fingers are down, tap timing uses only frame times
+/// (frames arrive at least every 50 ms then, and the watchdog covers a lost link), so a delayed lift datagram can't
+/// turn a double tap into two taps. Only <see cref="Cancel"/> drops a held tap.
 /// </para>
 /// <para>
 /// <b>Touch down.</b> In each frame where a contact appears that was not in the previous frame (gestures not blocked
@@ -117,6 +126,7 @@ public sealed class GestureRecognizer
     private readonly GestureRecognizerOptions _options;
     private readonly long _tapMaxUs;
     private readonly long _doubleTapWindowUs;
+    private readonly long _jitterUs;
     private readonly byte[] _order = new byte[MaxTrackedContacts];
     private readonly byte[] _scratch = new byte[MaxTrackedContacts];
     private readonly byte[] _ids = new byte[MaxGestureFingers];
@@ -175,10 +185,12 @@ public sealed class GestureRecognizer
         ArgumentNullException.ThrowIfNull(_options.DragAcceleration, nameof(GestureRecognizerOptions.DragAcceleration));
         _options.ScrollAcceleration.Validate(nameof(GestureRecognizerOptions.ScrollAcceleration));
         _options.DragAcceleration.Validate(nameof(GestureRecognizerOptions.DragAcceleration));
-        if (_options.TapMaxDuration < TimeSpan.Zero || _options.DoubleTapWindow < TimeSpan.Zero)
+        if (_options.TapMaxDuration < TimeSpan.Zero || _options.DoubleTapWindow < TimeSpan.Zero || _options.TapDeadlineJitterAllowance < TimeSpan.Zero)
         {
-            throw new ArgumentOutOfRangeException(nameof(options), "TapMaxDuration and DoubleTapWindow must not be negative.");
+            throw new ArgumentOutOfRangeException(nameof(options), "TapMaxDuration, DoubleTapWindow and TapDeadlineJitterAllowance must not be negative.");
         }
+
+        _jitterUs = _options.TapDeadlineJitterAllowance.Ticks / TimeSpan.TicksPerMicrosecond;
 
         _tapMaxUs = _options.TapMaxDuration.Ticks / TimeSpan.TicksPerMicrosecond;
         _doubleTapWindowUs = _options.DoubleTapWindow.Ticks / TimeSpan.TicksPerMicrosecond;
@@ -213,30 +225,35 @@ public sealed class GestureRecognizer
     public bool IsActive => _state is State.Scrolling or State.Pinching or State.Dragging or State.Swiping or State.SystemPinching;
 
     /// <summary>
-    /// Event time (µs, the <see cref="Process"/> clock) at which a held tap must be resolved even if no frame arrives,
-    /// or null when none is held. Call <see cref="CheckDeadline"/> then (<see cref="PenStateTracker"/> does it from its
-    /// watchdog timer).
+    /// Timer deadline (µs, the <see cref="Process"/> clock) for a held tap while no finger is down: the end of the
+    /// double-tap window plus <see cref="GestureRecognizerOptions.TapDeadlineJitterAllowance"/>. Null when no tap is
+    /// held or fingers are down (then frames decide). Call <see cref="CheckDeadline"/> then
+    /// (<see cref="PenStateTracker"/> does it from its watchdog timer).
     /// </summary>
-    public long? PendingDeadlineUs
-    {
-        get
-        {
-            if (!_pendingTap)
-            {
-                return null;
-            }
-
-            return ContactCount == 0 ? _pendingLiftUs + _doubleTapWindowUs : _tapStartUs + _tapMaxUs + 1;
-        }
-    }
+    public long? PendingDeadlineUs => _pendingTap && ContactCount == 0 ? _pendingLiftUs + _doubleTapWindowUs + _jitterUs : null;
 
     /// <summary>
-    /// Emits a held Tap once <see cref="PendingDeadlineUs"/> has passed: the double-tap window ran out with no touch
-    /// down, or the touch now down outlasted the tap duration. Safe to call at any time.
+    /// Timer path: emits a held Tap once <see cref="PendingDeadlineUs"/> has passed (no second tap landed in time).
+    /// Does nothing while fingers are down. Safe to call at any time.
     /// </summary>
     public void CheckDeadline(long timestampUs)
     {
         if (PendingDeadlineUs is { } due && timestampUs >= due)
+        {
+            FlushPendingTap(timestampUs);
+        }
+    }
+
+    /// <summary>Frame path: flushes a held tap whose window (no finger down) or tap duration (finger down) passed.</summary>
+    private void CheckFrameDeadline(long timestampUs)
+    {
+        if (!_pendingTap)
+        {
+            return;
+        }
+
+        long due = ContactCount == 0 ? _pendingLiftUs + _doubleTapWindowUs : _tapStartUs + _tapMaxUs + 1;
+        if (timestampUs >= due)
         {
             FlushPendingTap(timestampUs);
         }
@@ -253,7 +270,7 @@ public sealed class GestureRecognizer
             return;
         }
 
-        CheckDeadline(timestampUs);
+        CheckFrameDeadline(timestampUs);
         int previousCount = ContactCount;
         int count = UpdateLandingOrder(touches);
         ContactCount = count;

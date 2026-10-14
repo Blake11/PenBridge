@@ -37,21 +37,42 @@ public class GestureDoubleTapTests
     {
         Tap(0);
         Assert.Empty(Gestures);
-        Assert.Equal(Ms(350), _rec.PendingDeadlineUs);
+        Assert.Equal(Ms(400), _rec.PendingDeadlineUs); // lift + 300 ms window + 50 ms jitter allowance
 
-        _rec.CheckDeadline(Ms(349));
+        _rec.CheckDeadline(Ms(399));
         Assert.Empty(Gestures);
 
-        _rec.CheckDeadline(Ms(350));
+        _rec.CheckDeadline(Ms(400));
         GestureEvent tap = Assert.Single(Gestures);
         Assert.Equal(GestureKind.Tap, tap.Kind);
         Assert.Equal(GesturePhase.Ended, tap.Phase);
-        Assert.Equal(Ms(350), tap.TimestampUs);
+        Assert.Equal(Ms(400), tap.TimestampUs);
         Assert.Equal(500, tap.Center.X, 0.1);
         Assert.Null(_rec.PendingDeadlineUs);
 
         _rec.CheckDeadline(Ms(1000));
         Assert.Single(Gestures);
+    }
+
+    [Fact]
+    public void A_late_landing_frame_within_the_window_still_makes_a_smart_zoom()
+    {
+        Tap(0);
+        _rec.CheckDeadline(Ms(390)); // the timer fires late in host time, but within the jitter allowance
+        Frame(340, false, F(1, 400, 500), F(2, 600, 500)); // landed at 340 ms on the frame clock: in the window
+        Frame(380);
+        Assert.Equal(GestureKind.SmartZoom, Assert.Single(Gestures).Kind);
+    }
+
+    [Fact]
+    public void While_fingers_are_down_the_timer_never_flushes()
+    {
+        Tap(0);
+        Frame(150, false, F(1, 400, 500), F(2, 600, 500));
+        Assert.Null(_rec.PendingDeadlineUs);
+        _rec.CheckDeadline(Ms(10_000)); // a timer racing a delayed lift datagram
+        Frame(200); // the lift arrives late in host time, 50 ms after landing on the frame clock
+        Assert.Equal(GestureKind.SmartZoom, Assert.Single(Gestures).Kind);
     }
 
     [Fact]
@@ -82,7 +103,7 @@ public class GestureDoubleTapTests
         Tap(360);
         Assert.Equal(GestureKind.Tap, Assert.Single(Gestures).Kind);
         Assert.Equal(Ms(360), Gestures[0].TimestampUs); // flushed when the next touch arrived
-        Assert.Equal(Ms(710), _rec.PendingDeadlineUs);
+        Assert.Equal(Ms(760), _rec.PendingDeadlineUs);
     }
 
     [Fact]
@@ -98,12 +119,13 @@ public class GestureDoubleTapTests
     }
 
     [Fact]
-    public void A_second_touch_held_too_long_flushes_the_tap()
+    public void A_second_touch_held_too_long_flushes_the_tap_on_the_next_frame()
     {
         Tap(0);
         Frame(100, false, F(1, 400, 500), F(2, 600, 500));
-        Assert.Equal(Ms(300) + 1, _rec.PendingDeadlineUs); // the second touch can't be a tap after 200 ms
-        _rec.CheckDeadline(Ms(300) + 1);
+        Frame(300, false, F(1, 400, 500), F(2, 600, 500));
+        Assert.Empty(Gestures); // exactly 200 ms: still a possible tap
+        Frame(301, false, F(1, 400, 500), F(2, 600, 500)); // frame clock past the tap duration
         Assert.Equal(GestureKind.Tap, Assert.Single(Gestures).Kind);
     }
 
@@ -200,7 +222,7 @@ public class GestureDoubleTapTests
         };
         rec.Process([F(1, 300, 500), F(2, 500, 500)], false, 0);
         rec.Process([], false, Ms(50));
-        Assert.Equal(Ms(550), rec.PendingDeadlineUs);
+        Assert.Equal(Ms(600), rec.PendingDeadlineUs);
         rec.Process([F(1, 380, 500), F(2, 580, 500)], false, Ms(500)); // 80 pt away, 450 ms later
         rec.Process([], false, Ms(550));
         Assert.Equal(GestureKind.SmartZoom, Assert.Single(Gestures).Kind);
