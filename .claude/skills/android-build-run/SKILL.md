@@ -36,6 +36,12 @@ scripts/android-device.sh list
 scripts/android-device.sh disconnect [ip:port]
 ```
 Pairing persists; the connect port changes after a reboot or a Wireless debugging/Wi-Fi toggle → `connect --auto` finds it (`_adb-tls-connect._tcp`; it never uses `_adb-tls-pairing._tcp`, whose port is only valid while the pairing dialog is open). With no service found or several phones advertising, it fails and lists them; pass `<ip:port>` then. Pairing needs the user to read the code off the phone.
+- Turning the phone's Wi-Fi off also turns Wireless debugging off; afterwards the user re-enables it, then `connect --auto`.
+
+## S23 adb gotchas
+- `pm list packages` needs `--user 0` (Secure Folder blocks the default user query).
+- `adb shell dumpsys servicediscovery` shows NSD discovery results even while the screen is locked.
+- `adb logcat -c` run in the background can hang: capture with `--pid=<pid>` and don't block on the clear.
 
 ## Run
 ```bash
