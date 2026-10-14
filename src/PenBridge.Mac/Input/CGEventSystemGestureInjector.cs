@@ -19,7 +19,7 @@ namespace PenBridge.Mac.Input;
 /// ⌃←; spread → F11 show desktop; pinch in → the app launcher (Apps, or Launchpad on older macOS) through
 /// <see cref="NSWorkspace"/> (bundle id resolved once, on the main thread; no shell). A user who changed those
 /// shortcuts in System Settings gets whatever they are bound to. Each keystroke carries its flags explicitly and is
-/// followed by a FlagsChanged back to the previous modifier state, so no modifier stays set.</para>
+/// followed by FlagsChanged events (the modifiers' own keycodes) back to the previous modifier state, so no modifier stays set.</para>
 /// <para><b>Interactive mode</b> (Dock gesture events that follow the fingers, like a trackpad) is off: on this macOS
 /// the posted dock-swipe events (type 30, HID type 23, motion/progress/velocity/phase fields 123/124/129/130/132) had
 /// no effect (spike P4-B0, a Mac without a trackpad). <see cref="InteractiveDockGestures"/> keeps the switch.</para>
@@ -34,9 +34,9 @@ namespace PenBridge.Mac.Input;
 internal sealed class CGEventSystemGestureInjector
 {
     /// <summary>
-    /// TODO(P4 follow-up): interactive Dock gestures. Off: the spike found no posted dock-swipe variant that moved
-    /// Mission Control or a Space here (notes in .claude/progress/gestures/ws-p4-b0.md). Re-test on a Mac with a
-    /// trackpad and several Spaces, capturing a real four-finger swipe with a listen-only event tap first.
+    /// TODO(#108): interactive four-finger gestures (Dock events that follow the fingers). Off: the spike found no
+    /// posted dock-swipe variant that moved Mission Control or a Space here. Re-test on a Mac with a trackpad and
+    /// several Spaces, capturing a real four-finger swipe with a listen-only event tap first.
     /// </summary>
     internal const bool InteractiveDockGestures = false;
 
@@ -60,6 +60,9 @@ internal sealed class CGEventSystemGestureInjector
     private const ulong FlagSecondaryFn = 0x800000;
     private const uint TypeFlagsChanged = 12;
     private const int StateHidSystem = 1; // kCGEventSourceStateHIDSystemState
+    private const uint FieldKeycode = 9; // kCGKeyboardEventKeycode
+    private const ushort KeyControl = 59; // kVK_Control
+    private const ushort KeyFunction = 63; // kVK_Function
 
     /// <summary>The app launcher: Apps (macOS 26+), then Launchpad.</summary>
     private static readonly string[] LauncherBundleIds = ["com.apple.apps.launcher", "com.apple.launchpad.launcher"];
@@ -73,7 +76,7 @@ internal sealed class CGEventSystemGestureInjector
     private readonly Action<NSRunningApplication?, NSError?> _onLauncherOpened;
 
     private bool _dragging;
-    private bool _upDropped;
+    private bool _downPosted; // a left-down reached the window server and its left-up has not
     private double _x;
     private double _y;
     private double _remainderX;
@@ -123,16 +126,15 @@ internal sealed class CGEventSystemGestureInjector
     }
 
     /// <summary>
-    /// The Accessibility grant returned: posts the left-up a skipped post may have left pending and drops a drag still
-    /// in progress (its later events are ignored until a new Began), as the two-finger gestures do.
+    /// The Accessibility grant returned: posts the left-up for a left-down that was posted but whose up was skipped, and
+    /// drops a drag still in progress (its later events are ignored until a new Began), as the two-finger gestures do.
     /// </summary>
     public void Repair()
     {
-        if ((_upDropped || _dragging) && _trusted())
+        _dragging = false;
+        if (_downPosted && PostMouse(TypeLeftMouseUp, Cursor(), 0, 0))
         {
-            _dragging = false;
-            _upDropped = false;
-            PostMouse(TypeLeftMouseUp, Cursor(), 0, 0);
+            _downPosted = false;
         }
     }
 
@@ -149,10 +151,9 @@ internal sealed class CGEventSystemGestureInjector
                 _remainderY = 0;
                 LoadDisplays();
                 _dragging = true;
-                _upDropped = false;
-                if (!PostMouse(TypeLeftMouseDown, at, 0, 0))
+                if (PostMouse(TypeLeftMouseDown, at, 0, 0))
                 {
-                    _upDropped = true; // the window server may or may not hold it; release when we can
+                    _downPosted = true;
                 }
 
                 MoveBy(e.DeltaX, e.DeltaY);
@@ -184,10 +185,7 @@ internal sealed class CGEventSystemGestureInjector
         long deltaY = GestureOutput.TakeWhole(y - _y, ref _remainderY);
         _x = x;
         _y = y;
-        if (!PostMouse(TypeLeftMouseDragged, new NativePoint(x, y), deltaX, deltaY))
-        {
-            _upDropped = true;
-        }
+        _ = PostMouse(TypeLeftMouseDragged, new NativePoint(x, y), deltaX, deltaY);
     }
 
     private void EndDrag()
@@ -198,7 +196,10 @@ internal sealed class CGEventSystemGestureInjector
         }
 
         _dragging = false;
-        _upDropped = !PostMouse(TypeLeftMouseUp, new NativePoint(_x, _y), 0, 0);
+        if (_downPosted && PostMouse(TypeLeftMouseUp, new NativePoint(_x, _y), 0, 0))
+        {
+            _downPosted = false; // else Repair posts it when the grant returns
+        }
     }
 
     private void OnSystem(in GestureEvent e)
@@ -213,7 +214,9 @@ internal sealed class CGEventSystemGestureInjector
             return; // no Began seen
         }
 
-        if (!_fired && e.Phase is GesturePhase.Began or GesturePhase.Changed && e.Progress >= CommitProgress)
+        // Ended counts too: a fast flick can cross the threshold only in its last frame. Cancelled never fires.
+        if (!_fired && e.Phase is GesturePhase.Began or GesturePhase.Changed or GesturePhase.Ended
+            && e.Progress >= CommitProgress)
         {
             _fired = true;
             Fire(e.Kind, e.Direction);
@@ -260,7 +263,7 @@ internal sealed class CGEventSystemGestureInjector
     }
 
     /// <summary>
-    /// Posts key down + up with the flags set explicitly on both, then a FlagsChanged back to the modifier state from
+    /// Posts key down + up with the flags set explicitly on both, then FlagsChanged events back to the modifier state from
     /// before: posted key events update the HID system's modifier state, which every later event from a HID-state
     /// source inherits (measured: ⌃ and fn stayed set, so the next posted click would have been a ⌃-click).
     /// </summary>
@@ -274,10 +277,28 @@ internal sealed class CGEventSystemGestureInjector
         ulong before = NativeMethods.CGEventSourceFlagsState(StateHidSystem);
         PostKeyEvent(key, down: true, flags);
         PostKeyEvent(key, down: false, flags);
-        PostFlagsChanged(before);
+        ReleaseModifiers(flags, before);
     }
 
-    private void PostFlagsChanged(ulong flags)
+    /// <summary>
+    /// Releases the modifiers the keystroke added, one FlagsChanged per key as a keyboard does (fn, then ⌃, each with
+    /// its own keycode), ending at <paramref name="before"/>.
+    /// </summary>
+    private void ReleaseModifiers(ulong flags, ulong before)
+    {
+        ulong pendingControl = (flags & FlagControl & ~before) != 0 ? FlagControl : 0;
+        if ((flags & FlagSecondaryFn & ~before) != 0)
+        {
+            PostFlagsChanged(KeyFunction, before | pendingControl);
+        }
+
+        if (pendingControl != 0)
+        {
+            PostFlagsChanged(KeyControl, before);
+        }
+    }
+
+    private void PostFlagsChanged(ushort keycode, ulong flags)
     {
         IntPtr ev = NativeMethods.CGEventCreate(_source);
         if (ev == IntPtr.Zero)
@@ -288,6 +309,7 @@ internal sealed class CGEventSystemGestureInjector
         try
         {
             NativeMethods.CGEventSetType(ev, TypeFlagsChanged);
+            NativeMethods.CGEventSetIntegerValueField(ev, FieldKeycode, keycode);
             NativeMethods.CGEventSetFlags(ev, flags);
             NativeMethods.CGEventSetTimestamp(ev, NowNs());
             NativeMethods.CGEventPost(HidEventTap, ev);
