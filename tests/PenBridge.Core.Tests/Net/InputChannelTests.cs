@@ -220,7 +220,7 @@ public class InputChannelTests
         var blocked = new StrongBox<bool>(true);
         PenBridgeClient client = await h.PairAsync(filter: _ => !blocked.Value);
         client.SendState(Pens.Hover(1000, 1000), []);
-        h.Time.Advance(TimeSpan.FromSeconds(2));
+        await Wait.Step(h.Time, TimeSpan.FromSeconds(2)); // the UDP ack deadline passes
         Assert.Equal(InputTransport.Tls, client.Transport);
         await Wait.Until(() => h.Server.GetStats().Transport == InputTransport.Tls, "server on TLS");
 
@@ -231,20 +231,14 @@ public class InputChannelTests
         h.Time.Advance(TimeSpan.FromSeconds(1)); // probe
         await Wait.Until(() => client.Transport == InputTransport.Udp, "switched back to UDP after the probe ack");
 
+        // A hover keepalive that fired with the probe may still be queued for TLS, stamped with the same fake time.
+        // Move the clock on so the next frame is strictly newer and that late TLS frame is dropped as stale; with an
+        // equal stamp it would be applied after the UDP frame and leave the server reporting TLS.
+        h.Time.Advance(TimeSpan.FromMilliseconds(1));
         h.Sink.Clear();
         client.SendState(Pens.Contact(1200, 1000), []);
         await Wait.Until(() => h.Sink.PenKinds().Contains(PenEventKind.Down), "input over UDP again");
         await Wait.Until(() => h.Server.GetStats().Transport == InputTransport.Udp, "server on UDP");
-    }
-
-    /// <summary>Advances in 100 ms steps with a real pause, so acks cross the loopback before the next client deadline.</summary>
-    private static async Task StepAsync(FakeTime time, TimeSpan total)
-    {
-        for (TimeSpan done = TimeSpan.Zero; done < total; done += TimeSpan.FromMilliseconds(100))
-        {
-            time.Advance(TimeSpan.FromMilliseconds(100));
-            await Task.Delay(10);
-        }
     }
 
     [Fact]
@@ -264,7 +258,12 @@ public class InputChannelTests
         client.SendState(null, []);
         await Wait.Until(() => h.Server.GetStats().Counters.Accepted >= 7, "burst received");
 
-        await StepAsync(h.Time, TimeSpan.FromSeconds(6));
+        // 100 ms steps; after each, every datagram sent so far has reached the server and the server's trailing ack (due
+        // 1 s after the first one) has reached the client, so neither crosses a fake-time deadline in flight.
+        long ackDue = h.Time.GetTimestamp() + h.Time.TimestampFrequency;
+        await Wait.Step(h.Time, TimeSpan.FromSeconds(6), step: TimeSpan.FromMilliseconds(100), settled: () =>
+            h.Server.GetStats().Counters.Accepted >= client.DatagramsSealed
+            && (h.Time.GetTimestamp() < ackDue || client.AcksReceived >= 2));
 
         Assert.Equal(InputTransport.Udp, client.Transport);
         Assert.Equal(2, client.AcksReceived); // the trailing ack covered the burst and the release repeats
@@ -278,14 +277,20 @@ public class InputChannelTests
         client.SendState(Pens.Contact(3000, 3000), []);
         await Wait.Until(() => client.AcksReceived == 1, "first ack");
 
+        // After each step: the keepalive reached the server, the pings reached both peers, and an ack the server sent
+        // reached the client. The client re-arms its 2 s ack deadline on each ack and the server acks once a second,
+        // so the deadline is at most 1 s away exactly while an ack is due or in flight.
+        TimeSpan ackTimeout = TimeSpan.FromSeconds(2);
         for (int i = 0; i < 750; i++) // 30 s of 40 ms contact keepalives
         {
             long accepted = h.Server.GetStats().Counters.Accepted;
             h.Time.Advance(TimeSpan.FromMilliseconds(40));
             await Wait.Until(() => h.Server.GetStats().Counters.Accepted > accepted, "keepalive " + i);
+            await Wait.Until(() => h.Time.CountDeadlines((s, armedFor, remaining) =>
+                s is not ControlChannel && armedFor == ackTimeout && remaining <= ackTimeout - TimeSpan.FromSeconds(1)) == 0, "ack " + i);
+            await Wait.Settled(h.Time);
         }
 
-        await Task.Delay(50);
         Assert.Equal(InputTransport.Udp, client.Transport);
         Assert.Equal(InputTransport.Udp, h.Server.GetStats().Transport);
         Assert.InRange(client.AcksReceived, 25, 31); // ≤ 1/s over 30 s (+ the first)

@@ -118,19 +118,16 @@ public class TimeoutAndProtocolTests
     [Fact]
     public async Task Pings_keep_an_idle_session_alive()
     {
-        // Defaults on both sides: ping every 2 s, drop a peer after 6 s of silence.
-        TimeSpan peerTimeout = TimeSpan.FromSeconds(6);
         await using var h = new NetHarness();
         PenBridgeClient client = await h.PairAsync();
-        for (int i = 0; i < 10; i++)
-        {
-            h.Time.Advance(TimeSpan.FromSeconds(2));
 
-            // Wait until this round's pings reached both peers, i.e. each read deadline was re-armed a full peer
-            // timeout from now. A fixed real delay is not enough under CPU load: three short steps without the
-            // I/O completing add up to a peer timeout and drop the session.
-            await Wait.Until(() => h.Time.NoDeadlineDueWithin(peerTimeout), "pings crossed the loopback");
-        }
+        // Both session read loops are waiting under a peer-timeout deadline, so the waits below are not vacuous.
+        await Wait.Until(() => h.Time.CountDeadlines(static (s, armedFor, _) => s is ControlChannel && armedFor == Wait.PeerTimeout) == 2, "both read deadlines armed");
+
+        // 20 s of fake time (> the 6 s peer timeout) in 1 s steps. Each step waits for the pings to reach both peers:
+        // under CPU load a fixed real pause is not enough, and a few steps without the I/O completing add up to a
+        // peer timeout.
+        await Wait.Step(h.Time, TimeSpan.FromSeconds(20));
 
         Assert.True(client.IsConnected);
         Assert.True(h.Server.GetStats().HasSession);
