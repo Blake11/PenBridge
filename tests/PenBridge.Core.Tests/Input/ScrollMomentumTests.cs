@@ -65,7 +65,7 @@ public class ScrollMomentumTests
     {
         long last = Feed(20, 0, 1); // 125 pt/s < 150
         Assert.False(_m.TryStart(last + FrameUs));
-        Assert.False(_m.Step(last + (2 * FrameUs), out double dx, out double dy));
+        Assert.False(_m.Step(FrameUs, out double dx, out double dy));
         Assert.Equal(0, dx);
         Assert.Equal(0, dy);
     }
@@ -92,7 +92,7 @@ public class ScrollMomentumTests
     {
         long release = Feed(20, 0, 8) + FrameUs;
         Assert.True(_m.TryStart(release));
-        Assert.True(_m.Step(release + 400_000, out _, out double dy)); // one step of exactly tau
+        Assert.True(_m.Step(400_000, out _, out double dy)); // one step of exactly tau
         Assert.Equal(1000 * 0.4 * (1 - Math.Exp(-1)), dy, 0.01);
     }
 
@@ -113,7 +113,7 @@ public class ScrollMomentumTests
 
         double sumA = 0;
         double previous = double.MaxValue;
-        for (long t = release + 16_667; t <= release + 500_000; t += 16_667)
+        for (long t = 16_667; t <= 500_000; t += 16_667)
         {
             Assert.True(a.Step(t, out double dx, out _));
             Assert.True(Math.Abs(dx) < previous);
@@ -121,8 +121,8 @@ public class ScrollMomentumTests
             sumA += dx;
         }
 
-        long end = release + (29 * 16_667L);
-        Assert.True(b.Step(release + 7_000, out double first, out _));
+        long end = 29 * 16_667L;
+        Assert.True(b.Step(7_000, out double first, out _));
         double sumB = first;
         Assert.True(b.Step(end, out double second, out _));
         sumB += second;
@@ -131,21 +131,35 @@ public class ScrollMomentumTests
     }
 
     [Fact]
-    public void Coast_stops_below_the_stop_speed_and_stays_stopped()
+    public void Coast_ends_at_the_stop_speed_with_the_remainder_then_stays_stopped()
     {
         long release = Feed(20, 0, 8) + FrameUs;
         Assert.True(_m.TryStart(release));
-        long endUs = _m.EndTimeUs;
-        Assert.Equal(release + (long)Math.Ceiling(0.4 * Math.Log(1000 / 20.0) * 1e6), endUs);
+        long durationUs = _m.DurationUs;
+        Assert.Equal((long)Math.Ceiling(0.4 * Math.Log(1000 / 20.0) * 1e6), durationUs);
 
-        Assert.True(_m.Step(endUs - 1_000, out _, out double dy));
+        Assert.True(_m.Step(durationUs - 1_000, out _, out double dy));
         Assert.True(dy > 0);
-        Assert.False(_m.Step(endUs + 1, out double dx2, out double dy2));
+        Assert.True(_m.Step(durationUs + 1, out _, out double last)); // clamped to the end: the remainder
+        Assert.True(last > 0);
+        Assert.True(_m.IsCoasting);
+        Assert.False(_m.Step(durationUs + 2, out double dx2, out double dy2));
         Assert.Equal(0, dx2);
         Assert.Equal(0, dy2);
         Assert.False(_m.IsCoasting);
-        Assert.Equal(0, _m.EndTimeUs);
-        Assert.False(_m.Step(endUs + 20_000, out _, out _));
+        Assert.Equal(0, _m.DurationUs);
+        Assert.False(_m.Step(durationUs + 20_000, out _, out _));
+    }
+
+    [Fact]
+    public void A_late_tick_far_past_the_end_loses_no_distance()
+    {
+        long release = Feed(20, 0, 8) + FrameUs;
+        Assert.True(_m.TryStart(release));
+        Assert.True(_m.Step(16_667, out _, out double first));
+        Assert.True(_m.Step(60_000_000, out _, out double rest)); // the timer stalled for a minute
+        Assert.Equal((1000 - 20) * 0.4, first + rest, 0.01);
+        Assert.False(_m.Step(60_016_667, out _, out _));
     }
 
     [Fact]
@@ -154,13 +168,13 @@ public class ScrollMomentumTests
         long release = Feed(20, 0, 8) + FrameUs;
         Assert.True(_m.TryStart(release));
         double total = 0;
-        long t = release;
+        long t = 0;
         while (_m.Step(t += 16_667, out _, out double dy))
         {
             total += dy;
         }
 
-        Assert.InRange(total, (1000 - 20) * 0.4 - 1, 1000 * 0.4);
+        Assert.Equal((1000 - 20) * 0.4, total, 0.01); // v0·τ·(1 − stop/v0)
     }
 
     [Fact]
@@ -168,8 +182,8 @@ public class ScrollMomentumTests
     {
         long release = Feed(20, 0, 8) + FrameUs;
         Assert.True(_m.TryStart(release));
-        Assert.True(_m.Step(release + 50_000, out _, out _));
-        Assert.True(_m.Step(release + 10_000, out double dx, out double dy));
+        Assert.True(_m.Step(50_000, out _, out _));
+        Assert.True(_m.Step(10_000, out double dx, out double dy));
         Assert.Equal(0, dx);
         Assert.Equal(0, dy);
     }
@@ -181,7 +195,7 @@ public class ScrollMomentumTests
         Assert.True(_m.TryStart(release));
         _m.Reset();
         Assert.False(_m.IsCoasting);
-        Assert.False(_m.Step(release + 16_000, out _, out _));
+        Assert.False(_m.Step(16_000, out _, out _));
         Assert.False(_m.TryStart(release)); // samples are gone too
     }
 
@@ -192,7 +206,7 @@ public class ScrollMomentumTests
         Assert.True(_m.TryStart(release));
         _m.AddSample(0, 4, release + 20_000);
         Assert.False(_m.IsCoasting);
-        Assert.False(_m.Step(release + 30_000, out _, out _));
+        Assert.False(_m.Step(30_000, out _, out _));
     }
 
     [Fact]
@@ -291,14 +305,14 @@ public class ScrollMomentumTests
 
             if (m.Observe(new GestureEvent(GestureKind.Scroll, GesturePhase.Ended, 0, 0, 1, 0, default, false, t0 + (13 * FrameUs))))
             {
-                long t = t0 + (13 * FrameUs);
+                long t = 0;
                 while (m.Step(t += 16_667, out _, out _))
                 {
                     steps[0]++;
                 }
             }
 
-            _ = m.EndTimeUs;
+            _ = m.DurationUs;
             ran++;
         }, () => ran, () => steps[0]);
     }

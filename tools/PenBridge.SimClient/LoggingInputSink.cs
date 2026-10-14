@@ -42,12 +42,12 @@ internal sealed class LoggingInputSink(TextWriter output) : IInputSink
         {
             double vx = _momentum.ReleaseVelocityX;
             double vy = _momentum.ReleaseVelocityY;
-            long end = _momentum.EndTimeUs;
+            long duration = _momentum.DurationUs;
             long tick = _momentum.Options.TickInterval.Ticks / TimeSpan.TicksPerMicrosecond;
             double sx = 0;
             double sy = 0;
             int steps = 0;
-            for (long t = e.TimestampUs + tick; _momentum.Step(t, out double dx, out double dy); t += tick)
+            for (long t = tick; _momentum.Step(t, out double dx, out double dy); t += tick)
             {
                 sx += dx;
                 sy += dy;
@@ -56,7 +56,7 @@ internal sealed class LoggingInputSink(TextWriter output) : IInputSink
 
             output.WriteLine(string.Create(
                 CultureInfo.InvariantCulture,
-                $"momentum v=({vx:F0}, {vy:F0}) pt/s coasts ({sx:F1}, {sy:F1}) pt in {steps} steps over {(end - e.TimestampUs) / 1000.0:F0}ms"));
+                $"momentum v=({vx:F0}, {vy:F0}) pt/s coasts ({sx:F1}, {sy:F1}) pt in {steps} steps over {duration / 1000.0:F0}ms"));
         }
     }
 }

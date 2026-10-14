@@ -42,20 +42,21 @@ public sealed record GestureRecognizerOptions
 /// <see cref="GestureRecognizerOptions.ScrollThreshold"/> is a scroll (exclusive: no scale or rotation).
 /// </para>
 /// <para>
-/// Two-finger tap: when exactly two fingers touched (no third finger landed at any time, also not after one lifted),
+/// Two-finger tap: when exactly two fingers touched (two landings in the sequence: a third, or a finger re-landing
+/// with a reused pointer id, is no tap),
 /// both lifted within <see cref="GestureRecognizerOptions.TapMaxDuration"/> of the first landing, each moved at most
 /// <see cref="GestureRecognizerOptions.TapSlop"/> from where it landed and no gesture began, one
 /// <see cref="GestureKind.Tap"/> event is emitted when the last finger lifts. The first landing is the first frame
 /// that carried a touch.
 /// </para>
 /// <para>
-/// Touch down: when the contact count goes from 0 to at least 1 (and the pen does not block gestures), one
-/// <see cref="GestureKind.TouchDown"/> event is emitted first, so the head can stop a scroll coast. After
-/// <see cref="Cancel"/> the count restarts at 0, so fingers still down in the next frame count as landing again.
+/// Touch down: in each frame where a contact appears that was not in the previous frame (and gestures are not
+/// blocked), one <see cref="GestureKind.TouchDown"/> event is emitted first, so the head can stop a scroll coast.
 /// </para>
 /// <para>
 /// When the pen comes into range an active gesture is Cancelled, a pending tap is dropped, and nothing new starts
-/// until all fingers have lifted. <see cref="Cancel"/> (watchdog, session end) cancels likewise. Frames are ignored
+/// until all fingers have lifted. <see cref="Cancel"/> (watchdog, session end) cancels likewise: fingers still down
+/// in later frames are blocked until all lift. Frames are ignored
 /// until a configured <see cref="Mapper"/> is set (apply SurfaceInfo first). Not thread-safe; allocation-free per call.
 /// </para>
 /// </remarks>
@@ -85,10 +86,12 @@ public sealed class GestureRecognizer
 
     // Two-finger tap candidate (one touch sequence: first landing until all fingers lifted).
     private bool _tapPending;
-    private bool _tapSuppressed;
     private bool _tapPaired;
     private long _tapStartUs;
-    private int _tapFingers;
+    private int _tapLandings;
+    private int _tapSlots;
+    private int _landed;
+    private byte _firstLandedId;
     private byte _tapId0;
     private byte _tapId1;
     private DisplayPoint _tapLand0;
@@ -161,7 +164,7 @@ public sealed class GestureRecognizer
             return;
         }
 
-        if (previousCount == 0 && count > 0 && _state != State.Blocked)
+        if (_landed > 0 && _state != State.Blocked)
         {
             EmitTouchDown(touches, timestampUs);
         }
@@ -179,16 +182,11 @@ public sealed class GestureRecognizer
 
             _tapPending = false;
         }
-
-        if (count == 0)
-        {
-            _tapSuppressed = false;
-        }
     }
 
     /// <summary>
     /// Aborts any gesture as if all fingers lifted (watchdog / session end). Emits Cancelled if active. A pending tap is
-    /// dropped; if fingers were down, the ones seen in later frames can't form a tap until a frame without contacts.
+    /// dropped; if fingers were down, gestures (and taps, touch-downs) stay blocked until a frame without contacts.
     /// </summary>
     public void Cancel(long timestampUs, bool synthetic = true)
     {
@@ -197,9 +195,8 @@ public sealed class GestureRecognizer
             Emit(GesturePhase.Cancelled, 0, 0, 1, 0, _prevCenter, synthetic, timestampUs);
         }
 
-        _state = State.Idle;
+        _state = ContactCount > 0 ? State.Blocked : State.Idle;
         _tapPending = false;
-        _tapSuppressed = ContactCount > 0; // fingers still down when frames resume are no new tap
         _orderCount = 0;
         ContactCount = 0;
     }
@@ -327,11 +324,12 @@ public sealed class GestureRecognizer
     /// <summary>Follows one touch sequence (first landing until all lift) and drops the tap when a rule breaks.</summary>
     private void TrackTap(ReadOnlySpan<TouchSample> touches, int previousCount, int count, long timestampUs)
     {
-        if (previousCount == 0 && count > 0 && !_tapSuppressed && _state != State.Blocked)
+        if (previousCount == 0 && count > 0 && _state != State.Blocked)
         {
             _tapPending = true;
             _tapPaired = false;
-            _tapFingers = 0;
+            _tapLandings = 0;
+            _tapSlots = 0;
             _tapStartUs = timestampUs;
         }
 
@@ -340,7 +338,8 @@ public sealed class GestureRecognizer
             return;
         }
 
-        if (count > 2 || timestampUs - _tapStartUs > _tapMaxUs)
+        _tapLandings += _landed;
+        if (count > 2 || _tapLandings > 2 || timestampUs - _tapStartUs > _tapMaxUs)
         {
             _tapPending = false;
             return;
@@ -356,29 +355,25 @@ public sealed class GestureRecognizer
             }
 
             DisplayPoint p = Mapper.Map(t.X, t.Y);
-            if (_tapFingers > 0 && t.PointerId == _tapId0)
+            if (_tapSlots > 0 && t.PointerId == _tapId0)
             {
                 _tapPending &= Distance(p, _tapLand0) <= slop;
             }
-            else if (_tapFingers > 1 && t.PointerId == _tapId1)
+            else if (_tapSlots > 1 && t.PointerId == _tapId1)
             {
                 _tapPending &= Distance(p, _tapLand1) <= slop;
             }
-            else if (_tapFingers == 0)
+            else if (_tapSlots == 0)
             {
                 _tapId0 = t.PointerId;
                 _tapLand0 = p;
-                _tapFingers = 1;
-            }
-            else if (_tapFingers == 1)
-            {
-                _tapId1 = t.PointerId;
-                _tapLand1 = p;
-                _tapFingers = 2;
+                _tapSlots = 1;
             }
             else
             {
-                _tapPending = false; // a third finger in this sequence
+                _tapId1 = t.PointerId;
+                _tapLand1 = p;
+                _tapSlots = 2;
             }
         }
 
@@ -401,6 +396,7 @@ public sealed class GestureRecognizer
         }
 
         int count = 0;
+        int keptBefore = kept;
         for (int i = 0; i < touches.Length; i++)
         {
             TouchSample t = touches[i];
@@ -414,6 +410,12 @@ public sealed class GestureRecognizer
             {
                 _scratch[kept++] = t.PointerId;
             }
+        }
+
+        _landed = kept - keptBefore;
+        if (_landed > 0)
+        {
+            _firstLandedId = _scratch[keptBefore];
         }
 
         Array.Copy(_scratch, _order, kept);
@@ -479,15 +481,9 @@ public sealed class GestureRecognizer
 
     private void EmitTouchDown(ReadOnlySpan<TouchSample> touches, long timestampUs)
     {
-        for (int i = 0; i < touches.Length; i++)
-        {
-            if (touches[i].Contact)
-            {
-                DisplayPoint at = Mapper.Map(touches[i].X, touches[i].Y);
-                _sink.OnGestureEvent(new GestureEvent(GestureKind.TouchDown, GesturePhase.Began, 0, 0, 1, 0, at, false, timestampUs));
-                return;
-            }
-        }
+        TryFind(touches, _firstLandedId, out TouchSample first);
+        DisplayPoint at = Mapper.Map(first.X, first.Y);
+        _sink.OnGestureEvent(new GestureEvent(GestureKind.TouchDown, GesturePhase.Began, 0, 0, 1, 0, at, false, timestampUs));
     }
 
     private void Emit(GesturePhase phase, double dx, double dy, double scale, double rotation, DisplayPoint center, bool synthetic, long timestampUs)

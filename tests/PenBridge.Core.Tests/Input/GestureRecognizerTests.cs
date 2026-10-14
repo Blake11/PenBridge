@@ -228,4 +228,24 @@ public class GestureRecognizerTests
         Assert.Empty(Gestures);
         Assert.Equal(0, _rec.ContactCount);
     }
+
+    [Fact]
+    public void Cancel_with_fingers_down_blocks_until_all_lift()
+    {
+        Two(400, 500, 600, 500);
+        Two(400, 560, 600, 560);
+        _rec.Cancel(0);
+        Assert.Equal([GesturePhase.Began, GesturePhase.Cancelled], Phases());
+        Assert.False(_rec.IsActive);
+
+        // Frames resume with the fingers still down and moving: nothing new starts.
+        Two(400, 600, 600, 600);
+        Two(400, 700, 600, 700);
+        Assert.Equal(2, Gestures.Count);
+
+        _rec.Process([], false, 0);
+        Two(400, 500, 600, 500);
+        Two(400, 560, 600, 560);
+        Assert.Equal(GesturePhase.Began, Gestures[^1].Phase);
+    }
 }

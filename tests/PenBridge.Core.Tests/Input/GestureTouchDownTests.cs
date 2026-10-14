@@ -39,14 +39,42 @@ public class GestureTouchDownTests
     }
 
     [Fact]
-    public void Later_fingers_and_frames_emit_no_more()
+    public void Every_frame_with_a_new_contact_emits_one_at_the_new_finger()
     {
         _rec.Process([F(1, 400, 500)], false, 0);
+        _rec.Process([F(1, 400, 500)], false, 5);
         _rec.Process([F(1, 400, 500), F(2, 600, 500)], false, 10);
         _rec.Process([F(1, 400, 500), F(2, 600, 500), F(3, 500, 300)], false, 20);
-        _rec.Process([F(2, 600, 500)], false, 30);
-        _rec.Process([F(2, 600, 500), F(4, 100, 100)], false, 40);
+        _rec.Process([F(2, 600, 500)], false, 30); // lifts emit nothing
+        _rec.Process([F(2, 600, 500), F(1, 100, 100)], false, 40); // a re-landing finger (pointer id reused)
+
+        GestureEvent[] downs = TouchDowns();
+        Assert.Equal([0L, 10L, 20L, 40L], downs.Select(d => d.TimestampUs));
+        Assert.Equal(600, downs[1].Center.X, 0.1);
+        Assert.Equal(300, downs[2].Center.Y, 0.1);
+        Assert.Equal(100, downs[3].Center.X, 0.1);
+    }
+
+    [Fact]
+    public void A_finger_landing_mid_scroll_emits_one()
+    {
+        _rec.Process([F(1, 400, 500), F(2, 600, 500)], false, 0);
+        _rec.Process([F(1, 400, 560), F(2, 600, 560)], false, 10);
+        _rec.Process([F(1, 400, 570), F(2, 600, 570), F(3, 100, 100)], false, 20);
+        Assert.Equal(2, TouchDowns().Length);
+    }
+
+    [Fact]
+    public void None_after_cancel_until_all_fingers_lift()
+    {
+        _rec.Process([F(1, 400, 500), F(2, 600, 500)], false, 0);
+        _rec.Cancel(10);
+        _rec.Process([F(1, 400, 500), F(2, 600, 500)], false, 20);
+        _rec.Process([F(1, 400, 500), F(2, 600, 500), F(3, 100, 100)], false, 30);
         Assert.Single(TouchDowns());
+        _rec.Process([], false, 40);
+        _rec.Process([F(1, 400, 500)], false, 50);
+        Assert.Equal(2, TouchDowns().Length);
     }
 
     [Fact]

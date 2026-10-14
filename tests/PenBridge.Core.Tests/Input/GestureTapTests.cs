@@ -230,4 +230,14 @@ public class GestureTapTests
         Lift(60);
         Assert.Empty(_sink.Gestures);
     }
+
+    [Fact]
+    public void A_finger_re_landing_with_a_reused_pointer_id_is_no_tap()
+    {
+        Frame(0, false, F(1, 400, 500), F(2, 600, 500));
+        Frame(30, false, F(2, 600, 500));
+        Frame(60, false, F(2, 600, 500), F(1, 400, 500)); // Android reuses the lifted finger's id
+        Lift(90);
+        Assert.Empty(Taps());
+    }
 }

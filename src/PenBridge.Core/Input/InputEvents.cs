@@ -62,10 +62,10 @@ public enum GestureKind : byte
     Tap = 3,
 
     /// <summary>
-    /// Fingers landed: the contact count went from 0 to at least 1 while gestures were not blocked by the pen. A single
-    /// informational event with <see cref="GesturePhase.Began"/>, no deltas, at the first contact's position; later
-    /// fingers and further frames emit none. The Mac uses it to stop a scroll coast at once (ADR-0023: a new touch
-    /// stops momentum). Never active; nothing ends it.
+    /// A finger landed: a contact appeared that was not in the previous frame, while gestures were not blocked (pen,
+    /// cancel). One informational event per such frame with <see cref="GesturePhase.Began"/>, no deltas, at the first
+    /// new contact's position; frames without a new contact emit none. The Mac uses it to stop a scroll coast at once
+    /// (ADR-0023: a finger landing stops momentum). Never active; nothing ends it.
     /// </summary>
     TouchDown = 4,
 }
@@ -100,7 +100,7 @@ public enum GesturePhase : byte
 /// </param>
 /// <param name="Center">
 /// Current centroid of the two tracked fingers in display points (Tap: their landing midpoint; TouchDown: the first
-/// contact in the frame).
+/// new contact).
 /// </param>
 /// <param name="Synthetic">True when synthesized by the watchdog or a reset.</param>
 /// <param name="TimestampUs">Monotonic µs since session start, same clock as <see cref="PenEvent.TimestampUs"/>.</param>

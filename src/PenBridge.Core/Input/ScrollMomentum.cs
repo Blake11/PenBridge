@@ -41,15 +41,17 @@ public sealed record ScrollMomentumOptions
 /// Usage (Mac head): feed every <see cref="GestureEvent"/> to <see cref="Observe"/> (or call <see cref="AddSample"/>
 /// for scroll Began/Changed deltas, <see cref="TryStart"/> on Ended and <see cref="Reset"/> on Cancelled). When it
 /// starts coasting, arm a one-shot timer for <see cref="ScrollMomentumOptions.TickInterval"/>; on each tick call
-/// <see cref="Step"/> with the current time on the event clock, post the step while it returns true and re-arm, and
-/// post the momentum end when it returns false. Call <see cref="Reset"/> to stop at once (pen in range, new touch,
+/// <see cref="Step"/> with the time elapsed since the release on the head's own clock (e.g. since the Ended event
+/// was handled), post the step while it returns true and re-arm, and post the momentum end when it returns false. Call <see cref="Reset"/> to stop at once (pen in range, new touch,
 /// pause, watchdog, session end). No timer runs while idle.
 /// </para>
 /// <para>
 /// The steps are deterministic: the coast position is v0·τ·(1 − e^(−t/τ)) since release, and each step is the
-/// difference since the previous one, so the total does not depend on the tick rate. The coast stops at the stop
-/// speed, so it covers (v0 − StopSpeed)·τ. Time is the
-/// <see cref="GestureEvent.TimestampUs"/> clock (µs). Not thread-safe; allocation-free after construction.
+/// difference since the previous one, so the total does not depend on the tick rate. The coast ends at
+/// <see cref="DurationUs"/> (where the speed reaches the stop speed), so it always covers exactly (v0 − StopSpeed)·τ:
+/// a late tick is clamped to the end and returns the remainder. Velocity estimation uses the
+/// <see cref="GestureEvent.TimestampUs"/> clock; stepping only needs elapsed time, on any clock (µs). Not thread-safe;
+/// allocation-free after construction.
 /// </para>
 /// </remarks>
 public sealed class ScrollMomentum
@@ -67,9 +69,9 @@ public sealed class ScrollMomentum
     private int _count;
     private double _v0x;
     private double _v0y;
-    private double _speed0;
-    private long _startUs;
+    private long _durationUs;
     private long _lastStepUs;
+    private bool _finished;
     private double _emittedX;
     private double _emittedY;
 
@@ -105,12 +107,10 @@ public sealed class ScrollMomentum
     public double ReleaseVelocityY => IsCoasting ? _v0y : 0;
 
     /// <summary>
-    /// Event time (µs) at which the coast ends (the speed reaches <see cref="ScrollMomentumOptions.StopSpeed"/>);
+    /// Coast length in µs after the release (the speed reaches <see cref="ScrollMomentumOptions.StopSpeed"/> then);
     /// 0 when not coasting.
     /// </summary>
-    public long EndTimeUs => IsCoasting
-        ? _startUs + (long)Math.Ceiling(_tauSeconds * Math.Log(_speed0 / Options.StopSpeed) * 1e6)
-        : 0;
+    public long DurationUs => IsCoasting ? _durationUs : 0;
 
     /// <summary>
     /// Routes one gesture event: scroll Began clears and records, Changed records, Ended tries to start coasting,
@@ -204,9 +204,9 @@ public sealed class ScrollMomentum
 
         _v0x = vx;
         _v0y = vy;
-        _speed0 = speed;
-        _startUs = releaseUs;
-        _lastStepUs = releaseUs;
+        _durationUs = Math.Max(1, (long)Math.Ceiling(_tauSeconds * Math.Log(speed / Options.StopSpeed) * 1e6));
+        _lastStepUs = 0;
+        _finished = false;
         _emittedX = 0;
         _emittedY = 0;
         IsCoasting = true;
@@ -214,11 +214,13 @@ public sealed class ScrollMomentum
     }
 
     /// <summary>
-    /// Advances the coast to <paramref name="nowUs"/> (event clock). Returns true with the displacement since the
-    /// previous step (post it as a momentum-phase scroll); returns false with zero deltas when the coast has ended or
-    /// is not running (post the momentum end once). A time before the previous step yields a zero step.
+    /// Advances the coast to <paramref name="elapsedUs"/> µs after the release (any clock). Returns true with the
+    /// displacement since the previous step (post it as a momentum-phase scroll). A time at or past
+    /// <see cref="DurationUs"/> is clamped to it and returns the final remainder; the call after that returns false
+    /// with zero deltas (post the momentum end once), as does any call while not coasting. A time before the previous
+    /// step yields a zero step.
     /// </summary>
-    public bool Step(long nowUs, out double dx, out double dy)
+    public bool Step(long elapsedUs, out double dx, out double dy)
     {
         dx = 0;
         dy = 0;
@@ -227,19 +229,25 @@ public sealed class ScrollMomentum
             return false;
         }
 
-        if (nowUs < _lastStepUs)
-        {
-            nowUs = _lastStepUs;
-        }
-
-        double t = (nowUs - _startUs) / 1e6;
-        double decay = Math.Exp(-t / _tauSeconds);
-        if (_speed0 * decay < Options.StopSpeed)
+        if (_finished)
         {
             IsCoasting = false;
+            _finished = false;
             return false;
         }
 
+        if (elapsedUs < _lastStepUs)
+        {
+            elapsedUs = _lastStepUs;
+        }
+
+        if (elapsedUs >= _durationUs)
+        {
+            elapsedUs = _durationUs;
+            _finished = true;
+        }
+
+        double decay = Math.Exp(-(elapsedUs / 1e6) / _tauSeconds);
         double travelled = _tauSeconds * (1 - decay);
         double x = _v0x * travelled;
         double y = _v0y * travelled;
@@ -247,7 +255,7 @@ public sealed class ScrollMomentum
         dy = y - _emittedY;
         _emittedX = x;
         _emittedY = y;
-        _lastStepUs = nowUs;
+        _lastStepUs = elapsedUs;
         return true;
     }
 
