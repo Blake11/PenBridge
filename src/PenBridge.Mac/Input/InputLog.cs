@@ -20,4 +20,7 @@ internal static partial class InputLog
 
     [LoggerMessage(104, LogLevel.Warning, "No active display: pen input is dropped until a display is available")]
     public static partial void NoDisplays(ILogger logger);
+
+    [LoggerMessage(105, LogLevel.Information, "Natural scrolling: {Natural}")]
+    public static partial void NaturalScrolling(ILogger logger, bool natural);
 }

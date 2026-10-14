@@ -79,6 +79,7 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
     private readonly long _doubleClickNs;
     private readonly NSObject _accessibilityObserver;
     private readonly CGEventGestureInjector _gestures;
+    private readonly NaturalScrolling _naturalScrolling;
     private TabletPostedState _state;
     private HostClockAnchor _clock;
     private ClickState _leftClicks;
@@ -103,7 +104,8 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
         _source = new CGEventSource(CGEventSourceStateID.HidSystem);
         _sourceHandle = _source.Handle;
         _doubleClickNs = (long)(NSEvent.DoubleClickInterval * 1e9);
-        _gestures = new CGEventGestureInjector(_gate, _sourceHandle, () => _trusted);
+        _naturalScrolling = new NaturalScrolling(_logger);
+        _gestures = new CGEventGestureInjector(_gate, _sourceHandle, () => _trusted, _naturalScrolling);
 
         // Broadcast by the system when the Accessibility (AX trust) list changes.
         _accessibilityObserver = NSDistributedNotificationCenter.DefaultCenter.AddObserver(
@@ -298,6 +300,7 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
 
         NSDistributedNotificationCenter.DefaultCenter.RemoveObserver(_accessibilityObserver);
         _accessibilityObserver.Dispose();
+        _naturalScrolling.Dispose();
         _source.Dispose();
     }
 

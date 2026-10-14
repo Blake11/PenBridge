@@ -81,6 +81,7 @@ internal sealed class CGEventGestureInjector : IDisposable
     private readonly Lock _gate;
     private readonly IntPtr _source;
     private readonly Func<bool> _trusted;
+    private readonly NaturalScrolling _naturalScrolling;
     private readonly ScrollMomentum _momentum;
     private readonly TimeSpan _tickInterval;
     private readonly TimerCallback _onCoastTick;
@@ -110,12 +111,15 @@ internal sealed class CGEventGestureInjector : IDisposable
     /// <param name="gate">The owner's lock; held on every call, taken by the coast timer.</param>
     /// <param name="source">The owner's CGEventSource handle (HID system state), alive for this object's lifetime.</param>
     /// <param name="trusted">Whether posting is allowed (Accessibility granted); read per post.</param>
+    /// <param name="naturalScrolling">The cached natural-scrolling setting, read at each scroll start.</param>
     /// <param name="momentum">Momentum model options; null = Core defaults.</param>
-    public CGEventGestureInjector(Lock gate, IntPtr source, Func<bool> trusted, ScrollMomentumOptions? momentum = null)
+    public CGEventGestureInjector(
+        Lock gate, IntPtr source, Func<bool> trusted, NaturalScrolling naturalScrolling, ScrollMomentumOptions? momentum = null)
     {
         _gate = gate;
         _source = source;
         _trusted = trusted;
+        _naturalScrolling = naturalScrolling;
         _momentum = new ScrollMomentum(momentum);
         _tickInterval = _momentum.Options.TickInterval;
         _onCoastTick = OnCoastTick;
@@ -247,7 +251,7 @@ internal sealed class CGEventGestureInjector : IDisposable
                     PostScroll(0, 0, 0, 0, PhaseCancelled, 0); // never leave a phase open
                 }
 
-                _natural = NaturalScrolling.Read();
+                _natural = _naturalScrolling.Value;
                 _remainderX = 0;
                 _remainderY = 0;
                 _scrollOpen = true;
