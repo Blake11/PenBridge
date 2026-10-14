@@ -66,6 +66,11 @@ Rule: platform apps contain only platform glue; anything testable without a devi
 - **Versioning**: the protocol version is in the hello and the TXT record. A major mismatch is refused with a clear message on both sides.
 - **Wire contract**: the exact message table, datagram layout and key schedule are in `docs/specs/phase-1-core.md`, with all integers big-endian.
 - **Serialization**: hand-written `BinaryPrimitives`/`Span<T>`, with no reflection. It must stay trim/AOT-safe and allocation-free on the hot path.
+- **Diagnostics (latency)**: off by default; enabled with `PENBRIDGE_LATENCY_LOG=1` or `scripts/latency-report.sh --enable` (the `PenBridgeLatencyLog` user default), then restart the Mac app.
+  - The server (`PenBridge.Core.Diagnostics`) records each input frame's `timeUs`, arrival and inject time, the phone's Pings and its own Ping round trips into a preallocated ring buffer. Nothing is logged per frame.
+  - Dumps go to `~/Library/Logs/PenBridge/latency-*.tsv` (0600) at session end, on SIGUSR1 and on quit. `scripts/latency-report.sh` prints p50/p95/max and the counts.
+  - What's measured: phone `SendState` → the Mac injector returned. The phone's own dispatch (MotionEvent → `SendState`) isn't on the wire, so it isn't included.
+  - The clock offset is min(one-way Ping) − minRTT/2, with a drift fit, so no protocol change is needed. Its error is within ±minRTT/2, reported per session.
 
 ## Roadmap
 

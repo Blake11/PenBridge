@@ -24,13 +24,18 @@ internal static class Program
         Usage:
           penbridge-sim pair --host <host> [--port <port>] --pin <pin>   Pair with the PIN shown on the Mac
           penbridge-sim pair --qr "<penbridge://pair?...>"                Pair with a QR payload
-          penbridge-sim draw <script> [--host <host>] [--port <port>]     Reconnect to the last paired Mac and draw
+          penbridge-sim draw <script> [--host <host>] [--port <port>] [--repeat <n>]
+                                                                          Reconnect to the last paired Mac and draw
           penbridge-sim serve [--port <port>]                             Run a server here that prints its input
           penbridge-sim scripts                                           List the draw scripts
 
         Options:
           --in-process-server   pair/draw against a server started in this process (no Mac app needed)
           --verbose             debug logging
+
+        PENBRIDGE_LATENCY_LOG=1 turns on the in-process/serve server's latency capture (dumped as
+        latency-sim-*.tsv next to the Mac app's dumps; scripts/latency-report.sh prints them). Pings run every
+        2 s, so draw for a few seconds (--repeat) to get a clock-offset estimate.
 
         Scripts: line, circle, pressure-ramp, tilt-sweep, hover, button-click, two-finger-scroll, pinch,
                  packet-loss (a circle with 20% of datagrams dropped)
@@ -163,6 +168,11 @@ internal static class Program
             return Fail("draw needs a script: " + string.Join(", ", DrawScripts.Names));
         }
 
+        int repeat = args.Value("--repeat") is { } r
+            ? int.TryParse(r, NumberStyles.None, CultureInfo.InvariantCulture, out int n) && n is > 0 and <= 10_000
+                ? n
+                : throw new ArgumentException("--repeat must be 1-10000.")
+            : 1;
         DatagramFilter? filter = script == DrawScripts.PacketLoss ? static _ => Random.Shared.NextDouble() >= 0.2 : null;
         InProcessServer? local = null;
         PenBridgeClient client;
@@ -199,15 +209,18 @@ internal static class Program
             {
                 Console.WriteLine($"Drawing '{script}' to '{PeerText.Sanitize(client.ServerName)}'...");
                 int sent = 0;
-                foreach (ScriptFrame frame in frames)
+                for (int pass = 0; pass < repeat; pass++)
                 {
-                    if (!client.SendState(frame.Pen, frame.Touches, frame.History))
+                    foreach (ScriptFrame frame in frames)
                     {
-                        return Fail("The connection closed while drawing.");
-                    }
+                        if (!client.SendState(frame.Pen, frame.Touches, frame.History))
+                        {
+                            return Fail("The connection closed while drawing.");
+                        }
 
-                    sent++;
-                    await Task.Delay(frame.Delay, ct);
+                        sent++;
+                        await Task.Delay(frame.Delay, ct);
+                    }
                 }
 
                 await Task.Delay(TimeSpan.FromMilliseconds(300), ct); // let release repeats and the server catch up
@@ -261,11 +274,18 @@ internal static class Program
     {
         private readonly ServerIdentity _identity;
 
-        private InProcessServer(ServerIdentity identity, PenBridgeServer server, LoggingInputSink sink)
+        private readonly LatencyCapture? _latency;
+
+        private InProcessServer(ServerIdentity identity, PenBridgeServer server, LoggingInputSink sink, LatencyCapture? latency)
         {
             _identity = identity;
             Server = server;
             Sink = sink;
+            _latency = latency;
+            if (latency is not null)
+            {
+                server.SessionEnded += (_, _) => latency.Dump("session end");
+            }
         }
 
         public PenBridgeServer Server { get; }
@@ -279,6 +299,7 @@ internal static class Program
                 : new InMemorySecretStore();
             ServerIdentity identity = ServerIdentity.LoadOrCreate(store);
             var sink = new LoggingInputSink(Console.Out);
+            LatencyCapture? latency = LatencyCapture.CreateIfEnabled();
             var server = new PenBridgeServer(new PenBridgeServerOptions
             {
                 Identity = identity,
@@ -288,6 +309,7 @@ internal static class Program
                 Port = port ?? ProtocolInfo.DefaultPort,
                 TargetDisplay = new DisplayRect(0, 0, 1512, 982),
                 LoggerFactory = loggers,
+                LatencyRecorder = latency?.Recorder,
             });
             server.Start();
             if (!persistent)
@@ -295,12 +317,13 @@ internal static class Program
                 server.OpenPairingWindow();
             }
 
-            return new InProcessServer(identity, server, sink);
+            return new InProcessServer(identity, server, sink, latency);
         }
 
         public async ValueTask DisposeAsync()
         {
             await Server.DisposeAsync();
+            _latency?.Dump("server stopped");
             _identity.Dispose();
         }
     }

@@ -1,5 +1,6 @@
 using System.Net;
 using Microsoft.Extensions.Logging;
+using PenBridge.Core.Diagnostics;
 using PenBridge.Core.Input;
 using PenBridge.Core.Security;
 
@@ -72,6 +73,12 @@ public sealed class PenBridgeServerOptions
     public PenStateTrackerOptions? TrackerOptions { get; init; }
 
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
+
+    /// <summary>
+    /// Debug latency capture (off when null, the default): input frames, client Pings and server Ping round trips go
+    /// into this preallocated ring buffer, timestamped with <see cref="TimeProvider"/>. Nothing is logged per frame.
+    /// </summary>
+    public LatencyRecorder? LatencyRecorder { get; init; }
 
     public ILoggerFactory? LoggerFactory { get; init; }
 }

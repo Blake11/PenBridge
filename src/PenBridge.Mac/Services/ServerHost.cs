@@ -98,6 +98,7 @@ public sealed partial class ServerHost : IAsyncDisposable
     private readonly ILogger _log;
     private readonly TimeProvider _time;
     private readonly ISecretStore _secrets;
+    private readonly LatencyLog? _latency;
     private ServerIdentity? _identity;
     private PairedDeviceRegistry? _registry;
     private readonly BonjourAdvertiser _bonjour;
@@ -133,6 +134,7 @@ public sealed partial class ServerHost : IAsyncDisposable
         _loggers = loggers;
         _log = loggers.CreateLogger<ServerHost>();
         _time = timeProvider ?? TimeProvider.System;
+        _latency = LatencyLog.CreateIfEnabled(loggers, _time);
         _bonjour = new BonjourAdvertiser(loggers.CreateLogger<BonjourAdvertiser>());
         _sink.SetPaused(settings.Paused);
         _accessibilityMissing = !AccessibilityStatus.IsTrusted();
@@ -308,6 +310,7 @@ public sealed partial class ServerHost : IAsyncDisposable
         StopWatching();
         _bonjour.Dispose();
         _identity?.Dispose();
+        _latency?.Dispose();
     }
 
     private void StartWatching()
@@ -492,6 +495,7 @@ public sealed partial class ServerHost : IAsyncDisposable
             TargetRegion = _region,
             TimeProvider = _time,
             LoggerFactory = _loggers,
+            LatencyRecorder = _latency?.Recorder,
         });
         server.SessionStarted += OnSessionStarted;
         server.SessionEnded += OnSessionEnded;
@@ -576,6 +580,7 @@ public sealed partial class ServerHost : IAsyncDisposable
         }
 
         Log.SessionEnded(_log, PeerText.Sanitize(e.Session.DeviceName), e.Reason.ToString());
+        _latency?.DumpInBackground("session end");
         PublishState();
     });
 

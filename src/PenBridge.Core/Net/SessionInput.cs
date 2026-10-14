@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using PenBridge.Core.Diagnostics;
 using PenBridge.Core.Input;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
@@ -44,6 +45,7 @@ internal sealed class SessionInput : IDisposable
     private readonly ITimer _watchdog;
     private readonly Action<ulong>? _onAck;
     private readonly Action<Exception>? _onFault;
+    private readonly LatencyRecorder? _latency;
     private readonly double _budgetCapacity;
     private readonly double _budgetPerSecond;
 
@@ -86,7 +88,8 @@ internal sealed class SessionInput : IDisposable
         NormalizedRect region,
         int maxAuthFailuresPerSecond,
         Action<ulong>? onAck,
-        Action<Exception>? onFault)
+        Action<Exception>? onFault,
+        LatencyRecorder? latency = null)
     {
         _lock = inputLock;
         _time = time;
@@ -96,6 +99,7 @@ internal sealed class SessionInput : IDisposable
         _region = region;
         _onAck = onAck;
         _onFault = onFault;
+        _latency = latency;
         _budgetPerSecond = Math.Max(1, maxAuthFailuresPerSecond);
         _budgetCapacity = _budgetPerSecond * 2;
         _budget = _budgetCapacity;
@@ -192,6 +196,7 @@ internal sealed class SessionInput : IDisposable
     /// </summary>
     public void ProcessDatagram(Span<byte> datagram, SocketAddress source)
     {
+        long received = _latency is null ? 0 : _time.GetTimestamp();
         bool ack = false;
         ulong highest = 0;
         Exception? fault = null;
@@ -255,7 +260,7 @@ internal sealed class SessionInput : IDisposable
                 _ackTimer.Change(AckInterval - sinceAck, Timeout.InfiniteTimeSpan);
             }
 
-            fault = HandlePayloadLocked(datagram.Slice(InputDatagramHeader.Size, payloadLength), InputTransport.Udp);
+            fault = HandlePayloadLocked(datagram.Slice(InputDatagramHeader.Size, payloadLength), InputTransport.Udp, received);
         }
 
         if (ack)
@@ -269,6 +274,7 @@ internal sealed class SessionInput : IDisposable
     /// <summary>Handles a TLS-fallback InputFrame payload.</summary>
     public void ProcessInputFrame(ReadOnlySpan<byte> payload)
     {
+        long received = _latency is null ? 0 : _time.GetTimestamp();
         Exception? fault;
         lock (_lock)
         {
@@ -277,7 +283,7 @@ internal sealed class SessionInput : IDisposable
                 return;
             }
 
-            fault = HandlePayloadLocked(payload, InputTransport.Tls);
+            fault = HandlePayloadLocked(payload, InputTransport.Tls, received);
         }
 
         Report(fault);
@@ -385,7 +391,7 @@ internal sealed class SessionInput : IDisposable
         _onAck?.Invoke(highest);
     }
 
-    private Exception? HandlePayloadLocked(ReadOnlySpan<byte> payload, InputTransport transport)
+    private Exception? HandlePayloadLocked(ReadOnlySpan<byte> payload, InputTransport transport, long received)
     {
         if (!InputPayload.TryRead(payload, out InputPayload frame))
         {
@@ -422,8 +428,38 @@ internal sealed class SessionInput : IDisposable
         }
 
         _accepted++;
+        if (_latency is not null && _tracker.IsMapperConfigured)
+        {
+            RecordLatencyLocked(frame, transport, received);
+        }
+
         RearmLocked();
         return null;
+    }
+
+    /// <summary>Debug latency capture: one ring-buffer write, no allocation, no formatting.</summary>
+    private void RecordLatencyLocked(in InputPayload frame, InputTransport transport, long received)
+    {
+        LatencyFrameInfo flags = transport == InputTransport.Tls ? LatencyFrameInfo.Tls : LatencyFrameInfo.None;
+        if (frame.Pen is { } p)
+        {
+            if (IsInRange(p))
+            {
+                flags |= LatencyFrameInfo.PenInRange;
+            }
+
+            if ((p.State & PenState.Contact) != 0)
+            {
+                flags |= LatencyFrameInfo.PenContact;
+            }
+        }
+
+        if (frame.Touches.Length > 0)
+        {
+            flags |= LatencyFrameInfo.Touches;
+        }
+
+        _latency!.RecordInput(_cipher.SessionId, frame.TimeUs, received, _time.GetTimestamp(), flags);
     }
 
     private Exception? FaultLocked(Exception ex)

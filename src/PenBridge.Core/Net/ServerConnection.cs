@@ -374,7 +374,8 @@ internal sealed class ServerConnection
                 _options.TargetRegion,
                 _options.MaxAuthFailuresPerSecond,
                 OnUdpAck,
-                OnInputFault);
+                OnInputFault,
+                _options.LatencyRecorder);
             input.ForgedDatagramFlood += OnForgedFlood;
             Input = input;
             if (!_server.PublishInput(this, input) || RequestedReason is not null)
@@ -439,10 +440,12 @@ internal sealed class ServerConnection
 
                     break;
                 case ControlMessageType.Ping:
-                    await _channel.WriteAsync(new PongMessage(frame.Read<PingMessage>().TimestampUs)).ConfigureAwait(false);
+                    ulong pingUs = frame.Read<PingMessage>().TimestampUs;
+                    _options.LatencyRecorder?.RecordClientPing(input.SessionId, pingUs, _time.GetTimestamp());
+                    await _channel.WriteAsync(new PongMessage(pingUs)).ConfigureAwait(false);
                     break;
                 case ControlMessageType.Pong:
-                    UpdateRtt(frame.Read<PongMessage>().TimestampUs);
+                    UpdateRtt(frame.Read<PongMessage>().TimestampUs, input.SessionId);
                     break;
                 case ControlMessageType.Bye:
                     return SessionEndReason.PeerClosed;
@@ -522,12 +525,19 @@ internal sealed class ServerConnection
 
     private ulong NowUs() => (ulong)(_time.GetElapsedTime(_epoch).Ticks / TimeSpan.TicksPerMicrosecond);
 
-    private void UpdateRtt(ulong sentUs)
+    private void UpdateRtt(ulong sentUs, uint sessionId)
     {
-        ulong now = NowUs();
+        long received = _time.GetTimestamp();
+        ulong now = (ulong)(_time.GetElapsedTime(_epoch, received).Ticks / TimeSpan.TicksPerMicrosecond);
         if (sentUs <= now)
         {
             Volatile.Write(ref _rttTicks, (long)(now - sentUs) * TimeSpan.TicksPerMicrosecond);
+            if (_options.LatencyRecorder is { } latency)
+            {
+                // The Ping went out at _epoch + sentUs (Ping timestamps are microseconds since the epoch).
+                long sent = _epoch + (long)((double)sentUs * _time.TimestampFrequency / 1e6);
+                latency.RecordServerRtt(sessionId, sent, received);
+            }
         }
     }
 }

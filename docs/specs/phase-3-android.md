@@ -74,4 +74,10 @@ Wave 2 composes the wave-1 types. P3-C is the only workstream that edits the csp
   - two-finger scroll/pinch reaching the Mac recognizer (Phase 4 maps the actions);
   - reconnect after Wi-Fi toggles and after app background/foreground.
 - **Latency measurement:** pen-down → Mac event time, using the timestamps both sides already carry. Report p50/p95.
+  - **Diagnostics:**
+    - Run `scripts/latency-report.sh --enable` and restart the Mac app. Alternatively, launch the app with `PENBRIDGE_LATENCY_LOG=1`.
+    - Draw for 30 s or more: the 2 s Pings feed the offset estimate.
+    - End the session, or use `--dump-now`, then run `scripts/latency-report.sh` (add `--logcat` to save the phone log as well).
+  - **Measured:** phone `SendState` → Mac inject (`pen_down_to_inject`, `contact_to_inject`, `send_to_inject`, `send_to_receive`). This excludes MotionEvent → `SendState` on the phone.
+  - **Error:** the clock offset is accurate to ±minRTT/2, reported per session as `offset_error_ms`.
 - The user performs the Krita checks. The agent collects logcat and the Mac logs.
