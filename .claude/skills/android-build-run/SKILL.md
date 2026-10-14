@@ -7,7 +7,7 @@ description: Build, install, launch, and debug the PenBridge Android client (net
 
 Source of truth: `scripts/android-*.sh` (`--help`), `docs/development.md`. If they differ from this skill, fix the skill. SDK/JDK/workload problems → skill `toolchain`.
 
-App/package id `com.blake11.penbridge`. Scripts set `JAVA_HOME`/`ANDROID_HOME` per process and pass `-p:AndroidSdkDirectory`/`-p:JavaSdkDirectory`.
+App/package id `com.blake11.penbridge` (override per run with `--app-id`, see Parallel agents). Scripts set `JAVA_HOME`/`ANDROID_HOME` per process and pass `-p:AndroidSdkDirectory`/`-p:JavaSdkDirectory`.
 
 ## Emulator vs device
 | Need | Use |
@@ -31,10 +31,11 @@ Phone: Developer options ▸ Wireless debugging ▸ on (same Wi-Fi as the Mac, n
 ```bash
 scripts/android-device.sh pair <ip:pair-port> <6-digit-code>   # from "Pair device with pairing code" (expires when dialog closes)
 scripts/android-device.sh connect <ip:port>                    # "IP address & Port" on the main screen — different from pair port
+scripts/android-device.sh connect --auto                       # discover the current connect port via `adb mdns services`
 scripts/android-device.sh list
 scripts/android-device.sh disconnect [ip:port]
 ```
-Pairing persists; the connect port changes after reboot or toggling Wireless debugging → just `connect` again. Pairing needs the user to read the code off the phone.
+Pairing persists; the connect port changes after a reboot or a Wireless debugging/Wi-Fi toggle → `connect --auto` finds it (`_adb-tls-connect._tcp`; it never uses `_adb-tls-pairing._tcp`, whose port is only valid while the pairing dialog is open). With no service found or several phones advertising, it fails and lists them; pass `<ip:port>` then. Pairing needs the user to read the code off the phone.
 
 ## Run
 ```bash
@@ -42,10 +43,18 @@ scripts/android-run.sh --emulator [--logs]           # starts PenBridge_Tablet i
 scripts/android-run.sh --device <ip:port> --logs
 scripts/android-run.sh                               # the only connected device
 scripts/android-run.sh --release | --apk             # --apk: standalone APK + adb install -r (when -t:Run misbehaves)
+scripts/android-run.sh --app-id com.blake11.penbridge.agent2 [--apk] [--logs]   # -p:ApplicationId=…; install/launch/logcat that package
 scripts/android-run.sh --device <serial> --logs-only # attach logcat, no build
 scripts/android-run.sh ... -- <dotnet build args>
 ```
 Default deploy is `dotnet build -t:Run` (fast deployment). It builds, installs and launches but prints nothing after `Build succeeded` — confirm the launch with `adb -s <serial> logcat -d | grep "Displayed com.blake11.penbridge"` (and `adb shell pidof com.blake11.penbridge`); screenshot with `adb -s <serial> exec-out screencap -p > /tmp/x.png`. The activity class name is a `crc64…` hash (`com.blake11.penbridge/crc64….MainActivity`) unless `[Activity(Name = …)]` is set — use `monkey -p <pkg> -c android.intent.category.LAUNCHER 1` to launch, not `am start -n`. `--logs` = `adb logcat -v color,time --pid=<app pid>`; if the app isn't running it falls back to `AndroidRuntime:E DOTNET monodroid mono-rt PenBridge` tags.
+
+- **Standalone Debug APKs need `-p:EmbedAssembliesIntoApk=true`** (`--apk` passes it). Without it a Debug build uses fast deployment: the APK carries no .NET assemblies and only works when installed by `-t:Run`; an `adb install`ed copy cannot start.
+
+## Parallel agents
+- Each agent gets **its own AVD and its own ApplicationId**, so installs, app data and Keystore entries don't collide: `AVD_NAME=PenBridge_Tablet_2 scripts/android-run.sh --emulator --app-id com.blake11.penbridge.agent2`. `--emulator` picks the emulator running `$AVD_NAME` (`adb -s <serial> emu avd name`).
+- `scripts/android-emulator.sh` is single-emulator: `--stop` kills **every** emulator, and the boot wait uses `adb -e`, which fails once two emulators run. With another agent's emulator up, start yours with `AVD_NAME=… scripts/android-emulator.sh --no-wait`, wait with `adb -s emulator-<port> wait-for-device`, stop it with `adb -s emulator-<port> emu kill`.
+- **Only one agent uses the physical S23 at a time**; the architect grants turns. Without a turn, don't `connect`, install to, or inject on the phone.
 
 ## Release APK (what CI does)
 `dotnet publish src/PenBridge.Android/PenBridge.Android.csproj -c Release -p:AndroidPackageFormat=apk -p:AndroidKeyStore=false -o <dir>` (+ SDK/JDK dirs locally) → `<dir>/com.blake11.penbridge.apk` (**unsigned**, `apksigner` says "DOES NOT VERIFY") **and** `com.blake11.penbridge-Signed.apk` (signed with the **debug** key, installable). Release trims (ILLink "Optimizing assemblies for size" notice is informational, not a warning). Check version fields: `$ANDROID_HOME/build-tools/36.0.0/aapt2 dump badging <apk> | head -3`.
@@ -56,6 +65,7 @@ Default deploy is `dotnet build -t:Run` (fast deployment). It builds, installs a
 - Consume **historical samples** (`HistorySize`, `GetHistoricalX/Y/AxisValue`) or you drop well below 240 Hz; `RequestUnbufferedDispatch` for latency.
 - `Axis.Tilt` + `Axis.Orientation` → tilt X/Y conversion lives in Core (`Input/TiltConverter`, tested there). Android's input reader builds both axes from the digitizer's per-axis HID tilt (tx > 0 = pen top toward +x/right, ty > 0 = toward +y/the user): `orientation = atan2(-sin tx, sin ty)`, `tilt = acos(cos tx · cos ty)`. So orientation is where the **tip** points (0 = up, π/2 = right): a top leaning right gives −π/2. Exact inverse (φ = orientation, T = tilt, k = sin²φ·cos²φ): `r² = 2·sin²T / (1 + √(1 − 4k·sin²T))`, `tx = asin(−r·sin φ)`, `ty = asin(r·cos φ)`. `AXIS_ORIENTATION` is the tilt azimuth, not barrel twist (S Pen has none): send `Rotation = 0`.
 - Emulator: `adb shell input stylus swipe x1 y1 x2 y2 ms` injects `ToolType.Stylus` (pressure 1, no tilt/hover) — enough to exercise the stylus code path, not to verify it.
+- Since #68 (contact-size palm rejection) `adb shell input tap`/`swipe` (touchscreen, size 1.0) counts as a **palm** and is dropped. For finger-fallback tests on the emulator use `input stylus tap|swipe` instead.
 - API 36 on large screens (sw ≥ 600dp, e.g. the `PenBridge_Tablet` AVD) ignores `RequestedOrientation`; test orientation locks there with `adb shell wm set-ignore-orientation-request false` (restore with `true`). Phones (S23) honour it.
 - Ignore fingers/palm while the pen is in proximity; drop `FLAG_CANCELED` pointers.
 - **Observed on the S23 Ultra (SM-S918B, FHD+ 2316x1080 @ 376 dpi), pad with unbuffered dispatch:** ~440 stylus events/s in contact (median 2 ms apart), ~200/s hovering; `HistorySize` is almost always 0 (max 8, mostly on the first event) — unbuffered dispatch delivers samples individually. Pressure lowest contact value 16/65535 (≈0.0002), smooth ramp (p99 step 0.6%); a firm press reached ~44k (≈0.67), so don't expect 1.0. Tilt comes in whole degrees (centi-degree values are multiples of 100); leaning right ≈ up to +41°, toward the user up to +53°; tilt signs match the Core convention (lean right → tiltX > 0, toward the user → tiltY > 0). Side button = `StylusPrimary` both hovering and touching. HOVER_EXIT before DOWN and HOVER_ENTER after UP arrive as documented (the 120 ms range-exit delay bridges them). Tool type stays `Stylus` (no eraser end on the S23).

@@ -19,7 +19,8 @@ DEV_CERT_NAME="PenBridge Dev"
 ANDROID_API_LEVEL="${ANDROID_API_LEVEL:-36}"
 ANDROID_BUILD_TOOLS="${ANDROID_BUILD_TOOLS:-36.0.0}"
 ANDROID_SYSTEM_IMAGE="system-images;android-${ANDROID_API_LEVEL};google_apis;arm64-v8a"
-AVD_NAME="PenBridge_Tablet"
+AVD_NAME_DEFAULT="PenBridge_Tablet"
+AVD_NAME="${AVD_NAME:-$AVD_NAME_DEFAULT}"   # override per agent so parallel sessions get their own AVD
 AVD_DEVICE="${AVD_DEVICE:-pixel_tablet}"
 
 # The .NET 10 Android workload accepts JDK 17.0 .. 21.x (MinimumSupportedJavaVersion /
