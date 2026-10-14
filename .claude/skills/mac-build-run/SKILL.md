@@ -65,7 +65,7 @@ scripts/mac-run.sh -- <dotnet build args>   # e.g. -- -p:ValidateXcodeVersion=fa
 - Headless injection check (no Screen Recording needed): another process polling `CGEventGetLocation(CGEventCreate(NULL))` sees the cursor follow a SimClient `draw circle`.
 
 ## Gesture events (mac-gesture-events; ADR-0023, measured on macOS 27)
-Code: `src/PenBridge.Mac/Input/CGEventGestureInjector.cs` (two-finger).
+Code: `src/PenBridge.Mac/Input/CGEventGestureInjector.cs` (two-finger) and `CGEventSystemGestureInjector.cs` (three/four-finger).
 
 | What | How |
 |---|---|
@@ -83,6 +83,7 @@ Code: `src/PenBridge.Mac/Input/CGEventGestureInjector.cs` (two-finger).
 - Any posted mouse/scroll/gesture event **with a location** moves the cursor there; leave the location at the `CGEventCreate` default (current cursor) to keep it still. Posted click state is used as is (no automatic counting); mouse-up defaults to 0, so set it to the down's value.
 - Track which phases were actually posted open: after an Accessibility revoke the ends were skipped, so close them when the grant returns.
 - **Four-finger fallbacks** (Dock events type 30 / HID 23 did nothing on a Mac without a trackpad): ⌃↑ keycode 126 / ⌃↓ 125 (flags ctrl+fn) toggle Mission Control / App Exposé; F11 keycode 103 (fn) toggles show desktop; ⌃←/→ 123/124 switch Spaces; the launcher is `/System/Applications/Apps.app` (opening it again toggles it). Three-finger drag = LeftDown at the cursor, LeftDragged at previous + delta, LeftUp.
+- **Posted keystrokes leave their modifiers in the HID state:** after a key event with ⌃+fn flags, `CGEventSourceFlagsState(HID)` stays ⌃+fn and every later event created from a HID-state source inherits them (a pen click becomes a ⌃-click). Post a FlagsChanged (type 12) with the previous flags after the key-up. Check with `CGEventSource.flagsState(.hidSystemState)`.
 - **Headless verification:** a listen-only CGEventTap (fields), an NSView logging NSEvents (must be the active app for gestures), a local page reporting scroll/visualViewport/gesture*/contextmenu to a local HTTP server, AX sizes (Preview AXImage). Mission Control / App Exposé open = the Dock process's AX children gain an `AXGroup` with AXIdentifier `mc` / `appexpose` (needs Accessibility for the probe's host). Pair SimClient via the menu's "Pair new device…" and read the PIN through AX (PenBridge's AXExtrasMenuBar, then its window); a private `HOME` gives SimClient its own pairing store.
 
 ## Menu-bar shell notes (`src/PenBridge.Mac/Shell`)
