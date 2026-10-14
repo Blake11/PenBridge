@@ -411,10 +411,10 @@ internal sealed class CGEventGestureInjector : IDisposable
         _coastGeneration++; // a tick already queued sees a stale generation and does nothing
         timer.Dispose();
         _momentum.Reset();
-        if (_momentumBegun)
+        _momentumBegun = false;
+        if (_postedMomentumOpen)
         {
-            _momentumBegun = false;
-            PostScroll(0, 0, 0, 0, 0, MomentumEnd);
+            PostScroll(0, 0, 0, 0, 0, MomentumEnd); // only after a Begin that was actually posted
         }
     }
 
@@ -439,7 +439,7 @@ internal sealed class CGEventGestureInjector : IDisposable
 
                 long wholeX = GestureOutput.TakeWhole(wheelX, ref _remainderX);
                 long wholeY = GestureOutput.TakeWhole(wheelY, ref _remainderY);
-                PostScroll(wheelX, wheelY, wholeX, wholeY, 0, _momentumBegun ? MomentumContinue : MomentumBegin);
+                PostScroll(wheelX, wheelY, wholeX, wholeY, 0, _postedMomentumOpen ? MomentumContinue : MomentumBegin);
                 _momentumBegun = true;
                 timer.Change(_tickInterval, Timeout.InfiniteTimeSpan);
                 return;
@@ -449,10 +449,10 @@ internal sealed class CGEventGestureInjector : IDisposable
             _coastTimer = null;
             _coastGeneration++;
             timer.Dispose();
-            if (_momentumBegun)
+            _momentumBegun = false;
+            if (_postedMomentumOpen)
             {
-                _momentumBegun = false;
-                PostScroll(0, 0, 0, 0, 0, MomentumEnd);
+                PostScroll(0, 0, 0, 0, 0, MomentumEnd); // only after a Begin that was actually posted
             }
         }
     }
