@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PenBridge icon background (issue #101). Master for the Android adaptive background layer and the
+  macOS icon fill (scripts/gen-icons.sh turns the first and last stop into the Icon Composer gradient).
+
+  A vertical gradient around the Android theme's pb_primary_container (#1F3A55). One full-bleed
+  <rect> with one linearGradient (userSpaceOnUse, x1=x2), nothing else: the generator reads exactly that.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#27486A"/>
+      <stop offset="0.55" stop-color="#1F3A55"/>
+      <stop offset="1" stop-color="#16263A"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+</svg>

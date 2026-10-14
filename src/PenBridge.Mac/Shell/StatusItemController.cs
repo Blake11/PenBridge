@@ -24,11 +24,12 @@ namespace PenBridge.Mac.Shell;
 /// </remarks>
 public sealed partial class StatusItemController : IDisposable
 {
-    private const string IdleSymbol = "pencil.tip";
-    private const string ConnectedSymbol = "pencil.tip.crop.circle.fill";
-    private const string PausedSymbol = "pause.circle";
-    private const string WarningSymbol = "exclamationmark.triangle";
-    private const string ResumedFlashSymbol = "play.circle";
+    // Template glyphs of the app icon's mark (Resources/Assets.xcassets, generated from assets/icon/menubar-*.svg
+    // by scripts/gen-icons.sh): vector, 18 pt, tinted by the system for the light/dark menu bar.
+    private const string IdleImage = "MenuBarIdle";
+    private const string ConnectedImage = "MenuBarConnected";
+    private const string PausedImage = "MenuBarPaused";
+    private const string AttentionImage = "MenuBarAttention";
     private static readonly TimeSpan FlashDuration = TimeSpan.FromMilliseconds(600);
 
     private readonly ServerHost _host;
@@ -105,7 +106,8 @@ public sealed partial class StatusItemController : IDisposable
     {
         int generation = ++_flashGeneration;
         _flashing = true;
-        SetIcon(_host.State.Paused ? PausedSymbol : ResumedFlashSymbol, highlighted: true);
+        ServerHostState state = _host.State;
+        SetIcon(state.Paused ? PausedImage : RunningImage(state), highlighted: true);
         DispatchQueue.MainQueue.DispatchAfter(new DispatchTime(DispatchTime.Now, FlashDuration), () =>
         {
             if (generation == _flashGeneration && !_disposed)
@@ -194,32 +196,31 @@ public sealed partial class StatusItemController : IDisposable
         }
 
         ServerHostState state = _host.State;
-        string symbol;
+        string image;
         if (AccessibilityMissing || state.Status == ServerHostStatus.Failed || !_resolver.HasDisplay)
         {
-            symbol = WarningSymbol;
+            image = AttentionImage;
         }
         else if (state.Paused)
         {
-            symbol = PausedSymbol;
-        }
-        else if (state.Status == ServerHostStatus.Connected)
-        {
-            symbol = ConnectedSymbol;
+            image = PausedImage;
         }
         else
         {
-            symbol = IdleSymbol;
+            image = RunningImage(state);
         }
 
-        SetIcon(symbol, highlighted: false);
+        SetIcon(image, highlighted: false);
         _item.Button.ToolTip = "PenBridge: " + StatusText(state);
     }
 
-    private void SetIcon(string symbol, bool highlighted)
+    private static string RunningImage(ServerHostState state) =>
+        state.Status == ServerHostStatus.Connected ? ConnectedImage : IdleImage;
+
+    private void SetIcon(string name, bool highlighted)
     {
         NSStatusBarButton button = _item.Button;
-        NSImage? image = Image(symbol);
+        NSImage? image = Image(name);
         if (image is not null)
         {
             button.Image = image;
@@ -234,17 +235,19 @@ public sealed partial class StatusItemController : IDisposable
         button.Highlight(highlighted);
     }
 
-    private NSImage? Image(string symbol)
+    // Loaded once per name from the bundle's Assets.car; a missing image stays null and the button shows "PB".
+    private NSImage? Image(string name)
     {
-        if (!_images.TryGetValue(symbol, out NSImage? image))
+        if (!_images.TryGetValue(name, out NSImage? image))
         {
-            image = NSImage.GetSystemSymbol(symbol, "PenBridge");
+            image = NSImage.ImageNamed(name);
             if (image is not null)
             {
                 image.Template = true;
+                image.AccessibilityDescription = "PenBridge";
             }
 
-            _images[symbol] = image;
+            _images[name] = image;
         }
 
         return image;
