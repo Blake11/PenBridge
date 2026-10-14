@@ -51,7 +51,12 @@ Report in <200 words: what changed (paths), test results, deviations, bugs found
 ## 7. Ship
 - PR per workstream or per feature (skill `pr`) — only after the user approves pushing. The body says `Closes #<workstream issue>`.
 - Set `status: in progress` on the issue while in review; update progress.md; tick the epic task list when merged. Close the epic when all its tasks are done.
-- **Phase delivered (epic closes) → update `README.md`** (status, features, usage) in a `docs:` PR. User rule.
+- **Phase delivered → release it** (ADR-0021, skill `release`). After the phase is verified on devices:
+  1. Update `README.md` (status, features, usage, install) in a `docs:` PR. User rule.
+  2. Ask the user to dry-run `build-release.yml` with the target version and test those artifacts, if the pipeline or packaging changed.
+  3. The user merges the README PR (with `--body "Release-As: X.Y.Z"` when the version needs forcing: 1.0.0, or a fix-only phase), then the release PR. Never merge it yourself.
+  4. Smoke-test the published assets, then close the epic.
+- **Bug fixes between phases** get a patch release (1.1.1 …): after the fix is verified, re-raise the release PR with the user. If `main` already has the next phase's `feat` commits, follow skill `release` ("Versioning").
 
 ## 8. Learn
 - Run skill `capture-skill` on anything that surprised you or the subagents (flagged "learnings").

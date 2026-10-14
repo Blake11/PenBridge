@@ -162,3 +162,15 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
 - **Why not an SDK opt-out:** ML Kit has no public switch to disable its usage logging.
 - **Why not another scanner:** ZXing-style decoders are less robust on camera frames. The bundled ML Kit model works with the uploads cut at the manifest.
 - **Consequences:** a dependency update that adds a new uploader must be caught. Review the merged manifest (`obj/<config>/net10.0-android/android/AndroidManifest.xml`) for `datatransport`, `firebase` or analytics components when bumping ML Kit or CameraX. Applies to every future head and dependency.
+
+## ADR-0021 — Release at the end of every phase; 1.0.0 = Phase 3
+**Status:** accepted (2026-10-14). Refines the versioning part of ADR-0007; replaces roadmap Phase 6 ("Release pipeline live"). ADR-0007 never covered a release phase, so it isn't superseded.
+- **Context:** the roadmap held every release back for a separate Phase 6 after the MVP (phases 1–5). The pipeline (release-please + `build-release.yml`) already works, and Phase 3 is the first point where a phone draws on a Mac end to end.
+- **Decision:**
+  - There is no release phase. **Every phase ends with a release**, cut after the phase is verified on devices.
+  - **1.0.0** is the release at the end of Phase 3 (Android client). The first release is forced with a `Release-As: 1.0.0` commit footer.
+  - Each later phase release bumps the **minor** version (Phase 4 → 1.1.0, Phase 5 → 1.2.0 …).
+  - Bug fixes released between phases bump the **patch** version (1.1.1, 1.1.2 …). If `main` already has unreleased `feat` commits, a `Release-As: x.y.z` footer keeps it at patch.
+  - A **major** bump (`!` / `BREAKING CHANGE`) needs an explicit user decision; otherwise reword the commit or pin the version with `Release-As`.
+- **Why not keep Phase 6:** users would wait for phases 4 and 5 with a working app already on `main`, and the release pipeline would first run under pressure at the end.
+- **Consequences:** each phase's Ship step includes the README update and merging the release PR (skill `feature-workflow`). The Phase 6 epic (#15) closes as superseded by #88; its scope moves into #88. The 0.x line is skipped: no 0.2.0 is published.

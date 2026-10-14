@@ -103,10 +103,9 @@ The Mac server is built, and so is the phone's drawing pad. The phone's connect 
 | [3 — Android client](https://github.com/Blake11/PenBridge/milestone/3) ([#12](https://github.com/Blake11/PenBridge/issues/12)) | Drawing surface, S Pen ✅, Keystore, discovery, ClientHost ✅, palm rejection ✅, connect screens 🚧 ([#65](https://github.com/Blake11/PenBridge/issues/65)), on-device checks 🚧 ([#66](https://github.com/Blake11/PenBridge/issues/66)) | 🚧 In progress |
 | [4 — Gestures](https://github.com/Blake11/PenBridge/milestone/4) ([#13](https://github.com/Blake11/PenBridge/issues/13)) | Two-finger scroll, pinch-zoom | ⏳ Planned |
 | [5 — Settings](https://github.com/Blake11/PenBridge/milestone/5) ([#14](https://github.com/Blake11/PenBridge/issues/14)) | Display/region mapping, button mapping | ⏳ Planned |
-| [6 — Release](https://github.com/Blake11/PenBridge/milestone/6) ([#15](https://github.com/Blake11/PenBridge/issues/15)) | Mac `.dmg` and Android APK on GitHub Releases | ⏳ Planned |
 | [Later](https://github.com/Blake11/PenBridge/milestone/7) | [Windows host](https://github.com/Blake11/PenBridge/issues/28), [iOS client](https://github.com/Blake11/PenBridge/issues/18), [screen mirroring](https://github.com/Blake11/PenBridge/issues/16), [DriverKit digitizer](https://github.com/Blake11/PenBridge/issues/17), [Air Actions](https://github.com/Blake11/PenBridge/issues/19), [trackpad mode](https://github.com/Blake11/PenBridge/issues/20), [notarization](https://github.com/Blake11/PenBridge/issues/21), [Google Play](https://github.com/Blake11/PenBridge/issues/22) | ⏳ Later |
 
-The MVP is phases 1–5. All work is tracked in [issues](https://github.com/Blake11/PenBridge/issues) and [milestones](https://github.com/Blake11/PenBridge/milestones).
+The MVP is phases 1–5. **Every phase ends with a release** on [GitHub Releases](https://github.com/Blake11/PenBridge/releases): Phase 3 is **1.0.0**, each later phase bumps the minor version (1.1.0, 1.2.0 …), and bug-fix releases bump the patch. All work is tracked in [issues](https://github.com/Blake11/PenBridge/issues) and [milestones](https://github.com/Blake11/PenBridge/milestones).
 
 ## Requirements
 
@@ -121,16 +120,32 @@ The MVP is phases 1–5. All work is tracked in [issues](https://github.com/Blak
 
 ### For users
 
-> ⏳ **Coming soon:** builds will be published on [GitHub Releases](https://github.com/Blake11/PenBridge/releases) once Phase 6 lands.
+> ⏳ **Coming soon:** the first release, **1.0.0**, is published on [GitHub Releases](https://github.com/Blake11/PenBridge/releases) at the end of Phase 3.
 
-The Mac app will be ad-hoc signed and not notarized at first, so Gatekeeper warns on first launch. To open it:
+#### Install
+
+Download from the [latest release](https://github.com/Blake11/PenBridge/releases/latest):
+
+| File | For |
+|---|---|
+| `PenBridge-X.Y.Z-macos.dmg` (or `.zip`) | the Mac menu-bar app |
+| `PenBridge-X.Y.Z-android.apk` | the phone |
+| `SHA256SUMS` | checking the downloads: `shasum -a 256 -c SHA256SUMS --ignore-missing` |
+
+**Mac.** The app is ad-hoc signed and not notarized yet ([#21](https://github.com/Blake11/PenBridge/issues/21)), so Gatekeeper warns on first launch:
 
 1. Open the `.dmg` and drag **PenBridge** to **Applications**.
 2. In Finder, **right-click PenBridge → Open → Open**. On macOS 15+, if there's no Open button, launch it once, then click **Open Anyway** in **System Settings → Privacy & Security**.
    Or, in Terminal: `xattr -dr com.apple.quarantine /Applications/PenBridge.app`
-3. Grant **Accessibility** when PenBridge asks. It needs this to post pen events.
+3. Grant **Accessibility** when PenBridge asks. It needs this to post pen events. After an update you may have to remove PenBridge from the Accessibility list and add it again.
 
-Details are in [docs/releasing.md](docs/releasing.md#macos-signing).
+**Phone.** The APK isn't on Google Play, so sideload it:
+
+1. Download the `.apk` on the phone and open it.
+2. Allow installs from your browser or Files app when Android asks, then tap **Install**. If Play Protect warns, choose **More details → Install anyway**.
+   Or, from a computer: `adb install -r PenBridge-X.Y.Z-android.apk`
+
+Details are in [docs/releasing.md](docs/releasing.md#installing-the-android-apk-sideload) and [macOS signing](docs/releasing.md#macos-signing).
 
 ### For developers
 

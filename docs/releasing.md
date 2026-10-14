@@ -8,33 +8,95 @@ All apps share one version. It lives in `Directory.Build.props`:
 
 [release-please](https://github.com/googleapis/release-please) owns that line, `CHANGELOG.md` and `.release-please-manifest.json`. Don't edit them by hand.
 
+## When we release (ADR-0021)
+
+There is no release phase: **every roadmap phase ends with a release**, cut after the phase is verified on the Mac and the phone.
+
+| Release | Version | How release-please gets there |
+|---|---|---|
+| End of Phase 3 (Android client), the first release | **1.0.0** | `Release-As: 1.0.0` footer, once ([below](#cutting-100)) |
+| End of each later phase | next **minor**: 1.1.0, 1.2.0 … | automatic: the phase's `feat` commits bump the minor |
+| Bug fixes between phases | next **patch**: 1.1.1, 1.1.2 … | automatic if only `fix`/`perf` are unreleased; otherwise `Release-As` ([below](#patch-release-between-phases)) |
+| Breaking change (`!`, `BREAKING CHANGE:`) | next **major** | **only with an explicit user decision** ([below](#major-versions)) |
+
 ## Flow
 
 1. PRs are squash-merged into `main` with Conventional Commit titles.
 2. On every push to `main`, `.github/workflows/release-please.yml` opens or updates a **release PR** (`chore: release X.Y.Z`). That PR bumps the version and the changelog.
-   - `feat` → minor, `fix`/`perf` → patch, `!`/`BREAKING CHANGE` → major.
-   - Before 1.0 (`bump-minor-pre-major`), a breaking change bumps the minor version instead.
+   - From 1.0.0 on: `feat` → minor, `fix`/`perf` → patch, `!`/`BREAKING CHANGE` → major.
+   - Before 1.0 (`bump-minor-pre-major`), a breaking change bumps the minor version instead. That setting has no effect from 1.0.0 on.
+   - `docs`, `ci`, `chore`, `test`, `build`, `refactor` and `style` alone don't bump anything; they ride along with the next release.
    - Only `feat`, `fix`, `perf`, `revert`, `refactor` and `docs` appear in the changelog.
-3. Merging the release PR creates the tag `vX.Y.Z` and a GitHub release. The same workflow then calls `.github/workflows/build-release.yml`, which:
-   - builds `PenBridge.app` (Release), signs it ad-hoc with `scripts/mac-sign.sh <app> -` (each `Contents/MonoBundle` native library, then the bundle), and packages `PenBridge-X.Y.Z-macos.zip` and `PenBridge-X.Y.Z-macos.dmg` (`hdiutil`, with an Applications link)
-   - builds a release-signed `PenBridge-X.Y.Z-android.apk` with `ApplicationDisplayVersion=X.Y.Z` and `ApplicationVersion` (versionCode) `= major*1000000 + minor*1000 + patch`
+3. The release PR is held until the phase (or the fix) is verified. The user merges it; it never merges itself.
+4. Merging the release PR creates the tag `vX.Y.Z` and a GitHub release. The same workflow then calls `.github/workflows/build-release.yml`, which:
+   - builds `PenBridge.app` (Release, NativeAOT), checks the version in its `Info.plist`, signs it ad-hoc with `scripts/mac-sign.sh <app> -` (each `Contents/MonoBundle` native library, then the bundle), and packages `PenBridge-X.Y.Z-macos.zip` and `PenBridge-X.Y.Z-macos.dmg` (`hdiutil`, with an Applications link)
+   - builds a release-signed `PenBridge-X.Y.Z-android.apk` with `ApplicationDisplayVersion=X.Y.Z` and `ApplicationVersion` (versionCode) `= major*1000000 + minor*1000 + patch`, and checks with `apksigner` that the release key (not the debug key) signed it
    - writes `SHA256SUMS` and uploads everything to the release.
+
+   The release is public as soon as it's created; the assets follow about 15–30 minutes later.
 
 The iOS app is a placeholder and is not released.
 
-### Rebuilding assets by hand
+### Release-As footers
 
-Go to Actions → **Build release** → *Run workflow*.
-- With `tag` set to an existing release (e.g. `v0.2.0`), it rebuilds that tag and re-uploads the assets with `--clobber`. The tag must match the version in `Directory.Build.props` at that ref.
-- With `tag` empty, it only produces workflow artifacts. Without the keystore secret, the APK is unsigned.
-
-### Forcing a version
-
-Add a commit to `main` with a `Release-As: 1.0.0` footer:
+release-please reads a `Release-As: X.Y.Z` footer from any commit since the last release and uses that version for the next release PR. PRs are squash-merged, so the footer goes in the **squash commit body**:
 
 ```bash
-git commit --allow-empty -m "chore: release 1.0.0" -m "Release-As: 1.0.0"
+gh pr merge <N> -R Blake11/PenBridge --squash --body "Release-As: 1.0.0"
 ```
+
+`--body` replaces GitHub's default squash body. A footer only affects the release it lands before; afterwards normal bumping resumes.
+
+### Cutting 1.0.0
+
+1. Dry-run the build with the target version and test the artifacts on the Mac and the phone ([Dry run](#dry-run)).
+2. Merge the phase's last PR (normally the README update) with `--body "Release-As: 1.0.0"`.
+3. release-please retitles the open release PR to `chore: release 1.0.0`. Check its changelog.
+4. Let CI run on the release PR. Without `RELEASE_PLEASE_TOKEN` its runs wait for approval: open the PR's checks (or Actions) and click **Approve and run**.
+5. Merge the release PR. `v1.0.0`, the GitHub release and its assets follow.
+6. Smoke-test the published `.dmg` and APK, then close the phase epic.
+
+### Patch release between phases
+
+- Only `fix`/`perf` commits since the last release: release-please already proposes the patch. Merge the release PR.
+- `main` already has unreleased `feat` commits (the next phase has started): either
+  - land the fix with `--body "Release-As: 1.1.1"`. The release then also ships those `feat` commits, listed under Features, or
+  - release the fix alone: merge the fix and its release PR **before** merging further `feat` PRs. There is no hotfix branch set up; releasing from one needs a release-please run with `target-branch`, so ask first.
+
+### Major versions
+
+A `!` or `BREAKING CHANGE:` footer makes release-please propose the next major. That needs an explicit user decision; check PR titles for `!` before merging. If one slipped onto `main` without a decision, `main` can't be rewritten, so either:
+- edit the merged PR's description and add a block release-please reads instead of the commit message:
+  ```
+  BEGIN_COMMIT_OVERRIDE
+  feat(scope): the same subject, without the bang
+  END_COMMIT_OVERRIDE
+  ```
+- or pin the version with a `Release-As` footer on the next merge.
+
+Record the call in the release PR either way.
+
+### Dry run
+
+`build-release.yml` defaults to a dry run when started by hand: it builds every asset from the selected ref and keeps them as **workflow artifacts** (`release-mac`, `release-android`). No release or tag is touched. `version` stamps a future version, so the artifacts match what the release will ship:
+
+```bash
+gh workflow run build-release.yml -R Blake11/PenBridge --ref main -f dry_run=true -f version=1.0.0
+gh run watch -R Blake11/PenBridge "$(gh run list -R Blake11/PenBridge --workflow build-release.yml -L 1 --json databaseId --jq '.[0].databaseId')"
+gh run download -R Blake11/PenBridge <run-id> -D ~/Downloads/penbridge-dry-run
+```
+
+The run summary lists the SHA-256 of each asset and the APK signer. With the keystore secrets set, the APK is release-signed; without them it's unsigned (`-unsigned.apk`) and the run warns.
+
+### Rebuilding assets by hand
+
+To rebuild and re-upload the assets of an existing release (with `--clobber`):
+
+```bash
+gh workflow run build-release.yml -R Blake11/PenBridge -f tag=v1.0.0 -f dry_run=false
+```
+
+The tag must match the version in `Directory.Build.props` at that ref. `version` is rejected outside dry runs, and a non-dry run without `tag` fails, so nothing can be uploaded by accident.
 
 ## Secrets and variables
 
@@ -84,6 +146,22 @@ rm penbridge-release.jks.b64
 ```
 
 Never commit the `.jks` or the base64 file.
+
+## Installing the Android APK (sideload)
+
+PenBridge isn't on Google Play yet ([#22](https://github.com/Blake11/PenBridge/issues/22)), so the APK is sideloaded:
+
+1. On the phone, open the release page and download `PenBridge-X.Y.Z-android.apk`.
+2. Open the downloaded file. Android asks to allow installs from that app (the browser or Files): **Settings → Allow from this source**, then go back and tap **Install**.
+3. Google Play Protect may warn about an unknown developer: choose **More details → Install anyway**.
+
+Or from a computer with adb (USB or wireless debugging, `scripts/android-device.sh`):
+
+```bash
+adb install -r PenBridge-X.Y.Z-android.apk
+```
+
+Updates install over the previous version because every release is signed with the same key. A development build (debug-signed, from `scripts/android-run.sh`) has a different signature: uninstall it first (`adb uninstall com.blake11.penbridge`), which also deletes its pairings.
 
 ## macOS signing
 

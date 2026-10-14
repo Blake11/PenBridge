@@ -1,18 +1,32 @@
 ---
 name: release
-description: How PenBridge releases work — Conventional Commits → release-please release PR → build-release workflow producing the unsigned/ad-hoc macOS .dmg/.zip and signed Android APK on GitHub Releases; secrets, manual rebuilds, and unsigned-Mac-app caveats. Use when preparing or debugging a release, changing versioning, touching release workflows/secrets, or answering how users install the app.
+description: How PenBridge releases work — one release per roadmap phase (1.0.0 = Phase 3, minor per phase, patch for fixes), Conventional Commits → release-please release PR, Release-As footers, build-release (dry runs; producing the unsigned/ad-hoc macOS .dmg/.zip and signed Android APK on GitHub Releases); secrets, manual rebuilds, and unsigned-Mac-app caveats. Use when preparing or debugging a release, changing versioning, touching release workflows/secrets, or answering how users install the app.
 ---
 
 # Releases
 
 Details: `docs/releasing.md`, `.github/workflows/release-please.yml`, `.github/workflows/build-release.yml`, `release-please-config.json`. Update this skill if they change.
 
+## Versioning (ADR-0021)
+- **Every phase ends with a release**, after the phase is verified on devices. No separate release phase.
+- **1.0.0 = end of Phase 3.** Forced once with a `Release-As: 1.0.0` footer (the 0.x release PR is never merged as 0.x).
+- Later phases → next **minor** (1.1.0, 1.2.0 …): automatic from their `feat` commits. A phase with only fixes still needs `Release-As: x.(y+1).0`.
+- Fixes between phases → next **patch** (1.1.1 …): automatic if only `fix`/`perf` are unreleased. If `feat` commits already landed: `Release-As: x.y.z` (the feats ship in it) or release the fix before merging more feats. No hotfix branch exists; ask before building one.
+- **Major** (`!`/`BREAKING CHANGE`) only with an explicit user decision. If one lands by mistake: `BEGIN_COMMIT_OVERRIDE`…`END_COMMIT_OVERRIDE` in the merged PR's body, or `Release-As`.
+- **Footers and squash merges:** the footer must be in the squash commit body: `gh pr merge <N> --squash --body "Release-As: X.Y.Z"` (user runs it). It applies to the next release only.
+
 ## Flow
-1. PRs squash-merge into `main` with Conventional titles. `feat:` → minor, `fix:`/`perf:` → patch, `feat!:`/`BREAKING CHANGE:` → major (pre-1.0 per release-please config). `docs/ci/chore/test/refactor` don't release.
-2. `release-please.yml` (on push to main) maintains a release PR (version bump + CHANGELOG).
-3. Merging the release PR (user approval) creates tag `vX.Y.Z` + GitHub Release and calls `build-release.yml`.
-4. `build-release.yml` builds the macOS `.zip` + `.dmg` and the Android APK and uploads them to the release.
-- Rebuild assets for an existing tag: `gh workflow run build-release.yml -f tag=vX.Y.Z` (ask first). Without `tag` it only produces workflow artifacts.
+1. PRs squash-merge into `main` with Conventional titles. From 1.0: `feat:` → minor, `fix:`/`perf:` → patch, `!` → major. `docs/ci/chore/test/refactor/build/style` don't bump.
+2. `release-please.yml` (on push to main) maintains a release PR (version bump + CHANGELOG). The user holds it until the phase/fix is verified.
+3. Without `RELEASE_PLEASE_TOKEN` (#23), CI on the release PR waits for **Approve and run** in the PR's checks; required checks must pass before merging.
+4. Merging the release PR (user) creates tag `vX.Y.Z` + GitHub Release and calls `build-release.yml` (`dry_run: false`).
+5. `build-release.yml` builds the macOS `.zip` + `.dmg` (ad-hoc) and the release-signed APK (checked with `apksigner`: debug-key APKs fail), writes `SHA256SUMS`, uploads to the release.
+
+## Dry run and rebuilds (ask the user before running workflows)
+- **Dry run** (the `workflow_dispatch` default): builds the assets as workflow artifacts only, no release touched. `version` stamps a future version:
+  `gh workflow run build-release.yml -R Blake11/PenBridge --ref main -f dry_run=true -f version=1.0.0`, then `gh run download <id> -R Blake11/PenBridge`.
+- **Rebuild an existing release:** `gh workflow run build-release.yml -R Blake11/PenBridge -f tag=vX.Y.Z -f dry_run=false` (re-uploads with `--clobber`). Non-dry runs need a tag, and `version` is rejected outside dry runs.
+- Locally the same steps pass: `dotnet publish` (Mac, `-p:EnableCodeSigning=false`) → `scripts/mac-sign.sh --no-entitlements <app> -` → `ditto`/`hdiutil`; Android `dotnet publish -o <dir> -p:AndroidKeyStore=true …` emits `<id>.apk` (unsigned) and `<id>-Signed.apk`. `apksigner` needs a JDK on `PATH`.
 
 ## Secrets / vars (GitHub repo settings — never commit, never echo)
 - `RELEASE_PLEASE_TOKEN` (optional PAT so release PRs trigger CI; falls back to `GITHUB_TOKEN`).
@@ -41,4 +55,4 @@ Keep required check names (`name:`) unchanged when editing jobs, and add new pro
 ## Rules
 - Never create tags/releases manually or edit CHANGELOG by hand — release-please owns them.
 - Merging the release PR, running workflows, and setting secrets need user approval.
-- **Held release PR:** the user may hold the release PR on purpose (e.g. #1, until a usable MVP at the end of Phase 3; it also needs `RELEASE_PLEASE_TOKEN`, #23). Record the hold and its blocker in progress.md "Next steps"/the epic, and when the blocker clears re-raise it with the user (`gh pr list -R Blake11/PenBridge --label "autorelease: pending"`) — it never merges itself.
+- **Held release PR:** the release PR is held until the phase (or fix) is verified on devices (e.g. #1 until Phase 3 / 1.0.0, #88). Record the hold and its blocker in progress.md "Next steps"/the epic, and when the blocker clears re-raise it with the user (`gh pr list -R Blake11/PenBridge --label "autorelease: pending"`) — it never merges itself.
