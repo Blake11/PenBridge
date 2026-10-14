@@ -76,29 +76,31 @@ sequenceDiagram
 
 ## Features
 
-Everything below is the MVP design. The Mac and Android apps are still to be built, so these are **planned** (see [Status](#status)).
+The Mac server is built, and so is the phone's drawing pad. The phone's connect screens are next, so a real phone can't pair yet (see [Status](#status)). ✅ is built, ⏳ is planned.
 
-- ✍️ **Pressure and tilt** from the S Pen, sent as native macOS tablet events
-- 🫧 **Hover**: the cursor follows the pen before it touches the screen
-- 🔘 **S Pen side button**, mapped to right-click by default
-- 🖐️ **Palm rejection**: pen first, so fingers and palms are ignored while the pen is near
-- 👆 **Finger fallback** when there's no stylus
-- 🤏 **Two-finger scroll and pinch** gestures
-- 🧭 **Menu-bar app** with no Dock icon, and an optional **run at startup**
-- 🔐 **Secure pairing** with a PIN or QR code (J-PAKE), and **encryption** on every channel
-- ⚡ **Low latency** over UDP, keeping the S Pen's historical samples
-- 📲 **Multiple paired phones**; one draws at a time
+- ✅ ✍️ **Pressure and tilt** from the S Pen, sent as native macOS tablet events
+- ✅ 🫧 **Hover**: the cursor follows the pen before it touches the screen
+- ✅ 🔘 **S Pen side button**, mapped to right-click by default
+- ✅ 🖐️ **Palm rejection**: pen first, so fingers and palms are ignored while the pen is near
+- ✅ 👆 **Finger fallback** when there's no stylus
+- ✅ 🧭 **Menu-bar app** with no Dock icon: **run at startup**, a **pause hotkey** (⌃⌥⌘P), live connection stats, a display picker and **Open logs**
+- ✅ 🔐 **Secure pairing** with a PIN or QR code (J-PAKE) in a floating window on the Mac, and **encryption** on every channel
+- ✅ ⚡ **Low latency** over UDP, keeping the S Pen's historical samples
+- ✅ 🪶 **Light on the Mac**: a NativeAOT build with about a 20 MB footprint, a 168 ms launch and 0% CPU when idle
+- ✅ 📲 **Multiple paired phones**; one draws at a time
+- ⏳ 🤏 **Two-finger scroll and pinch** gestures ([Phase 4](https://github.com/Blake11/PenBridge/issues/13))
+- ⏳ 🗺️ **Region and button mapping** settings ([Phase 5](https://github.com/Blake11/PenBridge/issues/14))
 
 ## Status
 
-**Pre-alpha.** Nothing works end to end yet. The shared Core library is being built first, with tests, before the Mac and Android apps.
+**Pre-alpha.** The shared Core library and the Mac menu-bar server are done, and you can [try the server today](#try-the-mac-server-without-a-phone) with a simulated phone. The Android app already draws, with S Pen pressure, tilt, hover and palm rejection. Its connect screens are still being built, so it doesn't work end to end on a real phone yet.
 
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Repo bootstrap: conventions, CI/CD skeleton, toolchain | ✅ Done |
-| [1 — Core](https://github.com/Blake11/PenBridge/milestone/1) ([#10](https://github.com/Blake11/PenBridge/issues/10)) | Protocol ✅, security ✅, input processing ✅, network engine + SimClient 🚧 ([#9](https://github.com/Blake11/PenBridge/issues/9)) | 🚧 In progress |
-| [2 — Mac server](https://github.com/Blake11/PenBridge/milestone/2) ([#11](https://github.com/Blake11/PenBridge/issues/11)) | Menu bar, run at startup, Bonjour, pairing UI, Accessibility, CGEvent injector | ⏳ Planned |
-| [3 — Android client](https://github.com/Blake11/PenBridge/milestone/3) ([#12](https://github.com/Blake11/PenBridge/issues/12)) | Discovery, QR/PIN pairing, drawing surface, S Pen, finger fallback | ⏳ Planned |
+| [1 — Core](https://github.com/Blake11/PenBridge/milestone/1) ([#10](https://github.com/Blake11/PenBridge/issues/10)) | Protocol, security, input processing, network engine and SimClient | ✅ Done |
+| [2 — Mac server](https://github.com/Blake11/PenBridge/milestone/2) ([#11](https://github.com/Blake11/PenBridge/issues/11)) | Menu bar, run at startup, pause hotkey, Bonjour, PIN/QR pairing window, Accessibility, CGEvent injector, NativeAOT | ✅ Done |
+| [3 — Android client](https://github.com/Blake11/PenBridge/milestone/3) ([#12](https://github.com/Blake11/PenBridge/issues/12)) | Drawing surface, S Pen ✅, Keystore, discovery, ClientHost ✅, palm rejection ✅, connect screens 🚧 ([#65](https://github.com/Blake11/PenBridge/issues/65)), on-device checks 🚧 ([#66](https://github.com/Blake11/PenBridge/issues/66)) | 🚧 In progress |
 | [4 — Gestures](https://github.com/Blake11/PenBridge/milestone/4) ([#13](https://github.com/Blake11/PenBridge/issues/13)) | Two-finger scroll, pinch-zoom | ⏳ Planned |
 | [5 — Settings](https://github.com/Blake11/PenBridge/milestone/5) ([#14](https://github.com/Blake11/PenBridge/issues/14)) | Display/region mapping, button mapping | ⏳ Planned |
 | [6 — Release](https://github.com/Blake11/PenBridge/milestone/6) ([#15](https://github.com/Blake11/PenBridge/issues/15)) | Mac `.dmg` and Android APK on GitHub Releases | ⏳ Planned |
@@ -143,10 +145,27 @@ scripts/mac-run.sh       # build, sign and launch the menu-bar app
 scripts/android-run.sh   # build and run on the emulator or a phone
 ```
 
+### Try the Mac server without a phone
+
+The menu-bar server runs today. Until the Android connect screens land, [`tools/PenBridge.SimClient`](tools/PenBridge.SimClient) stands in for the phone: it pairs with the PIN like a real device and streams scripted strokes.
+
+```bash
+scripts/mac-run.sh       # launch the server, grant Accessibility, then choose "Pair new device…"
+
+# in another terminal, with the PIN from the pairing window
+dotnet run --project tools/PenBridge.SimClient -- pair --host 127.0.0.1 --pin <PIN>
+dotnet run --project tools/PenBridge.SimClient -- draw circle    # or pressure-ramp, tilt-sweep, hover, button-click
+dotnet run --project tools/PenBridge.SimClient -- scripts        # list every draw script
+```
+
+Open a pressure-aware app such as Krita first to watch the strokes arrive.
+
+### Read more
+
 - [docs/development.md](docs/development.md): toolchain setup, building, running and debugging on each platform
 - [CONTRIBUTING.md](CONTRIBUTING.md): branches, Conventional Commits, pull requests
 - [docs/architecture.md](docs/architecture.md) and [docs/decisions.md](docs/decisions.md): the design and the decisions behind it
-- [docs/specs/phase-1-core.md](docs/specs/phase-1-core.md): the wire protocol and Core spec
+- [docs/specs/](docs/specs): the wire protocol and Core spec, and the Mac server and Android client specs
 
 ## Security at a glance
 
@@ -167,6 +186,7 @@ PenBridge.slnx
 │   ├── PenBridge.Android/    client: drawing surface, S Pen, discovery, pairing
 │   └── PenBridge.iOS/        placeholder only
 ├── tests/PenBridge.Core.Tests/   xUnit v3, runs anywhere
+├── tools/PenBridge.SimClient/    fake phone: pairs and draws scripted strokes
 ├── scripts/                  bootstrap, doctor, test, mac-*, android-*
 └── docs/                     architecture, decisions (ADRs), specs, development
 ```
@@ -174,7 +194,7 @@ PenBridge.slnx
 ## FAQ
 
 **Does it work with Krita or Photoshop?**
-That's the goal, but it's not tested yet. PenBridge posts standard macOS tablet events with pressure and tilt, which pressure-aware apps such as Krita read. Compatibility will be checked once the Mac server exists.
+That's the goal. PenBridge posts standard macOS tablet events with pressure and tilt, which pressure-aware apps such as Krita read, and Krita is the reference app for testing. A full check with a real S Pen is part of the [on-device verification](https://github.com/Blake11/PenBridge/issues/66).
 
 **Why Wi-Fi and not USB?**
 Wireless is the point: no cable between you and the canvas. Pen samples are tiny and sent over UDP to keep latency low. A wired mode isn't on the roadmap today.
