@@ -68,6 +68,28 @@ internal static class NativeMethods
     [DllImport(CoreGraphics)]
     internal static extern int CGGetActiveDisplayList(uint maxDisplays, [Out] uint[]? activeDisplays, out uint displayCount);
 
+    /// <summary><c>CGRect CGDisplayBounds(CGDirectDisplayID)</c>: global display coordinates (points).</summary>
+    [DllImport(CoreGraphics)]
+    internal static extern NativeRect CGDisplayBounds(uint display);
+
+    /// <summary>
+    /// <c>CGEventRef CGEventCreateKeyboardEvent(source, CGKeyCode, bool keyDown)</c>; +1 retained, NULL on failure.
+    /// C <c>bool</c> is passed as <see cref="byte"/>.
+    /// </summary>
+    [DllImport(CoreGraphics)]
+    internal static extern IntPtr CGEventCreateKeyboardEvent(IntPtr source, ushort virtualKey, byte keyDown);
+
+    /// <summary><c>void CGEventSetFlags(CGEventRef, CGEventFlags)</c>.</summary>
+    [DllImport(CoreGraphics)]
+    internal static extern void CGEventSetFlags(IntPtr ev, ulong flags);
+
+    /// <summary>
+    /// <c>CGEventFlags CGEventSourceFlagsState(CGEventSourceStateID)</c>: the modifier state of a source state table
+    /// (1 = HID system). Posted keyboard events update it, and new events from that source inherit it.
+    /// </summary>
+    [DllImport(CoreGraphics)]
+    internal static extern ulong CGEventSourceFlagsState(int stateId);
+
     /// <summary><c>CFUUIDRef CGDisplayCreateUUIDFromDisplayID(CGDirectDisplayID)</c>; +1 retained, may be NULL.</summary>
     [DllImport(ApplicationServices)]
     internal static extern IntPtr CGDisplayCreateUUIDFromDisplayID(uint display);
@@ -105,4 +127,16 @@ internal readonly struct NativePoint(double x, double y)
 {
     public readonly double X = x;
     public readonly double Y = y;
+}
+
+/// <summary>C <c>CGRect</c> on 64-bit macOS (origin, size; four <c>CGFloat</c>), blittable.</summary>
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+internal readonly struct NativeRect(double x, double y, double width, double height)
+{
+    public readonly double X = x;
+    public readonly double Y = y;
+    public readonly double Width = width;
+    public readonly double Height = height;
+
+    public bool Contains(double x, double y) => x >= X && y >= Y && x < X + Width && y < Y + Height;
 }

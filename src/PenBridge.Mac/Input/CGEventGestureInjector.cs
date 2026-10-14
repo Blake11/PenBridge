@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using CoreGraphics;
+using Microsoft.Extensions.Logging;
 using PenBridge.Core.Input;
 
 namespace PenBridge.Mac.Input;
@@ -22,8 +23,8 @@ namespace PenBridge.Mac.Input;
 /// The window server may then still hold a phase opened before the revoke (its end was skipped), so the injector
 /// remembers which phases it actually posted open and <see cref="RepairAfterGrant"/> closes them when the grant
 /// returns. A revoke is only noticed on the system broadcast, so posts in that short window count as delivered.</para>
-/// <para>Three-finger drag and the four-finger system gestures (Drag, SystemSwipe, SystemPinch) are not posted here
-/// yet; they reach <see cref="OnOtherGesture"/>, which only stops momentum.</para>
+/// <para>Three-finger drag and the four-finger system gestures (Drag, SystemSwipe, SystemPinch) go to
+/// <see cref="CGEventSystemGestureInjector"/>.</para>
 /// </remarks>
 internal sealed class CGEventGestureInjector : IDisposable
 {
@@ -85,6 +86,7 @@ internal sealed class CGEventGestureInjector : IDisposable
     private readonly ScrollMomentum _momentum;
     private readonly TimeSpan _tickInterval;
     private readonly TimerCallback _onCoastTick;
+    private readonly CGEventSystemGestureInjector _system;
 
     private bool _scrollOpen;
     private bool _natural = true;
@@ -112,9 +114,15 @@ internal sealed class CGEventGestureInjector : IDisposable
     /// <param name="source">The owner's CGEventSource handle (HID system state), alive for this object's lifetime.</param>
     /// <param name="trusted">Whether posting is allowed (Accessibility granted); read per post.</param>
     /// <param name="naturalScrolling">The cached natural-scrolling setting, read at each scroll start.</param>
+    /// <param name="logger">Diagnostics (mode and failures only, never per event).</param>
     /// <param name="momentum">Momentum model options; null = Core defaults.</param>
     public CGEventGestureInjector(
-        Lock gate, IntPtr source, Func<bool> trusted, NaturalScrolling naturalScrolling, ScrollMomentumOptions? momentum = null)
+        Lock gate,
+        IntPtr source,
+        Func<bool> trusted,
+        NaturalScrolling naturalScrolling,
+        ILogger logger,
+        ScrollMomentumOptions? momentum = null)
     {
         _gate = gate;
         _source = source;
@@ -123,6 +131,7 @@ internal sealed class CGEventGestureInjector : IDisposable
         _momentum = new ScrollMomentum(momentum);
         _tickInterval = _momentum.Options.TickInterval;
         _onCoastTick = OnCoastTick;
+        _system = new CGEventSystemGestureInjector(source, trusted, logger);
     }
 
     /// <summary>Handles one gesture event. Call with the owner's lock held.</summary>
@@ -153,9 +162,16 @@ internal sealed class CGEventGestureInjector : IDisposable
             case GestureKind.TouchDown:
                 break; // only stops the coast (done above)
             default:
-                OnOtherGesture(e);
+                _system.OnGesture(e); // Drag, SystemSwipe, SystemPinch
                 break;
         }
+    }
+
+    /// <summary>A pen event arrived: the pen takes over, so stop a coast and release a three-finger drag.</summary>
+    public void OnPenActivity()
+    {
+        StopCoast();
+        _system.CancelAll();
     }
 
     /// <summary>
@@ -185,6 +201,7 @@ internal sealed class CGEventGestureInjector : IDisposable
         }
 
         ClosePinch(PhaseCancelled);
+        _system.CancelAll();
     }
 
     /// <summary>
@@ -226,6 +243,8 @@ internal sealed class CGEventGestureInjector : IDisposable
         {
             PostGesture(HidRotation, PhaseCancelled, FieldGestureRotation, 0);
         }
+
+        _system.Repair();
     }
 
     /// <summary>Cancels everything and stops accepting events. Call with the owner's lock held.</summary>
@@ -233,12 +252,6 @@ internal sealed class CGEventGestureInjector : IDisposable
     {
         CancelAll();
         _disposed = true;
-    }
-
-    /// <summary>Dispatch point for Drag, SystemSwipe and SystemPinch (three/four fingers, P4-D): not posted yet.</summary>
-    private static void OnOtherGesture(in GestureEvent e)
-    {
-        _ = e;
     }
 
     private void OnScroll(in GestureEvent e)

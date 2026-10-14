@@ -105,7 +105,7 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
         _sourceHandle = _source.Handle;
         _doubleClickNs = (long)(NSEvent.DoubleClickInterval * 1e9);
         _naturalScrolling = new NaturalScrolling(_logger);
-        _gestures = new CGEventGestureInjector(_gate, _sourceHandle, () => _trusted, _naturalScrolling);
+        _gestures = new CGEventGestureInjector(_gate, _sourceHandle, () => _trusted, _naturalScrolling, _logger);
 
         // Broadcast by the system when the Accessibility (AX trust) list changes.
         _accessibilityObserver = new DistributedNotificationObserver("com.apple.accessibility.api", OnAccessibilityBroadcast);
@@ -231,7 +231,7 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
                 return;
             }
 
-            _gestures.StopCoast(); // the pen takes over: stop a scroll coast
+            _gestures.OnPenActivity(); // the pen takes over: stop a scroll coast, release a three-finger drag
 
             Span<TabletStep> steps = stackalloc TabletStep[TabletEventPlanner.MaxSteps];
             int count = TabletEventPlanner.Plan(ref _state, e.Kind, e.Button, e.Sample.Tool, steps, e.Sample.Buttons);
