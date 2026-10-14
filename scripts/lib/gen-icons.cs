@@ -188,23 +188,33 @@ static class Generator
             + doc.Root!.ToString(SaveOptions.None).Replace("\r\n", "\n", StringComparison.Ordinal) + "\n";
     }
 
-    // Top-level layers: the <g id="…"> groups of mark.svg, bottom first (SVG paint order).
+    // Icon Composer layers: the top-level <g id="…"> groups of mark.svg, bottom first (SVG paint order). Top level
+    // means no <g id> ancestor (an unnamed transform wrapper is fine); a nested <g id> is part of its layer.
     static List<string> LayerIds(XDocument mark)
     {
-        var ids = mark.Root!.Descendants(Svg + "g").Select(e => (string?)e.Attribute("id")).OfType<string>().ToList();
+        var ids = TopLevelLayers(mark).Select(e => (string)e.Attribute("id")!).ToList();
         if (ids.Count == 0)
         {
             throw new InvalidDataException("mark.svg: no <g id=\"…\"> layer groups.");
         }
 
+        if (ids.Distinct(StringComparer.Ordinal).Count() != ids.Count)
+        {
+            throw new InvalidDataException("mark.svg: layer group ids must be unique.");
+        }
+
         return ids;
     }
+
+    static IEnumerable<XElement> TopLevelLayers(XDocument doc) =>
+        doc.Root!.Descendants(Svg + "g").Where(e => e.Attribute("id") is not null
+            && !e.Ancestors(Svg + "g").Any(a => a.Attribute("id") is not null));
 
     // mark.svg reduced to one layer group, cropped to the macOS icon square.
     static string Layer(XDocument mark, string id)
     {
         var doc = new XDocument(mark);
-        foreach (XElement g in doc.Root!.Descendants(Svg + "g").Where(e => e.Attribute("id") is { } a && a.Value != id).ToList())
+        foreach (XElement g in TopLevelLayers(doc).Where(e => e.Attribute("id")!.Value != id).ToList())
         {
             if (g.PreviousNode is XText ws && string.IsNullOrWhiteSpace(ws.Value))
             {

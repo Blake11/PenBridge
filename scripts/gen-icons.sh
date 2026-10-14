@@ -40,14 +40,24 @@ fi
 assets="$REPO_ROOT/assets/icon"
 generator="$REPO_ROOT/scripts/lib/gen-icons.cs"
 mac_res="$REPO_ROOT/src/PenBridge.Mac/Resources"
-outputs=(
-  src/PenBridge.Android/Resources/drawable/ic_launcher_foreground.xml
-  src/PenBridge.Android/Resources/drawable/ic_launcher_background.xml
-  src/PenBridge.Android/Resources/drawable/ic_launcher_monochrome.xml
-  src/PenBridge.Android/Resources/mipmap-anydpi-v26
-  src/PenBridge.Mac/Resources/AppIcon.icon
-  src/PenBridge.Mac/Resources/Assets.xcassets
-)
+
+# Every generated file under <root>, one relative path per line, sorted. Only these names belong to the generator;
+# anything else in the same folders (a hand-made drawable, mipmap or imageset) is left alone.
+generated_files() {
+  local root="$1"
+  (
+    cd "$root" || exit 0
+    shopt -s nullglob
+    for f in src/PenBridge.Android/Resources/drawable/ic_launcher_*.xml \
+             src/PenBridge.Android/Resources/mipmap-anydpi-v26/ic_launcher*.xml \
+             src/PenBridge.Mac/Resources/Assets.xcassets/Contents.json; do
+      [[ -f "$f" ]] && echo "$f"
+    done
+    for d in src/PenBridge.Mac/Resources/AppIcon.icon src/PenBridge.Mac/Resources/Assets.xcassets/MenuBar*.imageset; do
+      [[ -d "$d" ]] && find "$d" -type f ! -name .DS_Store
+    done
+  ) | LC_ALL=C sort
+}
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/penbridge-icons.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
@@ -55,20 +65,22 @@ trap 'rm -rf "$scratch"' EXIT
 if $check; then
   step "Regenerating into a scratch directory"
   dotnet run --file "$generator" -c Release -- "$assets" "$scratch/out" >/dev/null
+  generated_files "$scratch/out" >"$scratch/expected"
+  generated_files "$REPO_ROOT" >"$scratch/committed"
   stale=0
-  for path in "${outputs[@]}"; do
-    if ! diff -r "$scratch/out/$path" "$REPO_ROOT/$path" >/dev/null 2>&1; then
-      fail "$path is out of date"
-      stale=1
-    fi
-  done
+  while IFS= read -r f; do fail "$f is missing"; stale=1; done < <(LC_ALL=C comm -23 "$scratch/expected" "$scratch/committed")
+  while IFS= read -r f; do fail "$f is no longer generated (remove it)"; stale=1; done < <(LC_ALL=C comm -13 "$scratch/expected" "$scratch/committed")
+  while IFS= read -r f; do
+    cmp -s "$scratch/out/$f" "$REPO_ROOT/$f" || { fail "$f is out of date"; stale=1; }
+  done < <(LC_ALL=C comm -12 "$scratch/expected" "$scratch/committed")
   (( stale == 0 )) || die "generated icon assets are stale: run scripts/gen-icons.sh and commit the result"
   ok "generated icon assets match assets/icon"
   mac_res="$scratch/out/src/PenBridge.Mac/Resources"
 else
   step "Generating icon assets from assets/icon"
-  # Drop outputs first so a renamed layer or state can't leave a stale file behind.
-  for path in "${outputs[@]}"; do rm -rf "${REPO_ROOT:?}/$path"; done
+  # Drop the previous generated files first so a renamed layer or state can't leave a stale file behind.
+  while IFS= read -r f; do rm -f "${REPO_ROOT:?}/$f"; done < <(generated_files "$REPO_ROOT")
+  find "$REPO_ROOT/src/PenBridge.Mac/Resources" -depth -type d -empty -delete 2>/dev/null || true
   dotnet run --file "$generator" -c Release -- "$assets" "$REPO_ROOT"
 fi
 

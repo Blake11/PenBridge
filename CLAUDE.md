@@ -38,6 +38,7 @@ dotnet test --project tests/PenBridge.Core.Tests   # raw form (Microsoft.Testing
 dotnet build PenBridge.slnx
 scripts/check-bundle.sh         # assert trimmed head outputs still contain the code pairing needs (e.g. BouncyCastle J-PAKE)
 scripts/smoke-trimmed-pairing.sh [--aot]  # trimmed SimClient pairs + draws against an in-process server
+scripts/gen-icons.sh [--check|--preview <dir>]  # regenerate the app, menu-bar and launcher icons from assets/icon (commit the outputs)
 scripts/mac-dev-cert.sh [--check|--delete]      # one-time "PenBridge Dev" cert (user runs: password prompt)
 scripts/mac-run.sh [--release] [--no-build] [--reset-tcc] [--logs]
 scripts/android-emulator.sh [--headless|--stop|--recreate]   # AVD PenBridge_Tablet
