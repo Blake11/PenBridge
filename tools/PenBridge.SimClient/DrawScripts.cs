@@ -16,7 +16,7 @@ internal static class DrawScripts
         [
             "line", "circle", "pressure-ramp", "tilt-sweep", "hover", "button-click", "two-finger-scroll", "pinch", "rotate",
             "two-finger-tap", "smart-zoom", "three-finger-drag", "swipe-up", "swipe-down", "swipe-left", "swipe-right",
-            "four-finger-pinch-in", "four-finger-pinch-out", PacketLoss,
+            "four-finger-pinch-in", "four-finger-pinch-out", "page-swipe-left", "page-swipe-right", PacketLoss,
         ];
 
     /// <summary>Long enough after a tap for the server's double-tap window (300 ms) to pass before the script ends.</summary>
@@ -49,6 +49,8 @@ internal static class DrawScripts
             "swipe-down" => FourFingerSwipe(0, 1),
             "swipe-left" => FourFingerSwipe(-1, 0),
             "swipe-right" => FourFingerSwipe(1, 0),
+            "page-swipe-left" => PageSwipe(-1),
+            "page-swipe-right" => PageSwipe(1),
             "four-finger-pinch-in" => FourFingerPinch(300, 120),
             "four-finger-pinch-out" => FourFingerPinch(120, 300),
             PacketLoss => Batched(CirclePoints()),
@@ -259,6 +261,23 @@ internal static class DrawScripts
         }
 
         yield return Frame(null);
+    }
+
+    /// <summary>
+    /// A two-finger horizontal flick (trackpad "swipe between pages"): fingers accelerate sideways over 12 frames
+    /// (about 100 ms, ~650 px) and lift while still moving, so the scroll ends at speed and momentum follows.
+    /// <paramref name="direction"/> −1 moves the fingers left, +1 right.
+    /// </summary>
+    private static IEnumerable<ScriptFrame> PageSwipe(int direction)
+    {
+        double x = direction < 0 ? 900 : 300;
+        for (int i = 0; i <= 12; i++)
+        {
+            yield return Fingers(Finger(1, x, 1300), Finger(2, x + 240, 1700));
+            x += direction * (10 + (i * 8)); // accelerate to about 100 px per frame
+        }
+
+        yield return Frame(null); // lift at speed: no pause before it
     }
 
     /// <summary>Four fingers on a square, moving 600 px in (sx, sy) over 30 frames.</summary>
