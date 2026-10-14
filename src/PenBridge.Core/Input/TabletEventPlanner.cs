@@ -31,6 +31,15 @@ public struct TabletPostedState
 
     /// <summary>A right (side button) down was posted without its up.</summary>
     public bool Right { readonly get; internal set; }
+
+    /// <summary>
+    /// The tip is down in a right-drag stroke: the side button was held at contact-down, so the right button carries
+    /// the stroke instead of the left one (ADR-0022).
+    /// </summary>
+    public bool RightStroke { readonly get; internal set; }
+
+    /// <summary>The tip is down as far as the host knows (a left stroke or a right-drag stroke).</summary>
+    public readonly bool Contact => Left || RightStroke;
 }
 
 /// <summary>
@@ -45,10 +54,17 @@ public struct TabletPostedState
 /// <item>Any pointer event first ensures proximity for its tool (posts ProximityEnter when not in proximity, or
 /// leave/enter when the tool differs). This also recovers after a pause or a missing host permission (e.g. macOS Accessibility).</item>
 /// <item>Down posts LeftDown, Up posts LeftUp, only when the posted left state differs (no unmatched up/down).</item>
-/// <item>Side button (Primary): ButtonDown posts RightDown at the current point and ButtonUp posts RightUp, hovering or
-/// touching (ADR-0016). Secondary is reserved and ignored.</item>
+/// <item>Side button (Primary) while hovering: ButtonDown posts RightDown at the current point and ButtonUp posts
+/// RightUp (ADR-0016). Secondary is reserved and ignored.</item>
+/// <item>Right-drag (ADR-0022): when the side button is held at contact-down (the event's held buttons include
+/// Primary), the stroke is a right-button stroke: Down posts RightDown if needed (never
+/// LeftDown), motion posts RightDragged and Up posts RightUp. The choice is latched at contact-down: button changes
+/// during contact post nothing, in either kind of stroke. A right-down still posted at a Down without the button held
+/// (its RightUp failed) is released first, and the stroke is a left one.</item>
 /// <item>Motion posts LeftDragged while the tip is down, else RightDragged while the side button is down, else
-/// MouseMoved. A Drag after the left button was released (pause mid-stroke) becomes a hover move until the next Down.</item>
+/// MouseMoved. A Drag after the button was released (pause mid-stroke) becomes a hover move until the next Down.</item>
+/// <item>Each step's <see cref="TabletStep.Contact"/> is true while the tip is down in either kind of stroke, so pressure
+/// and tilt go on the right-drag events too.</item>
 /// <item>ToolChanged and ProximityLeave (and <see cref="Release"/>) post LeftUp, RightUp and ProximityLeave as needed;
 /// ToolChanged then enters with the new tool, so apps switch pen/eraser.</item>
 /// </list>
@@ -59,7 +75,14 @@ public static class TabletEventPlanner
     public const int MaxSteps = 6;
 
     /// <summary>Plans the posts for one pen event and updates <paramref name="state"/>. Returns the step count.</summary>
-    public static int Plan(ref TabletPostedState state, PenEventKind kind, PenButtons button, PenTool tool, Span<TabletStep> steps)
+    /// <param name="state">What has been posted.</param>
+    /// <param name="kind">The event.</param>
+    /// <param name="button">For ButtonDown/ButtonUp: the single button that changed.</param>
+    /// <param name="tool">The event's tool.</param>
+    /// <param name="steps">Destination, at least <see cref="MaxSteps"/> long.</param>
+    /// <param name="held">The buttons held in the event's sample (<see cref="PenSample.Buttons"/>); decides a right-drag at Down.</param>
+    public static int Plan(
+        ref TabletPostedState state, PenEventKind kind, PenButtons button, PenTool tool, Span<TabletStep> steps, PenButtons held = PenButtons.None)
     {
         int n = 0;
         switch (kind)
@@ -80,19 +103,41 @@ public static class TabletEventPlanner
             case PenEventKind.Move:
             case PenEventKind.Drag:
                 EnsureProximity(ref state, tool, steps, ref n);
-                steps[n++] = new TabletStep(MotionAction(state.Left, state.Right), state.Tool, state.Left, state.Right);
+                steps[n++] = new TabletStep(MotionAction(state.Left, state.Right), state.Tool, state.Contact, state.Right);
                 break;
 
             case PenEventKind.Down:
                 EnsureProximity(ref state, tool, steps, ref n);
-                if (!state.Left)
+                if (state.Contact)
                 {
-                    state.Left = true;
-                    steps[n++] = new TabletStep(TabletAction.LeftDown, state.Tool, true, state.Right);
+                    steps[n++] = new TabletStep(MotionAction(state.Left, state.Right), state.Tool, true, state.Right);
+                }
+                else if ((held & PenButtons.Primary) != 0)
+                {
+                    // Side button held at contact-down: a right-drag stroke, latched until Up.
+                    state.RightStroke = true;
+                    if (state.Right)
+                    {
+                        steps[n++] = new TabletStep(TabletAction.RightDragged, state.Tool, true, true);
+                    }
+                    else
+                    {
+                        state.Right = true;
+                        steps[n++] = new TabletStep(TabletAction.RightDown, state.Tool, true, true);
+                    }
                 }
                 else
                 {
-                    steps[n++] = new TabletStep(TabletAction.LeftDragged, state.Tool, true, state.Right);
+                    if (state.Right)
+                    {
+                        // A right-down is still posted although the button isn't held (e.g. the RightUp ending a
+                        // right-drag failed and was reverted): release it now instead of starting a right-drag.
+                        state.Right = false;
+                        steps[n++] = new TabletStep(TabletAction.RightUp, state.Tool, false, false);
+                    }
+
+                    state.Left = true;
+                    steps[n++] = new TabletStep(TabletAction.LeftDown, state.Tool, true, false);
                 }
 
                 break;
@@ -103,24 +148,33 @@ public static class TabletEventPlanner
                     state.Left = false;
                     steps[n++] = new TabletStep(TabletAction.LeftUp, state.Tool, false, state.Right);
                 }
+                else if (state.RightStroke)
+                {
+                    state.RightStroke = false;
+                    if (state.Right)
+                    {
+                        state.Right = false;
+                        steps[n++] = new TabletStep(TabletAction.RightUp, state.Tool, false, false);
+                    }
+                }
 
                 break;
 
             case PenEventKind.ButtonDown when button == PenButtons.Primary:
                 EnsureProximity(ref state, tool, steps, ref n);
-                if (!state.Right)
+                if (!state.Right && !state.Contact)
                 {
                     state.Right = true;
-                    steps[n++] = new TabletStep(TabletAction.RightDown, state.Tool, state.Left, state.Right);
+                    steps[n++] = new TabletStep(TabletAction.RightDown, state.Tool, false, true);
                 }
 
                 break;
 
             case PenEventKind.ButtonUp when button == PenButtons.Primary:
-                if (state.Right)
+                if (state.Right && !state.Contact)
                 {
                     state.Right = false;
-                    steps[n++] = new TabletStep(TabletAction.RightUp, state.Tool, state.Left, state.Right);
+                    steps[n++] = new TabletStep(TabletAction.RightUp, state.Tool, false, false);
                 }
 
                 break;
@@ -152,6 +206,7 @@ public static class TabletEventPlanner
         PenTool tool = state.Tool;
         state.Left = false;
         state.Right = false;
+        state.RightStroke = false;
         state.InProximity = false;
         steps[0] = new TabletStep(TabletAction.LeftUp, tool, false, false);
         steps[1] = new TabletStep(TabletAction.RightUp, tool, false, false);
@@ -175,6 +230,7 @@ public static class TabletEventPlanner
                 break;
             case TabletAction.RightDown:
                 state.Right = false;
+                state.RightStroke = false; // like a failed LeftDown: the stroke continues as a hover until the next Down
                 break;
             case TabletAction.RightUp:
                 state.Right = true;
@@ -211,6 +267,7 @@ public static class TabletEventPlanner
 
     private static void ReleaseInto(ref TabletPostedState state, Span<TabletStep> steps, ref int n)
     {
+        state.RightStroke = false;
         if (state.Left)
         {
             state.Left = false;

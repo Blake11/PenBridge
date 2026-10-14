@@ -50,6 +50,7 @@ internal sealed class PadScreen : Screen
         var options = new PadOptions
         {
             Orientation = ToPad(Host.Settings.Orientation),
+            FingerMode = Host.Settings.FingerMode,
             FingerFallbackPressure = Host.Settings.FingerPressure,
             FingerFallbackArmDelay = TimeSpan.FromMilliseconds(Host.Settings.FingerArmDelayMs),
             PalmSizeThreshold = Host.Settings.PalmSizeThreshold,

@@ -42,16 +42,86 @@ public class TabletEventPlannerTests
     }
 
     [Fact]
-    public void Side_button_during_contact_posts_right_down_and_motion_stays_a_left_drag()
+    public void Side_button_held_at_contact_down_makes_the_stroke_a_right_drag_with_pressure()
+    {
+        Plan(PenEventKind.ProximityEnter);
+        Plan(PenEventKind.ButtonDown, PenButtons.Primary); // hover right-down, unchanged
+        Assert.Equal(
+            new TabletStep(TabletAction.RightDragged, PenTool.Pen, Contact: true, Side: true),
+            Steps(PenEventKind.Down, held: PenButtons.Primary)[0]);
+        Assert.True(_state.RightStroke);
+        Assert.False(_state.Left);
+        Assert.Equal(
+            new TabletStep(TabletAction.RightDragged, PenTool.Pen, Contact: true, Side: true),
+            Steps(PenEventKind.Drag, held: PenButtons.Primary)[0]);
+        Assert.Equal(
+            new TabletStep(TabletAction.RightUp, PenTool.Pen, Contact: false, Side: false),
+            Steps(PenEventKind.Up, held: PenButtons.Primary)[0]);
+
+        // The button is still held after the lift: hovering is a plain move and its release posts nothing.
+        Assert.Equal([TabletAction.MouseMoved], Plan(PenEventKind.Move, held: PenButtons.Primary));
+        Assert.Empty(Plan(PenEventKind.ButtonUp, PenButtons.Primary));
+        AssertNoButtons();
+    }
+
+    [Fact]
+    public void Held_button_without_a_posted_right_down_still_starts_a_right_drag()
+    {
+        // E.g. the button stayed held after the previous right-drag lifted, or its ButtonDown was dropped by a pause.
+        Plan(PenEventKind.ProximityEnter);
+        Assert.Equal(
+            new TabletStep(TabletAction.RightDown, PenTool.Pen, Contact: true, Side: true),
+            Steps(PenEventKind.Down, held: PenButtons.Primary)[0]);
+        Assert.Equal([TabletAction.RightUp], Plan(PenEventKind.Up));
+        Assert.Equal([TabletAction.RightDown], Plan(PenEventKind.Down, held: PenButtons.Primary));
+        Assert.Equal([TabletAction.RightUp], Plan(PenEventKind.Up));
+        AssertNoButtons();
+    }
+
+    [Fact]
+    public void Button_released_mid_right_drag_is_ignored_until_the_tip_lifts()
+    {
+        Plan(PenEventKind.ProximityEnter);
+        Plan(PenEventKind.ButtonDown, PenButtons.Primary);
+        Plan(PenEventKind.Down, held: PenButtons.Primary);
+        Assert.Empty(Plan(PenEventKind.ButtonUp, PenButtons.Primary));
+        Assert.Equal([TabletAction.RightDragged], Plan(PenEventKind.Drag));
+        Assert.Empty(Plan(PenEventKind.ButtonDown, PenButtons.Primary));
+        Assert.Equal([TabletAction.RightUp], Plan(PenEventKind.Up));
+        AssertNoButtons();
+    }
+
+    [Fact]
+    public void Failed_right_up_after_a_right_drag_never_makes_the_next_stroke_a_right_drag()
+    {
+        Plan(PenEventKind.ProximityEnter);
+        Plan(PenEventKind.ButtonDown, PenButtons.Primary);
+        Plan(PenEventKind.Down, held: PenButtons.Primary);
+        TabletStep up = Steps(PenEventKind.Up)[0];
+        Assert.Equal(TabletAction.RightUp, up.Action);
+        TabletEventPlanner.Revert(ref _state, up); // the post failed: the host may still hold the right button
+        Assert.True(_state.Right);
+
+        // The button is no longer held at the next tip-down: release the right button, then a left stroke.
+        Assert.Equal([TabletAction.RightUp, TabletAction.LeftDown], Plan(PenEventKind.Down));
+        Assert.True(_state.Left);
+        Assert.False(_state.Right);
+        Assert.False(_state.RightStroke);
+        Assert.Equal([TabletAction.LeftDragged], Plan(PenEventKind.Drag));
+    }
+
+    [Fact]
+    public void Button_pressed_mid_left_stroke_is_ignored()
     {
         Plan(PenEventKind.ProximityEnter);
         Plan(PenEventKind.Down);
-        TabletStep down = Steps(PenEventKind.ButtonDown, PenButtons.Primary)[0];
-        Assert.Equal(new TabletStep(TabletAction.RightDown, PenTool.Pen, Contact: true, Side: true), down);
-        TabletStep drag = Steps(PenEventKind.Drag)[0];
-        Assert.Equal(new TabletStep(TabletAction.LeftDragged, PenTool.Pen, Contact: true, Side: true), drag);
-        Assert.Equal([TabletAction.RightUp], Plan(PenEventKind.ButtonUp, PenButtons.Primary));
+        Assert.Empty(Plan(PenEventKind.ButtonDown, PenButtons.Primary));
+        Assert.Equal(
+            new TabletStep(TabletAction.LeftDragged, PenTool.Pen, Contact: true, Side: false),
+            Steps(PenEventKind.Drag, held: PenButtons.Primary)[0]);
+        Assert.Empty(Plan(PenEventKind.ButtonUp, PenButtons.Primary));
         Assert.Equal([TabletAction.LeftUp], Plan(PenEventKind.Up));
+        AssertNoButtons();
     }
 
     [Fact]
@@ -59,11 +129,59 @@ public class TabletEventPlannerTests
     {
         Plan(PenEventKind.ProximityEnter);
         Plan(PenEventKind.Down);
-        Plan(PenEventKind.ButtonDown, PenButtons.Primary);
-        Assert.Equal(
-            [TabletAction.LeftUp, TabletAction.RightUp, TabletAction.ProximityLeave],
-            Plan(PenEventKind.ProximityLeave));
+        Assert.Equal([TabletAction.LeftUp, TabletAction.ProximityLeave], Plan(PenEventKind.ProximityLeave));
         AssertNothingPosted();
+
+        Plan(PenEventKind.ProximityEnter);
+        Plan(PenEventKind.ButtonDown, PenButtons.Primary);
+        Plan(PenEventKind.Down, held: PenButtons.Primary);
+        Assert.Equal([TabletAction.RightUp, TabletAction.ProximityLeave], Plan(PenEventKind.ProximityLeave));
+        AssertNothingPosted();
+        Assert.False(_state.RightStroke);
+    }
+
+    [Fact]
+    public void Side_button_at_contact_down_through_the_tracker_is_a_right_drag()
+    {
+        var sink = new PlanningSink();
+        var tracker = new PenStateTracker(sink, new ManualTimeProvider()) { Mapper = new(1, 1, new DisplayRect(0, 0, 65535, 65535)) };
+        PenSample[] frames =
+        [
+            Samples.Hover(100, 100),
+            Samples.Hover(110, 100, buttons: PenButtons.Primary),
+            Samples.Touch(120, 100, 20000, buttons: PenButtons.Primary),
+            Samples.Touch(130, 100, 40000, buttons: PenButtons.Primary),
+            Samples.Touch(140, 100, 40000), // button released mid-stroke: latched, still a right-drag
+            Samples.Hover(150, 100),
+            Samples.Hover(150, 100) with { State = PenState.None },
+        ];
+        for (int i = 0; i < frames.Length; i++)
+        {
+            tracker.ProcessFrame((uint)(1_000 + (i * 5_000)), frames[i], default, default);
+        }
+
+        Assert.Equal(
+            [
+                TabletAction.ProximityEnter,
+                TabletAction.RightDown, TabletAction.RightDragged, // hover right-click with a move, unchanged
+                TabletAction.RightDragged, TabletAction.RightDragged, TabletAction.RightDragged, // Down, Drag, Drag
+                TabletAction.RightUp,
+                TabletAction.ProximityLeave,
+            ],
+            sink.Actions);
+        Assert.False(sink.Steps[2].Contact);
+        Assert.All(sink.Steps.GetRange(3, 3), s => Assert.True(s.Contact && s.Side));
+    }
+
+    [Fact]
+    public void Side_button_and_tip_in_the_same_sample_is_a_right_drag()
+    {
+        var sink = new PlanningSink();
+        var tracker = new PenStateTracker(sink, new ManualTimeProvider()) { Mapper = new(1, 1, new DisplayRect(0, 0, 65535, 65535)) };
+        tracker.ProcessFrame(1_000, Samples.Hover(100, 100), default, default);
+        tracker.ProcessFrame(6_000, Samples.Touch(100, 100, buttons: PenButtons.Primary), default, default);
+        tracker.ProcessFrame(11_000, Samples.Hover(100, 100, buttons: PenButtons.Primary), default, default);
+        Assert.Equal([TabletAction.ProximityEnter, TabletAction.RightDown, TabletAction.RightDragged, TabletAction.RightUp], sink.Actions);
     }
 
     [Fact]
@@ -126,11 +244,17 @@ public class TabletEventPlannerTests
         // After a pause or a missing permission the injector missed the enter: the next event recovers it.
         Assert.Equal([TabletAction.ProximityEnter, TabletAction.LeftDown], Plan(PenEventKind.Down));
 
-        // Worst case: the tool differs while both buttons are down (MaxSteps).
-        Plan(PenEventKind.ButtonDown, PenButtons.Primary);
+        // The tool differs during a stroke: release with the old tool, re-enter, press again.
         Assert.Equal(
-            [TabletAction.LeftUp, TabletAction.RightUp, TabletAction.ProximityLeave, TabletAction.ProximityEnter, TabletAction.LeftDown],
+            [TabletAction.LeftUp, TabletAction.ProximityLeave, TabletAction.ProximityEnter, TabletAction.LeftDown],
             Plan(PenEventKind.Down, tool: PenTool.Eraser));
+        Plan(PenEventKind.Up);
+        Plan(PenEventKind.ButtonDown, PenButtons.Primary, tool: PenTool.Eraser);
+        Plan(PenEventKind.Down, tool: PenTool.Eraser, held: PenButtons.Primary);
+        Assert.Equal(
+            [TabletAction.RightUp, TabletAction.ProximityLeave, TabletAction.ProximityEnter, TabletAction.RightDown],
+            Plan(PenEventKind.Down, tool: PenTool.Pen, held: PenButtons.Primary));
+        Assert.True(_state.RightStroke);
     }
 
     [Fact]
@@ -169,20 +293,20 @@ public class TabletEventPlannerTests
     public void Revert_keeps_state_matching_what_was_actually_posted()
     {
         Plan(PenEventKind.ProximityEnter);
-        Plan(PenEventKind.Down);
         Plan(PenEventKind.ButtonDown, PenButtons.Primary);
+        Plan(PenEventKind.Down, held: PenButtons.Primary);
 
-        // Leave plans LeftUp, RightUp, ProximityLeave; the LeftUp post fails, the others succeed.
+        // Leave plans RightUp, ProximityLeave; the RightUp post fails, the leave succeeds.
         int n = TabletEventPlanner.Plan(ref _state, PenEventKind.ProximityLeave, PenButtons.None, PenTool.Pen, _buffer);
-        Assert.Equal(3, n);
+        Assert.Equal(2, n);
         TabletEventPlanner.Revert(ref _state, _buffer[0]);
-        Assert.True(_state.Left);
-        Assert.False(_state.Right);
+        Assert.True(_state.Right);
+        Assert.False(_state.Left);
         Assert.False(_state.InProximity);
 
-        // A later release retries the outstanding LeftUp.
+        // A later release retries the outstanding RightUp.
         Assert.Equal(1, TabletEventPlanner.Release(ref _state, _buffer));
-        Assert.Equal(TabletAction.LeftUp, _buffer[0].Action);
+        Assert.Equal(TabletAction.RightUp, _buffer[0].Action);
     }
 
     [Theory]
@@ -226,7 +350,8 @@ public class TabletEventPlannerTests
         Alloc.AssertZero(2_000, i =>
         {
             PenTool tool = (i / kinds.Length) % 2 == 0 ? PenTool.Pen : PenTool.Eraser;
-            posted += TabletEventPlanner.Plan(ref state, kinds[i % kinds.Length], PenButtons.Primary, tool, buffer);
+            PenButtons held = (i / (kinds.Length * 2)) % 2 == 0 ? PenButtons.None : PenButtons.Primary;
+            posted += TabletEventPlanner.Plan(ref state, kinds[i % kinds.Length], PenButtons.Primary, tool, buffer, held);
             if (i % 7 == 0)
             {
                 posted += TabletEventPlanner.Release(ref state, buffer);
@@ -240,6 +365,13 @@ public class TabletEventPlannerTests
         }, () => posted);
     }
 
+    private void AssertNoButtons()
+    {
+        Assert.False(_state.Left);
+        Assert.False(_state.Right);
+        Assert.False(_state.RightStroke);
+    }
+
     private void AssertNothingPosted()
     {
         Assert.False(_state.InProximity);
@@ -247,11 +379,13 @@ public class TabletEventPlannerTests
         Assert.False(_state.Right);
     }
 
-    private TabletAction[] Plan(PenEventKind kind, PenButtons button = PenButtons.None, PenTool tool = PenTool.Pen) =>
-        Actions(TabletEventPlanner.Plan(ref _state, kind, button, tool, _buffer));
+    private TabletAction[] Plan(
+        PenEventKind kind, PenButtons button = PenButtons.None, PenTool tool = PenTool.Pen, PenButtons held = PenButtons.None) =>
+        Actions(TabletEventPlanner.Plan(ref _state, kind, button, tool, _buffer, held));
 
-    private TabletStep[] Steps(PenEventKind kind, PenButtons button = PenButtons.None, PenTool tool = PenTool.Pen) =>
-        _buffer.AsSpan(0, TabletEventPlanner.Plan(ref _state, kind, button, tool, _buffer)).ToArray();
+    private TabletStep[] Steps(
+        PenEventKind kind, PenButtons button = PenButtons.None, PenTool tool = PenTool.Pen, PenButtons held = PenButtons.None) =>
+        _buffer.AsSpan(0, TabletEventPlanner.Plan(ref _state, kind, button, tool, _buffer, held)).ToArray();
 
     private TabletAction[] Actions(int count)
     {
@@ -262,5 +396,26 @@ public class TabletEventPlannerTests
         }
 
         return actions;
+    }
+}
+
+/// <summary>Runs the planner the way the Mac injector does (held buttons from the event's sample) and records the steps.</summary>
+internal sealed class PlanningSink : IInputSink
+{
+    private readonly TabletStep[] _buffer = new TabletStep[TabletEventPlanner.MaxSteps];
+    private TabletPostedState _state;
+
+    public List<TabletStep> Steps { get; } = [];
+
+    public TabletAction[] Actions => Steps.Select(s => s.Action).ToArray();
+
+    public void OnPenEvent(in PenEvent e)
+    {
+        int n = TabletEventPlanner.Plan(ref _state, e.Kind, e.Button, e.Sample.Tool, _buffer, e.Sample.Buttons);
+        Steps.AddRange(_buffer.AsSpan(0, n));
+    }
+
+    public void OnGestureEvent(in GestureEvent e)
+    {
     }
 }

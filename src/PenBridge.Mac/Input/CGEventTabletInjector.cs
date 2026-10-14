@@ -14,7 +14,8 @@ namespace PenBridge.Mac.Input;
 /// <summary>
 /// Injects pen input into macOS as CGEvent tablet events (ADR-0003): proximity events announce a pen or eraser, then
 /// mouse events with the tablet-point subtype carry position, pressure, tilt and rotation. The side button is a
-/// right-click (ADR-0016). Gesture events are accepted and ignored until Phase 4.
+/// right-click while hovering (ADR-0016); held at contact-down it makes the stroke a right-button drag, latched until
+/// the tip lifts (ADR-0022). Gesture events are accepted and ignored until Phase 4.
 /// </summary>
 /// <remarks>
 /// <para><b>Threading.</b> <see cref="ServerHost"/> wraps the injector in a <see cref="PausableInputSink"/>, so
@@ -58,7 +59,7 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IDisposable
     /// <summary>Samples older than this (after the learned latency) are re-anchored to now; see <see cref="TabletEventMath.MapTimestamp"/>.</summary>
     private const long MaxTimestampLagNs = 100_000_000;
 
-    /// <summary>Points a second tap may move and still count as a double-click.</summary>
+    /// <summary>Points a second pen tap may move and still count as a double-click (finger taps: see <see cref="TabletEventMath.ClickSlopFor"/>).</summary>
     private const double ClickSlop = 6;
 
     /// <summary><c>kCGHIDEventTap</c>: post where hardware events enter, so they update cursor and HID button state.</summary>
@@ -226,7 +227,7 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IDisposable
             }
 
             Span<TabletStep> steps = stackalloc TabletStep[TabletEventPlanner.MaxSteps];
-            int count = TabletEventPlanner.Plan(ref _state, e.Kind, e.Button, e.Sample.Tool, steps);
+            int count = TabletEventPlanner.Plan(ref _state, e.Kind, e.Button, e.Sample.Tool, steps, e.Sample.Buttons);
             _lastPoint = e.Position;
             _lastSample = e.Sample;
             if (count == 0)
@@ -373,7 +374,8 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IDisposable
                 return PostMouse(CGEventType.MouseMoved, ButtonLeft, clickState: 0, step, at, sample, timestampNs);
             case TabletAction.LeftDown:
                 _mouseEventNumber++;
-                _leftClickCount = TabletEventMath.NextClickCount(ref _leftClicks, timestampNs, at, _doubleClickNs, ClickSlop);
+                _leftClickCount = TabletEventMath.NextClickCount(
+                    ref _leftClicks, timestampNs, at, _doubleClickNs, TabletEventMath.ClickSlopFor(step.Tool, ClickSlop));
                 return PostMouse(CGEventType.LeftMouseDown, ButtonLeft, _leftClickCount, step, at, sample, timestampNs);
             case TabletAction.LeftDragged:
                 return PostMouse(CGEventType.LeftMouseDragged, ButtonLeft, _leftClickCount, step, at, sample, timestampNs);
@@ -381,7 +383,8 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IDisposable
                 return PostMouse(CGEventType.LeftMouseUp, ButtonLeft, _leftClickCount, step, at, sample, timestampNs);
             case TabletAction.RightDown:
                 _mouseEventNumber++;
-                _rightClickCount = TabletEventMath.NextClickCount(ref _rightClicks, timestampNs, at, _doubleClickNs, ClickSlop);
+                _rightClickCount = TabletEventMath.NextClickCount(
+                    ref _rightClicks, timestampNs, at, _doubleClickNs, TabletEventMath.ClickSlopFor(step.Tool, ClickSlop));
                 return PostMouse(CGEventType.RightMouseDown, ButtonRight, _rightClickCount, step, at, sample, timestampNs);
             case TabletAction.RightDragged:
                 return PostMouse(CGEventType.RightMouseDragged, ButtonRight, _rightClickCount, step, at, sample, timestampNs);
