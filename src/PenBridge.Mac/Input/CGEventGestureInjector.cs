@@ -86,6 +86,7 @@ internal sealed class CGEventGestureInjector : IDisposable
     private bool _natural = true;
     private double _remainderX;
     private double _remainderY;
+    private bool _pinchActive;
     private bool _magnifyOpen;
     private bool _rotateOpen;
     private double _heldMagnification;
@@ -252,12 +253,15 @@ internal sealed class CGEventGestureInjector : IDisposable
         {
             case GesturePhase.Began:
                 ClosePinch(PhaseCancelled); // never leave a phase open
-                _heldMagnification = 0;
-                _heldDegrees = 0;
+                _pinchActive = true;
                 PostTransform(e);
                 break;
             case GesturePhase.Changed:
-                PostTransform(e);
+                if (_pinchActive)
+                {
+                    PostTransform(e); // no Began seen (e.g. it was dropped): drop the gesture, as for scroll
+                }
+
                 break;
             case GesturePhase.Ended:
                 ClosePinch(PhaseEnded);
@@ -316,6 +320,9 @@ internal sealed class CGEventGestureInjector : IDisposable
 
     private void ClosePinch(long phase)
     {
+        _pinchActive = false;
+        _heldMagnification = 0;
+        _heldDegrees = 0;
         if (_magnifyOpen)
         {
             _magnifyOpen = false;
