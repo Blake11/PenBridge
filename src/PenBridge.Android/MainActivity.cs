@@ -13,7 +13,8 @@ namespace PenBridge.Android;
 /// The single activity: Mac list → Pair (PIN / QR) → Pad, plus Connect manually and Settings, as a stack of
 /// <see cref="Screen"/>s. Drives <see cref="ClientHost"/> from the lifecycle (OnStart/OnStop) and opens the pad
 /// whenever a session is up. On a fresh launch it gives auto-connect to the last-used Mac a ~3 s window; after that
-/// the user picks from the list. Handles rotation itself so the pad is never recreated mid-session.
+/// the user picks from the list. Handles rotation itself so the pad is never recreated mid-session; UiMode too, since
+/// the theme is dark-only with fixed colours and a night-mode or dock change needs no resource reload.
 /// </summary>
 [Activity(
     Label = "@string/app_name",
@@ -23,7 +24,7 @@ namespace PenBridge.Android;
     LaunchMode = LaunchMode.SingleTop,
     WindowSoftInputMode = global::Android.Views.SoftInput.AdjustResize,
     ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.ScreenSize | ConfigChanges.ScreenLayout
-        | ConfigChanges.SmallestScreenSize | ConfigChanges.KeyboardHidden)]
+        | ConfigChanges.SmallestScreenSize | ConfigChanges.KeyboardHidden | ConfigChanges.UiMode)]
 public sealed class MainActivity : ComponentActivity
 {
     /// <summary>How long a fresh launch waits for the last-used Mac to be discovered and connected.</summary>
@@ -81,9 +82,11 @@ public sealed class MainActivity : ComponentActivity
         Screens.Changed += OnScreensChanged;
         _home = new MacListScreen(this);
         Screens.Push(_home);
-        if (Host.CurrentMac is not null && Host.State.Status is ClientHostStatus.Connected or ClientHostStatus.Connecting)
+        if (Host.CurrentMac is not null)
         {
-            Screens.Push(new PadScreen(this)); // recreated mid-session
+            // Recreated mid-session: the old activity's OnStop already closed the session (state Idle) but kept the
+            // target, which this activity's OnStart reconnects to.
+            Screens.Push(new PadScreen(this));
         }
 
         _back = new BackCallback(this);
