@@ -60,6 +60,14 @@ public enum GestureKind : byte
     /// when the last finger lifts. Never preceded by Began and never active.
     /// </summary>
     Tap = 3,
+
+    /// <summary>
+    /// Fingers landed: the contact count went from 0 to at least 1 while gestures were not blocked by the pen. A single
+    /// informational event with <see cref="GesturePhase.Began"/>, no deltas, at the first contact's position; later
+    /// fingers and further frames emit none. The Mac uses it to stop a scroll coast at once (ADR-0023: a new touch
+    /// stops momentum). Never active; nothing ends it.
+    /// </summary>
+    TouchDown = 4,
 }
 
 /// <summary>Gesture phase.</summary>
@@ -77,11 +85,11 @@ public enum GesturePhase : byte
 /// One gesture event. Deltas and the center are in global display points (via the recognizer's
 /// <see cref="CoordinateMapper"/>, top-left origin, y down); a positive <see cref="DeltaY"/> means the fingers moved down.
 /// </summary>
-/// <param name="Kind">Scroll, Pinch (pinch/rotate transform) or Tap.</param>
-/// <param name="Phase">Began / Changed / Ended / Cancelled (Tap: always Ended).</param>
+/// <param name="Kind">Scroll, Pinch (pinch/rotate transform), Tap or TouchDown.</param>
+/// <param name="Phase">Began / Changed / Ended / Cancelled (Tap: always Ended; TouchDown: always Began).</param>
 /// <param name="DeltaX">
 /// Scroll: centroid movement since the previous event (Began: since the fingers landed), multiplied by
-/// <see cref="GestureRecognizerOptions.ScrollGain"/>. 0 for Pinch, Tap and Ended/Cancelled.
+/// <see cref="GestureRecognizerOptions.ScrollGain"/>. 0 for Pinch, Tap, TouchDown and Ended/Cancelled.
 /// </param>
 /// <param name="DeltaY">Scroll: see <paramref name="DeltaX"/>.</param>
 /// <param name="ScaleDelta">Pinch: multiplicative finger-spread change since the previous event (Began: since landing). 1 otherwise.</param>
@@ -90,7 +98,10 @@ public enum GesturePhase : byte
 /// degrees, unwrapped (never jumps at ±180°). Measured in display coordinates (y down), so a positive value is a
 /// <b>clockwise</b> turn as seen on the screen (AppKit's rotation is counterclockwise-positive: negate it). 0 otherwise.
 /// </param>
-/// <param name="Center">Current centroid of the two tracked fingers in display points (Tap: their landing midpoint).</param>
+/// <param name="Center">
+/// Current centroid of the two tracked fingers in display points (Tap: their landing midpoint; TouchDown: the first
+/// contact in the frame).
+/// </param>
 /// <param name="Synthetic">True when synthesized by the watchdog or a reset.</param>
 /// <param name="TimestampUs">Monotonic µs since session start, same clock as <see cref="PenEvent.TimestampUs"/>.</param>
 public readonly record struct GestureEvent(

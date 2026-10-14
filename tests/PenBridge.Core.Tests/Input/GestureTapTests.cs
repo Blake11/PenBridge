@@ -8,6 +8,9 @@ public class GestureTapTests
     // Square 1000x1000 surface onto a 1000x1000 display: tap slop 2% = 20 pt.
     private static readonly CoordinateMapper Square = new(1000, 1000, new DisplayRect(0, 0, 1000, 1000));
     private readonly RecordingSink _sink = new();
+
+    /// <summary>Recorded gestures without the TouchDown landing events (covered by GestureTouchDownTests).</summary>
+    private List<GestureEvent> Gestures => _sink.Gestures.Where(g => g.Kind != GestureKind.TouchDown).ToList();
     private readonly GestureRecognizer _rec;
 
     public GestureTapTests()
@@ -25,7 +28,7 @@ public class GestureTapTests
 
     private void Lift(double ms) => Frame(ms);
 
-    private GestureEvent[] Taps() => _sink.Gestures.Where(g => g.Kind == GestureKind.Tap).ToArray();
+    private GestureEvent[] Taps() => Gestures.Where(g => g.Kind == GestureKind.Tap).ToArray();
 
     [Fact]
     public void Two_fingers_landing_and_lifting_quickly_tap_at_their_midpoint()
@@ -34,7 +37,7 @@ public class GestureTapTests
         Frame(40, false, F(1, 402, 501), F(2, 601, 521));
         Lift(80);
 
-        GestureEvent tap = Assert.Single(_sink.Gestures);
+        GestureEvent tap = Assert.Single(Gestures);
         Assert.Equal(GestureKind.Tap, tap.Kind);
         Assert.Equal(GesturePhase.Ended, tap.Phase);
         Assert.Equal(500, tap.Center.X, 0.1);
@@ -72,7 +75,7 @@ public class GestureTapTests
         Frame(0, false, F(1, 400, 500), F(2, 600, 500));
         Frame(250, false, F(1, 400, 500), F(2, 600, 500));
         Lift(260);
-        Assert.Empty(_sink.Gestures);
+        Assert.Empty(Gestures);
     }
 
     [Theory]
@@ -93,7 +96,7 @@ public class GestureTapTests
         Frame(40, false, F(2, 600, 500));
         Frame(60, false, F(2, 600, 530));
         Lift(80);
-        Assert.Empty(_sink.Gestures);
+        Assert.Empty(Gestures);
     }
 
     [Fact]
@@ -111,7 +114,7 @@ public class GestureTapTests
     {
         Frame(0, false, F(1, 400, 500));
         Lift(50);
-        Assert.Empty(_sink.Gestures);
+        Assert.Empty(Gestures);
     }
 
     [Fact]
@@ -119,7 +122,7 @@ public class GestureTapTests
     {
         Frame(0, false, F(1, 400, 500), F(2, 600, 500), F(3, 500, 300));
         Lift(50);
-        Assert.Empty(_sink.Gestures);
+        Assert.Empty(Gestures);
     }
 
     [Fact]
@@ -139,7 +142,7 @@ public class GestureTapTests
         rec.Process([F(1, 400, 500), F(2, 600, 500)], false, 0);
         rec.Process([F(1, 400, 515), F(2, 600, 515)], false, Ms(30)); // 15 pt: a scroll, but within the tap slop
         rec.Process([], false, Ms(60));
-        Assert.Equal([GesturePhase.Began, GesturePhase.Ended], _sink.Gestures.Select(g => g.Phase));
+        Assert.Equal([GesturePhase.Began, GesturePhase.Ended], Gestures.Select(g => g.Phase));
         Assert.Empty(Taps());
     }
 
@@ -150,7 +153,7 @@ public class GestureTapTests
         Frame(30, true, F(1, 400, 500), F(2, 600, 500));
         Frame(60, false, F(1, 400, 500), F(2, 600, 500));
         Lift(90);
-        Assert.Empty(_sink.Gestures);
+        Assert.Empty(Gestures);
     }
 
     [Fact]
@@ -158,7 +161,7 @@ public class GestureTapTests
     {
         Frame(0, false, F(1, 400, 500), F(2, 600, 500));
         Frame(60, true);
-        Assert.Empty(_sink.Gestures);
+        Assert.Empty(Gestures);
     }
 
     [Fact]
@@ -167,7 +170,7 @@ public class GestureTapTests
         Frame(0, true, F(1, 400, 500), F(2, 600, 500));
         Frame(30, false, F(1, 400, 500), F(2, 600, 500));
         Lift(60);
-        Assert.Empty(_sink.Gestures);
+        Assert.Empty(Gestures);
     }
 
     [Fact]
@@ -177,7 +180,7 @@ public class GestureTapTests
         _rec.Cancel(Ms(20));
         Frame(40, false, F(1, 400, 500), F(2, 600, 500));
         Lift(60);
-        Assert.Empty(_sink.Gestures);
+        Assert.Empty(Gestures);
 
         // The next touch sequence taps normally.
         Frame(100, false, F(1, 400, 500), F(2, 600, 500));
@@ -217,5 +220,14 @@ public class GestureTapTests
         }
 
         Assert.Equal(3, Taps().Length);
+    }
+
+    [Fact]
+    public void Fingers_landing_while_still_pen_blocked_are_no_tap()
+    {
+        Frame(0, true); // pen in range without fingers: blocked until a pen-free frame with no contacts
+        Frame(30, false, F(1, 400, 500), F(2, 600, 500));
+        Lift(60);
+        Assert.Empty(_sink.Gestures);
     }
 }

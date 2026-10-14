@@ -49,6 +49,11 @@ public sealed record GestureRecognizerOptions
 /// that carried a touch.
 /// </para>
 /// <para>
+/// Touch down: when the contact count goes from 0 to at least 1 (and the pen does not block gestures), one
+/// <see cref="GestureKind.TouchDown"/> event is emitted first, so the head can stop a scroll coast. After
+/// <see cref="Cancel"/> the count restarts at 0, so fingers still down in the next frame count as landing again.
+/// </para>
+/// <para>
 /// When the pen comes into range an active gesture is Cancelled, a pending tap is dropped, and nothing new starts
 /// until all fingers have lifted. <see cref="Cancel"/> (watchdog, session end) cancels likewise. Frames are ignored
 /// until a configured <see cref="Mapper"/> is set (apply SurfaceInfo first). Not thread-safe; allocation-free per call.
@@ -154,6 +159,11 @@ public sealed class GestureRecognizer
             _tapPending = false;
             _state = State.Blocked;
             return;
+        }
+
+        if (previousCount == 0 && count > 0 && _state != State.Blocked)
+        {
+            EmitTouchDown(touches, timestampUs);
         }
 
         TrackTap(touches, previousCount, count, timestampUs);
@@ -317,7 +327,7 @@ public sealed class GestureRecognizer
     /// <summary>Follows one touch sequence (first landing until all lift) and drops the tap when a rule breaks.</summary>
     private void TrackTap(ReadOnlySpan<TouchSample> touches, int previousCount, int count, long timestampUs)
     {
-        if (previousCount == 0 && count > 0 && !_tapSuppressed)
+        if (previousCount == 0 && count > 0 && !_tapSuppressed && _state != State.Blocked)
         {
             _tapPending = true;
             _tapPaired = false;
@@ -465,6 +475,19 @@ public sealed class GestureRecognizer
         double sy = pb.Y - pa.Y;
         spread = Math.Sqrt((sx * sx) + (sy * sy));
         angle = Math.Atan2(sy, sx) * DegreesPerRadian; // y down: increasing angle turns clockwise on screen
+    }
+
+    private void EmitTouchDown(ReadOnlySpan<TouchSample> touches, long timestampUs)
+    {
+        for (int i = 0; i < touches.Length; i++)
+        {
+            if (touches[i].Contact)
+            {
+                DisplayPoint at = Mapper.Map(touches[i].X, touches[i].Y);
+                _sink.OnGestureEvent(new GestureEvent(GestureKind.TouchDown, GesturePhase.Began, 0, 0, 1, 0, at, false, timestampUs));
+                return;
+            }
+        }
     }
 
     private void Emit(GesturePhase phase, double dx, double dy, double scale, double rotation, DisplayPoint center, bool synthetic, long timestampUs)

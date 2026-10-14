@@ -8,6 +8,9 @@ public class GestureTransformTests
     // Square 1000x1000 surface onto a 1000x1000 display: thresholds are 4% = 40 pt.
     private static readonly CoordinateMapper Square = new(1000, 1000, new DisplayRect(0, 0, 1000, 1000));
     private readonly RecordingSink _sink = new();
+
+    /// <summary>Recorded gestures without the TouchDown landing events (covered by GestureTouchDownTests).</summary>
+    private List<GestureEvent> Gestures => _sink.Gestures.Where(g => g.Kind != GestureKind.TouchDown).ToList();
     private GestureRecognizer _rec;
 
     public GestureTransformTests()
@@ -36,7 +39,7 @@ public class GestureTransformTests
     {
         Angle(0);
         Angle(30); // arc = 0.52 rad * 100 = 52 pt >= 40, spread and travel ~0
-        GestureEvent began = Assert.Single(_sink.Gestures);
+        GestureEvent began = Assert.Single(Gestures);
         Assert.Equal(GestureKind.Pinch, began.Kind);
         Assert.Equal(GesturePhase.Began, began.Phase);
         Assert.Equal(30, began.RotationDelta, 0.5);
@@ -50,7 +53,7 @@ public class GestureTransformTests
     {
         Angle(0);
         Angle(-30);
-        Assert.Equal(-30, Assert.Single(_sink.Gestures).RotationDelta, 0.5);
+        Assert.Equal(-30, Assert.Single(Gestures).RotationDelta, 0.5);
     }
 
     [Fact]
@@ -58,7 +61,7 @@ public class GestureTransformTests
     {
         Two(400, 500, 600, 500);
         Two(400, 440, 600, 560); // right finger down, left finger up: clockwise with y down
-        Assert.True(Assert.Single(_sink.Gestures).RotationDelta > 0);
+        Assert.True(Assert.Single(Gestures).RotationDelta > 0);
     }
 
     [Fact]
@@ -66,7 +69,7 @@ public class GestureTransformTests
     {
         Angle(0);
         Angle(15); // arc 26 pt < 40
-        Assert.Empty(_sink.Gestures);
+        Assert.Empty(Gestures);
     }
 
     [Fact]
@@ -75,7 +78,7 @@ public class GestureTransformTests
         // 15 degrees at radius 200 (spread 400): arc = 0.26 * 200 = 52 pt -> transform.
         Angle(0, radius: 200);
         Angle(15, radius: 200);
-        Assert.Equal(GestureKind.Pinch, Assert.Single(_sink.Gestures).Kind);
+        Assert.Equal(GestureKind.Pinch, Assert.Single(Gestures).Kind);
     }
 
     [Fact]
@@ -84,7 +87,7 @@ public class GestureTransformTests
         _rec = new GestureRecognizer(_sink, new GestureRecognizerOptions { RotationThreshold = 0.02 }) { Mapper = Square };
         Angle(0);
         Angle(15); // arc 26 pt >= 20
-        Assert.Equal(15, Assert.Single(_sink.Gestures).RotationDelta, 0.5);
+        Assert.Equal(15, Assert.Single(Gestures).RotationDelta, 0.5);
     }
 
     [Fact]
@@ -92,7 +95,7 @@ public class GestureTransformTests
     {
         Angle(0);
         Angle(30, cx: 500, cy: 570); // arc 52, travel 70 -> scroll
-        Assert.Equal(GestureKind.Scroll, Assert.Single(_sink.Gestures).Kind);
+        Assert.Equal(GestureKind.Scroll, Assert.Single(Gestures).Kind);
     }
 
     [Fact]
@@ -100,7 +103,7 @@ public class GestureTransformTests
     {
         Angle(0);
         Angle(40, cx: 500, cy: 545); // arc 70, travel 45 -> transform
-        Assert.Equal(GestureKind.Pinch, Assert.Single(_sink.Gestures).Kind);
+        Assert.Equal(GestureKind.Pinch, Assert.Single(Gestures).Kind);
     }
 
     [Fact]
@@ -111,14 +114,14 @@ public class GestureTransformTests
         Angle(20, radius: 180);
         Lift();
 
-        Assert.Equal([GesturePhase.Began, GesturePhase.Changed, GesturePhase.Ended], _sink.Gestures.Select(g => g.Phase));
-        Assert.All(_sink.Gestures, g => Assert.Equal(GestureKind.Pinch, g.Kind));
-        Assert.Equal(1.5, _sink.Gestures[0].ScaleDelta, 0.01);
-        Assert.Equal(0, _sink.Gestures[0].RotationDelta, 0.01);
-        Assert.Equal(1.2, _sink.Gestures[1].ScaleDelta, 0.01);
-        Assert.Equal(20, _sink.Gestures[1].RotationDelta, 0.3);
-        Assert.Equal(0, _sink.Gestures[2].RotationDelta);
-        Assert.Equal(1, _sink.Gestures[2].ScaleDelta);
+        Assert.Equal([GesturePhase.Began, GesturePhase.Changed, GesturePhase.Ended], Gestures.Select(g => g.Phase));
+        Assert.All(Gestures, g => Assert.Equal(GestureKind.Pinch, g.Kind));
+        Assert.Equal(1.5, Gestures[0].ScaleDelta, 0.01);
+        Assert.Equal(0, Gestures[0].RotationDelta, 0.01);
+        Assert.Equal(1.2, Gestures[1].ScaleDelta, 0.01);
+        Assert.Equal(20, Gestures[1].RotationDelta, 0.3);
+        Assert.Equal(0, Gestures[2].RotationDelta);
+        Assert.Equal(1, Gestures[2].ScaleDelta);
     }
 
     [Fact]
@@ -128,7 +131,7 @@ public class GestureTransformTests
         Angle(10);
         Angle(20);
         Angle(35);
-        GestureEvent began = Assert.Single(_sink.Gestures);
+        GestureEvent began = Assert.Single(Gestures);
         Assert.Equal(35, began.RotationDelta, 0.5);
     }
 
@@ -141,8 +144,8 @@ public class GestureTransformTests
             Angle(d); // atan2 wraps from +180 to -180 between 180 and 190
         }
 
-        Assert.All(_sink.Gestures, g => Assert.InRange(g.RotationDelta, 0, 35));
-        double total = _sink.Gestures.Sum(g => g.RotationDelta);
+        Assert.All(Gestures, g => Assert.InRange(g.RotationDelta, 0, 35));
+        double total = Gestures.Sum(g => g.RotationDelta);
         Assert.Equal(100, total, 0.5);
     }
 
@@ -151,9 +154,9 @@ public class GestureTransformTests
     {
         Angle(-175);
         Angle(170); // -15 degrees through the wrap: still below the threshold
-        Assert.Empty(_sink.Gestures);
+        Assert.Empty(Gestures);
         Angle(150);
-        Assert.Equal(-35, Assert.Single(_sink.Gestures).RotationDelta, 0.5);
+        Assert.Equal(-35, Assert.Single(Gestures).RotationDelta, 0.5);
     }
 
     [Fact]
@@ -165,7 +168,7 @@ public class GestureTransformTests
             Angle(d);
         }
 
-        Assert.Equal(400, _sink.Gestures.Sum(g => g.RotationDelta), 0.5);
+        Assert.Equal(400, Gestures.Sum(g => g.RotationDelta), 0.5);
     }
 
     [Fact]
@@ -174,7 +177,7 @@ public class GestureTransformTests
         Two(400, 500, 600, 500);
         Two(400, 560, 600, 560); // scroll
         Angle(45, radius: 150, cy: 560);
-        Assert.All(_sink.Gestures, g =>
+        Assert.All(Gestures, g =>
         {
             Assert.Equal(GestureKind.Scroll, g.Kind);
             Assert.Equal(0, g.RotationDelta);
@@ -189,7 +192,7 @@ public class GestureTransformTests
         Angle(30);
         Angle(30);
         Angle(30);
-        Assert.Single(_sink.Gestures);
+        Assert.Single(Gestures);
     }
 
     [Fact]
@@ -198,10 +201,10 @@ public class GestureTransformTests
         Angle(0);
         Angle(30);
         _rec.Process([new TouchSample(1, true, N(400), N(500)), new TouchSample(2, true, N(600), N(500))], true, 0);
-        Assert.Equal([GesturePhase.Began, GesturePhase.Cancelled], _sink.Gestures.Select(g => g.Phase));
-        Assert.Equal(GestureKind.Pinch, _sink.Gestures[1].Kind);
-        Assert.Equal(0, _sink.Gestures[1].RotationDelta);
-        Assert.Equal(1, _sink.Gestures[1].ScaleDelta);
+        Assert.Equal([GesturePhase.Began, GesturePhase.Cancelled], Gestures.Select(g => g.Phase));
+        Assert.Equal(GestureKind.Pinch, Gestures[1].Kind);
+        Assert.Equal(0, Gestures[1].RotationDelta);
+        Assert.Equal(1, Gestures[1].ScaleDelta);
     }
 
     [Fact]
@@ -210,12 +213,12 @@ public class GestureTransformTests
         _rec = new GestureRecognizer(_sink, new GestureRecognizerOptions { ScrollGain = 2 }) { Mapper = Square };
         Two(400, 500, 600, 500);
         Two(400, 530, 600, 530); // 30 pt: below 40 even with gain 2
-        Assert.Empty(_sink.Gestures);
+        Assert.Empty(Gestures);
         Two(400, 550, 600, 550);
         Two(400, 570, 600, 570);
-        Assert.Equal(100, _sink.Gestures[0].DeltaY, 0.1);
-        Assert.Equal(40, _sink.Gestures[1].DeltaY, 0.1);
-        Assert.Equal(570, _sink.Gestures[1].Center.Y, 0.1);
+        Assert.Equal(100, Gestures[0].DeltaY, 0.1);
+        Assert.Equal(40, Gestures[1].DeltaY, 0.1);
+        Assert.Equal(570, Gestures[1].Center.Y, 0.1);
     }
 
     [Theory]
@@ -285,7 +288,7 @@ public class GestureTransformTests
                 two[1] = new TouchSample(2, true, N(600), N(500 + phase));
                 rec.Process(two, false, t);
             }
-        }, () => sink.Transforms, () => sink.Taps, () => sink.Scrolls);
+        }, () => sink.Transforms, () => sink.Taps, () => sink.Scrolls, () => sink.TouchDowns);
     }
 
     private sealed class CountingSink : IInputSink
@@ -295,6 +298,8 @@ public class GestureTransformTests
         public long Taps { get; private set; }
 
         public long Scrolls { get; private set; }
+
+        public long TouchDowns { get; private set; }
 
         public void OnPenEvent(in PenEvent e)
         {
@@ -309,6 +314,9 @@ public class GestureTransformTests
                     break;
                 case GestureKind.Tap:
                     Taps++;
+                    break;
+                case GestureKind.TouchDown:
+                    TouchDowns++;
                     break;
                 default:
                     Scrolls++;

@@ -212,7 +212,8 @@ public class PenStateTrackerTests
     {
         Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 20000, 10000));
         Frame(null, new TouchSample(1, true, 10000, 20000), new TouchSample(2, true, 20000, 20000));
-        Assert.Equal(GesturePhase.Began, Assert.Single(_sink.Gestures).Phase);
+        Assert.Equal([GestureKind.TouchDown, GestureKind.Scroll], _sink.Gestures.Select(g => g.Kind));
+        Assert.Equal(GesturePhase.Began, _sink.Gestures[1].Phase);
         Assert.Equal(TimeSpan.FromMilliseconds(150), _tracker.WatchdogDueIn);
 
         _time.Advance(TimeSpan.FromMilliseconds(150));
@@ -229,8 +230,9 @@ public class PenStateTrackerTests
         Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 20000, 10000));
         Frame(null, new TouchSample(1, true, 10000, 20000), new TouchSample(2, true, 20000, 20000));
         Frame(Samples.Hover(5, 5), new TouchSample(1, true, 10000, 25000), new TouchSample(2, true, 20000, 25000));
-        Assert.Equal([GesturePhase.Began, GesturePhase.Cancelled], _sink.Gestures.Select(g => g.Phase));
-        Assert.False(_sink.Gestures[1].Synthetic);
+        Assert.Equal([GestureKind.TouchDown, GestureKind.Scroll, GestureKind.Scroll], _sink.Gestures.Select(g => g.Kind));
+        Assert.Equal([GesturePhase.Began, GesturePhase.Began, GesturePhase.Cancelled], _sink.Gestures.Select(g => g.Phase));
+        Assert.False(_sink.Gestures[2].Synthetic);
         Assert.Equal([ProximityEnter], _sink.PenKinds());
     }
 
@@ -340,7 +342,7 @@ public class PenStateTrackerTests
     {
         _tracker.ProcessFrame(7_000, null, [], [new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 20000, 10000)]);
         _tracker.ProcessFrame(9_000, null, [], [new TouchSample(1, true, 10000, 20000), new TouchSample(2, true, 20000, 20000)]);
-        Assert.Equal(9_000, Assert.Single(_sink.Gestures).TimestampUs);
+        Assert.Equal([7_000L, 9_000L], _sink.Gestures.Select(g => g.TimestampUs)); // TouchDown, then scroll Began
     }
 
     [Fact]

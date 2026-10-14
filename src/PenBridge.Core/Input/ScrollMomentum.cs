@@ -114,7 +114,7 @@ public sealed class ScrollMomentum
 
     /// <summary>
     /// Routes one gesture event: scroll Began clears and records, Changed records, Ended tries to start coasting,
-    /// Cancelled and every other gesture (pinch, tap) stop everything. Returns true when coasting started.
+    /// Cancelled and every other gesture (pinch, tap, touch down) stop everything. Returns true when coasting started.
     /// </summary>
     public bool Observe(in GestureEvent e)
     {
