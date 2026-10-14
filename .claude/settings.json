@@ -75,14 +75,6 @@
       "mcp__rider__get_file_problems"
     ],
     "ask": [
-      "Bash(./scripts/bootstrap.sh *)",
-      "Bash(scripts/bootstrap.sh *)",
-      "Bash(git push *)",
-      "Bash(git reset --hard *)",
-      "Bash(git clean *)",
-      "Bash(git branch -D *)",
-      "Bash(git worktree remove --force *)",
-      "Bash(git remote add *)",
       "Bash(tccutil reset *)",
       "Bash(rm -rf *)"
     ],
