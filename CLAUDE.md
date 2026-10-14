@@ -41,8 +41,8 @@ scripts/smoke-trimmed-pairing.sh [--aot]  # trimmed SimClient pairs + draws agai
 scripts/mac-dev-cert.sh [--check|--delete]      # one-time "PenBridge Dev" cert (user runs: password prompt)
 scripts/mac-run.sh [--release] [--no-build] [--reset-tcc] [--logs]
 scripts/android-emulator.sh [--headless|--stop|--recreate]   # AVD PenBridge_Tablet
-scripts/android-device.sh pair <ip:port> <code> | connect <ip:port> | list   # wireless adb to the S23
-scripts/android-run.sh [--emulator|--device <ip:port>] [--apk] [--logs|--logs-only]
+scripts/android-device.sh pair <ip:port> <code> | connect <ip:port>|--auto | list   # wireless adb to the S23
+scripts/android-run.sh [--emulator|--device <ip:port>] [--apk] [--app-id <id>] [--logs|--logs-only]   # AVD_NAME=… per agent
 ```
 
 ## How we work: the main session is the architect
