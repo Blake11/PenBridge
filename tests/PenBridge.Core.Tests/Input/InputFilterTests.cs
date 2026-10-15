@@ -3,6 +3,7 @@ using PenBridge.Core.Input;
 namespace PenBridge.Core.Tests.Input;
 
 /// <summary>Pen, palm, gesture and arming rules, with the finger in draw mode (cursor mode: <see cref="InputFilterCursorTests"/>).</summary>
+[Collection(AllocationGroup.Name)]
 public class InputFilterTests
 {
     private static readonly PenSample PenHover = Samples.Hover(100, 200);
@@ -189,6 +190,13 @@ public class InputFilterTests
         }, () => touches);
     }
 
+    private void AssertWithdrawnOnly(InputFilterResult r, byte id)
+    {
+        Assert.False(r.HasPen);
+        Assert.Equal(1, r.TouchCount);
+        Assert.Equal(new TouchSample(id, false, 1000, 2000), _out[0]);
+    }
+
     private static void AssertNothing(InputFilterResult r)
     {
         Assert.False(r.HasPen);
@@ -357,11 +365,13 @@ public class InputFilterTests
     {
         var f = new InputFilter(new InputFilterOptions { FingerMode = FingerFallbackMode.Draw, FingerFallbackEnabled = false });
         Assert.Equal(1, f.Process(Ms(0), null, [Finger(1)], _out).TouchCount);
-        AssertNothing(f.Process(Ms(10), null, [Finger(1), Palm(2)], _out));
 
-        // The palm lifts but finger 1 stays: still suppressed, and so is a fresh finger.
-        AssertNothing(f.Process(Ms(20), null, [Finger(1)], _out));
-        AssertNothing(f.Process(Ms(600), null, [Finger(1), Finger(3)], _out));
+        // Finger 1 was sent, so it stays on the wire as withdrawn (not in contact) until it lifts (ADR-0024).
+        AssertWithdrawnOnly(f.Process(Ms(10), null, [Finger(1), Palm(2)], _out), 1);
+
+        // The palm lifts but finger 1 stays: still suppressed, and so is a fresh finger (never sent: not reported).
+        AssertWithdrawnOnly(f.Process(Ms(20), null, [Finger(1)], _out), 1);
+        AssertWithdrawnOnly(f.Process(Ms(600), null, [Finger(1), Finger(3)], _out), 1);
 
         f.Process(Ms(610), null, [], _out);
         Assert.Equal(1, f.Process(Ms(810), null, [Finger(4)], _out).TouchCount);

@@ -1,5 +1,6 @@
 namespace PenBridge.Core.Tests.Input;
 
+[Collection(AllocationGroup.Name)]
 public class AllocTests
 {
     [Fact]

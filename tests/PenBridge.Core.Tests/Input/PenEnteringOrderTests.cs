@@ -6,6 +6,7 @@ namespace PenBridge.Core.Tests.Input;
 /// The pen (or a one-finger cursor) coming into range ends the gestures before its own events
 /// (<see cref="GestureRecognizer.PenEntering"/>): a held Tap right-clicks and a scroll ends at the cursor the pen then moves.
 /// </summary>
+[Collection(AllocationGroup.Name)]
 public class PenEnteringOrderTests
 {
     private static readonly CoordinateMapper Square = new(1, 1, new DisplayRect(0, 0, 65535, 65535));

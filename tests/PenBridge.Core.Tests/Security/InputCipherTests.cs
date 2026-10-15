@@ -4,6 +4,7 @@ using PenBridge.Core.Tests.Input;
 
 namespace PenBridge.Core.Tests.Security;
 
+[Collection(AllocationGroup.Name)]
 public class InputCipherTests
 {
     private const uint Session = 0xA1B2C3D4;

@@ -11,6 +11,8 @@ Run with `scripts/test.sh` (add `-c Release`; CI runs Release on x64, local is u
 
 Helper: `tests/PenBridge.Core.Tests/TestSupport/Alloc.cs` (namespace `PenBridge.Core.Tests.Input`, so add
 `using PenBridge.Core.Tests.Input;`). Self-tests: `TestSupport/AllocTests.cs`.
+Put every class that calls it in `[Collection(AllocationGroup.Name)]` (`TestSupport/AllocationGroup.cs`, not parallel).
+Runtime work done for parallel tests can otherwise hit every measured pass. A failure lists each pass's bytes.
 
 ```csharp
 long ran = 0;

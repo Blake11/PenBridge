@@ -13,6 +13,7 @@ using PenBridge.Core.Tests.Net;
 namespace PenBridge.Core.Tests.Diagnostics;
 
 /// <summary>The ring buffer, the dump, and the capture wired into the server's input path.</summary>
+[Collection(AllocationGroup.Name)]
 public class LatencyRecorderTests
 {
     private const uint SessionId = 0xC0FFEE01;

@@ -23,7 +23,7 @@ public class GestureTouchDownTests
     [Fact]
     public void Landing_emits_one_touch_down_at_the_first_contact()
     {
-        _rec.Process([new TouchSample(7, false, 1, 1), F(3, 250, 750)], false, 1_000);
+        _rec.Process([F(3, 250, 750)], false, 1_000);
         GestureEvent e = Assert.Single(_sink.Gestures);
         Assert.Equal(GestureKind.TouchDown, e.Kind);
         Assert.Equal(GesturePhase.Began, e.Phase);

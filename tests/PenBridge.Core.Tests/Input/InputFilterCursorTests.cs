@@ -3,6 +3,7 @@ using PenBridge.Core.Input;
 namespace PenBridge.Core.Tests.Input;
 
 /// <summary>Cursor mode (the default finger fallback, ADR-0022): one finger moves, a tap clicks, double-tap-hold drags.</summary>
+[Collection(AllocationGroup.Name)]
 public class InputFilterCursorTests
 {
     private const PenState Hover = PenState.InRange;

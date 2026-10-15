@@ -2,6 +2,7 @@ using PenBridge.Core.Input;
 
 namespace PenBridge.Core.Tests.Input;
 
+[Collection(AllocationGroup.Name)]
 public class GestureAllocationTests
 {
     private static readonly CoordinateMapper Square = new(1000, 1000, new DisplayRect(0, 0, 1000, 1000));

@@ -11,6 +11,7 @@ using PenBridge.Core.Tests.Input;
 namespace PenBridge.Core.Tests.Net;
 
 /// <summary>The server input path without sockets (<see cref="SessionInput"/>), allocation checks and small helpers.</summary>
+[Collection(AllocationGroup.Name)]
 public class NetUnitTests
 {
     private const uint SessionId = 0xC0FFEE01;

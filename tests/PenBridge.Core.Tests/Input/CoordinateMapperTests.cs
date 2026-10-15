@@ -2,6 +2,7 @@ using PenBridge.Core.Input;
 
 namespace PenBridge.Core.Tests.Input;
 
+[Collection(AllocationGroup.Name)]
 public class CoordinateMapperTests
 {
     private const double Tol = 1e-6;

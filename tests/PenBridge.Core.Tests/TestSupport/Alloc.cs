@@ -34,6 +34,8 @@ internal static class Alloc
         }
 
         long[] progressBefore = new long[progress.Length];
+        long[] passBytes = new long[MeasuredPasses];
+        int passes = 0;
         long best = long.MaxValue;
         for (int p = 0; p < MeasuredPasses && best != 0; p++)
         {
@@ -50,10 +52,16 @@ internal static class Alloc
                 Assert.True(progress[k]() > progressBefore[k], $"Progress counter {k} did not advance: the measured pass skipped the hot path.");
             }
 
+            passBytes[passes++] = bytes;
             best = Math.Min(best, bytes);
         }
 
-        Assert.Equal(0, best);
+        if (best != 0)
+        {
+            // Every measured pass allocated: per-pass bytes tell a per-iteration allocation (about the same, a
+            // multiple of the iteration count) from one-off runtime work spread over the passes.
+            Assert.Fail($"Allocated in every measured pass ({iterationsPerPass} iterations each): {string.Join(", ", passBytes)} bytes.");
+        }
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]

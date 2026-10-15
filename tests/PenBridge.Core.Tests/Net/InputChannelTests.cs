@@ -169,6 +169,26 @@ public class InputChannelTests
     }
 
     [Fact]
+    public async Task Withdrawn_touches_are_repeated_like_a_release_then_the_client_goes_quiet()
+    {
+        await using var h = new NetHarness();
+        PenBridgeClient client = await h.PairAsync();
+        client.SendState(null, [new TouchSample(1, true, 20000, 30000), new TouchSample(2, true, 40000, 30000)]);
+        // A platform cancel (ADR-0024): the last state the phone sends has only withdrawn (not in contact) touches.
+        client.SendState(null, [new TouchSample(1, false, 20000, 30000), new TouchSample(2, false, 40000, 30000)]);
+        long sealedAfterSend = client.DatagramsSealed;
+
+        for (int i = 0; i < 10; i++)
+        {
+            h.Time.Advance(TimeSpan.FromMilliseconds(40));
+        }
+
+        Assert.Equal(sealedAfterSend + 2, client.DatagramsSealed); // the two release repeats, not a keepalive forever
+        await Wait.Until(() => h.Server.GetStats().Counters.Accepted == sealedAfterSend + 2, "repeats delivered");
+        Assert.Equal(GestureKind.TouchDown, Assert.Single(h.Sink.Gestures()).Kind); // withdrawn: no tap
+    }
+
+    [Fact]
     public async Task Input_falls_back_to_tls_when_udp_is_blocked()
     {
         await using var h = new NetHarness();

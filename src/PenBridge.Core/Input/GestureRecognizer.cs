@@ -105,6 +105,9 @@ public sealed record GestureRecognizerOptions
 /// When the pen comes into range an active gesture is Cancelled, and fingers already down are blocked until all have
 /// lifted (fingers landing in a later pen-free frame are new). <see cref="PenStateTracker"/> does it through
 /// <see cref="PenEntering"/> before the pen's first event, so the Cancelled (and a held Tap) precede it.
+/// A touch present with <c>Contact=false</c> was withdrawn by the phone (palm, platform cancel; ADR-0024): an active
+/// gesture is Cancelled, the touch sequence is no tap, and gestures stay blocked until every touch present then is gone
+/// (fingers landing after that are new). Only contacts count as fingers.
 /// <see cref="Cancel"/> (watchdog, session end) cancels likewise: fingers still down in later frames are blocked until
 /// all lift. Frames are ignored until a configured <see cref="Mapper"/> is set (apply SurfaceInfo first). Not
 /// thread-safe; allocation-free per call.
@@ -133,6 +136,12 @@ public sealed class GestureRecognizer
     private readonly byte[] _ids = new byte[MaxGestureFingers];
     private readonly DisplayPoint[] _points = new DisplayPoint[MaxGestureFingers];
     private int _orderCount;
+
+    // Withdrawn touches (ADR-0024): ids present when a non-contact touch was seen; blocked until each is gone.
+    private readonly byte[] _withdrawnIds = new byte[MaxTrackedContacts];
+    private readonly bool[] _withdrawnContact = new bool[MaxTrackedContacts]; // was in contact when last seen
+    private int _withdrawnCount;
+    private bool _blockUntilLift; // Blocked by the pen or Cancel: until a frame without contacts
     private int _landed;
     private byte _firstLandedId;
     private State _state;
@@ -212,7 +221,7 @@ public sealed class GestureRecognizer
         Ignored,
         /// <summary>A gesture ended while fingers remain: nothing new until all lift.</summary>
         Finished,
-        /// <summary>Pen in range or cancelled: no gesture, tap or touch-down until all lift.</summary>
+        /// <summary>Pen in range, cancelled, or withdrawn touches: no gesture, tap or touch-down until they lift.</summary>
         Blocked,
     }
 
@@ -275,6 +284,7 @@ public sealed class GestureRecognizer
         int previousCount = ContactCount;
         int count = UpdateLandingOrder(touches);
         ContactCount = count;
+        TrackWithdrawn(touches, timestampUs);
 
         if (penInRange)
         {
@@ -285,7 +295,7 @@ public sealed class GestureRecognizer
             }
 
             _tapCandidate = false;
-            _state = count > 0 ? State.Blocked : State.Idle; // only fingers already down are blocked
+            Block(count > 0); // only fingers already down are blocked
             return;
         }
 
@@ -319,7 +329,7 @@ public sealed class GestureRecognizer
             Emit(GesturePhase.Cancelled, 0, 0, 1, 0, _prevCenter, synthetic, timestampUs);
         }
 
-        _state = ContactCount > 0 ? State.Blocked : State.Idle;
+        Block(ContactCount > 0);
         _tapCandidate = false;
         _pendingTap = false;
         _orderCount = 0;
@@ -347,7 +357,94 @@ public sealed class GestureRecognizer
         }
 
         _tapCandidate = false;
-        _state = ContactCount > 0 ? State.Blocked : State.Idle;
+        Block(ContactCount > 0);
+    }
+
+    /// <summary>Blocks gestures: until a frame without contacts if <paramref name="untilLift"/>, and while withdrawn touches remain.</summary>
+    private void Block(bool untilLift)
+    {
+        _blockUntilLift = untilLift;
+        _state = untilLift || _withdrawnCount > 0 ? State.Blocked : State.Idle;
+    }
+
+    /// <summary>
+    /// Withdrawn touches (ADR-0024): a touch present with <c>Contact=false</c> was suppressed on the phone (palm,
+    /// platform cancel), not lifted. It cancels the gesture (no Tap from this touch sequence, no momentum: Cancelled,
+    /// not Ended) and blocks gestures until every touch present then, or landing while one is withdrawn, is gone. A tap
+    /// held from an earlier sequence happened, so it is emitted first. Then fingers landing later are new, even if the
+    /// withdrawn touches vanished without an empty frame or their id came back in contact (a new finger: the phone
+    /// withdraws a touch until it lifts).
+    /// </summary>
+    private void TrackWithdrawn(ReadOnlySpan<TouchSample> touches, long timestampUs)
+    {
+        // An entry is gone when its id is absent, or when a withdrawn one is back in contact: the phone withdraws a
+        // touch until it lifts, so that is a new finger reusing the id (Android restarts ids after a cancel).
+        int kept = 0;
+        for (int i = 0; i < _withdrawnCount; i++)
+        {
+            int at = IndexOf(touches, _withdrawnIds[i]);
+            if (at >= 0 && (_withdrawnContact[i] || !touches[at].Contact))
+            {
+                _withdrawnContact[kept] = _withdrawnContact[i];
+                _withdrawnIds[kept++] = _withdrawnIds[i];
+            }
+        }
+
+        bool released = kept == 0 && _withdrawnCount > 0;
+        _withdrawnCount = kept;
+
+        bool withdrawn = false;
+        for (int i = 0; i < touches.Length; i++)
+        {
+            withdrawn |= !touches[i].Contact;
+        }
+
+        if (!withdrawn)
+        {
+            if (released && _state == State.Blocked && !_blockUntilLift)
+            {
+                _state = State.Idle;
+            }
+
+            return;
+        }
+
+        FlushPendingTap(timestampUs);
+        if (IsActive)
+        {
+            Emit(GesturePhase.Cancelled, 0, 0, 1, 0, _prevCenter, synthetic: false, timestampUs);
+        }
+
+        _tapCandidate = false;
+        _state = State.Blocked;
+        for (int i = 0; i < touches.Length; i++)
+        {
+            byte id = touches[i].PointerId;
+            int at = Array.IndexOf(_withdrawnIds, id, 0, _withdrawnCount);
+            if (at < 0 && _withdrawnCount < _withdrawnIds.Length)
+            {
+                at = _withdrawnCount++;
+                _withdrawnIds[at] = id;
+            }
+
+            if (at >= 0)
+            {
+                _withdrawnContact[at] = touches[i].Contact;
+            }
+        }
+    }
+
+    private static int IndexOf(ReadOnlySpan<TouchSample> touches, byte id)
+    {
+        for (int i = 0; i < touches.Length; i++)
+        {
+            if (touches[i].PointerId == id)
+            {
+                return i;
+            }
+        }
+
+        return -1;
     }
 
     private static void RequireNonNegative(double value, string name)
@@ -422,7 +519,13 @@ public sealed class GestureRecognizer
             case State.Finished:
                 if (count == 0)
                 {
-                    _state = State.Idle;
+                    // Every contact lifted: the pen/Cancel block is over, even while withdrawn touches remain (they
+                    // keep blocking on their own until they are gone).
+                    _blockUntilLift = false;
+                    if (_withdrawnCount == 0)
+                    {
+                        _state = State.Idle;
+                    }
                 }
 
                 return;

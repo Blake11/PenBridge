@@ -2,6 +2,7 @@ using PenBridge.Core.Input;
 
 namespace PenBridge.Core.Tests.Input;
 
+[Collection(AllocationGroup.Name)]
 public class TabletEventPlannerTests
 {
     private readonly TabletStep[] _buffer = new TabletStep[TabletEventPlanner.MaxSteps];
