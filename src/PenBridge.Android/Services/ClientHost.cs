@@ -86,6 +86,16 @@ public sealed class ClientHost : IAsyncDisposable
 
     public ClientHostState State => _state;
 
+    /// <summary>
+    /// Capabilities the current session negotiated (<see cref="PenBridgeClient.NegotiatedCapabilities"/>), or
+    /// <see cref="ProtocolCapabilities.None"/> unless <see cref="State"/> is connected. Fixed per session: re-read on
+    /// every <see cref="StateChanged"/> (main thread).
+    /// </summary>
+    public ProtocolCapabilities NegotiatedCapabilities =>
+        _state.Status == ClientHostStatus.Connected && Volatile.Read(ref _client) is { } client
+            ? client.NegotiatedCapabilities
+            : ProtocolCapabilities.None;
+
     /// <summary>Device id and per-Mac keys (Keystore-backed).</summary>
     public ClientCredentialStore Credentials { get; }
 

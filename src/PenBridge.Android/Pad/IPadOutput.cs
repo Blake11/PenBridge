@@ -16,6 +16,13 @@ public interface IPadOutput
     event EventHandler? ConnectionStateChanged;
 
     /// <summary>
+    /// The current session negotiated <c>ProtocolCapabilities.FingerTouches</c> (ADR-0026: a lone finger goes out as
+    /// raw touches and the Mac moves the cursor relatively). False when not connected. Read on the UI thread; changes
+    /// raise <see cref="ConnectionStateChanged"/>.
+    /// </summary>
+    bool FingerTouches { get; }
+
+    /// <summary>
     /// Sends the complete current input state. Same contract as <c>PenBridgeClient.SendState</c>: earlier batched pen
     /// samples in <paramref name="history"/> (oldest first, at most 8). Called from the pad's sender thread only: never
     /// on the UI thread and never concurrently. Returns false when not connected (the pad keeps going).

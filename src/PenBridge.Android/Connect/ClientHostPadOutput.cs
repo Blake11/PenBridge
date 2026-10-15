@@ -14,6 +14,7 @@ internal sealed class ClientHostPadOutput : IPadOutput, IDisposable
 {
     private readonly ClientHost _host;
     private PadConnectionState _state;
+    private bool _fingerTouches;
     private bool _disposed;
 
     public ClientHostPadOutput(ClientHost host)
@@ -21,11 +22,15 @@ internal sealed class ClientHostPadOutput : IPadOutput, IDisposable
         ArgumentNullException.ThrowIfNull(host);
         _host = host;
         _state = Map(host.State);
+        _fingerTouches = HasFingerTouches(host);
         host.StateChanged += OnHostStateChanged;
     }
 
     /// <summary>Read and written on the UI thread only (the host raises state changes there).</summary>
     public PadConnectionState ConnectionState => _state;
+
+    /// <summary>Snapshot taken with <see cref="ConnectionState"/> (UI thread only).</summary>
+    public bool FingerTouches => _fingerTouches;
 
     public event EventHandler? ConnectionStateChanged;
 
@@ -62,15 +67,20 @@ internal sealed class ClientHostPadOutput : IPadOutput, IDisposable
         _ => PadConnectionState.Disconnected,
     };
 
+    private static bool HasFingerTouches(ClientHost host) =>
+        (host.NegotiatedCapabilities & ProtocolCapabilities.FingerTouches) != 0;
+
     private void OnHostStateChanged(object? sender, ClientHostStateChangedEventArgs e)
     {
         PadConnectionState next = Map(e.State);
-        if (_disposed || next == _state) // an event already being raised still reaches a just-disposed adapter
+        bool fingerTouches = HasFingerTouches(_host);
+        if (_disposed || (next == _state && fingerTouches == _fingerTouches)) // an event already being raised still reaches a just-disposed adapter
         {
             return;
         }
 
         _state = next;
+        _fingerTouches = fingerTouches;
         ConnectionStateChanged?.Invoke(this, EventArgs.Empty);
     }
 }
