@@ -491,6 +491,7 @@ public sealed partial class ServerHost : IAsyncDisposable
             InputSink = _sink,
             ServerName = name,
             AllowTakeover = _settings.AllowTakeover,
+            FingerTouches = true, // the injector posts PointerMove/Click/PointerDrag (ADR-0026)
             TargetDisplay = _display,
             TargetRegion = _region,
             TimeProvider = _time,
