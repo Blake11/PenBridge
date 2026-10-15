@@ -6,6 +6,7 @@ namespace PenBridge.Core.Tests.Input;
 /// Withdrawn touches (ADR-0024): a touch already sent that the filter then suppresses stays in the result as present
 /// with <c>Contact=false</c> until that pointer lifts.
 /// </summary>
+[Collection(AllocationGroup.Name)]
 public class InputFilterWithdrawnTests
 {
     private readonly TouchSample[] _out = new TouchSample[InputFilter.MaxTouches];

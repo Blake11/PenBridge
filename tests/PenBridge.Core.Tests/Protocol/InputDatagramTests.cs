@@ -4,6 +4,7 @@ using PenBridge.Core.Tests.Input;
 
 namespace PenBridge.Core.Tests.Protocol;
 
+[Collection(AllocationGroup.Name)]
 public class InputDatagramTests
 {
     private static readonly PenSample Pen = new(0x1000, 0x2000, 0x8000, -100, 4500, 9000, PenTool.Pen, PenState.InRange | PenState.Contact, PenButtons.Primary);

@@ -3,6 +3,7 @@ using PenBridge.Core.Protocol;
 
 namespace PenBridge.Core.Tests.Input;
 
+[Collection(AllocationGroup.Name)]
 public class TiltConverterTests
 {
     private static float Rad(double degrees) => (float)(degrees * Math.PI / 180);

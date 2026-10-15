@@ -2,6 +2,7 @@ using PenBridge.Core.Input;
 
 namespace PenBridge.Core.Tests.Input;
 
+[Collection(AllocationGroup.Name)]
 public class TabletEventMathTests
 {
     private const long MaxLagNs = 100_000_000;

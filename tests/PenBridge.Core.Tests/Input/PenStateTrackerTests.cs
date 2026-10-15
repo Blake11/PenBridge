@@ -3,6 +3,7 @@ using static PenBridge.Core.Input.PenEventKind;
 
 namespace PenBridge.Core.Tests.Input;
 
+[Collection(AllocationGroup.Name)]
 public class PenStateTrackerTests
 {
     private readonly RecordingSink _sink = new();

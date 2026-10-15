@@ -6,6 +6,7 @@ namespace PenBridge.Core.Tests.Input;
 /// Withdrawn touches on the Mac (ADR-0024): a present touch with <c>Contact=false</c> cancels the gesture (no Tap, no
 /// momentum) and blocks gestures until every touch present then is gone.
 /// </summary>
+[Collection(AllocationGroup.Name)]
 public class GestureWithdrawnTests
 {
     private static readonly CoordinateMapper Square = new(1000, 1000, new DisplayRect(0, 0, 1000, 1000));

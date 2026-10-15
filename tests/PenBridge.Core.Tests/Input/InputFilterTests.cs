@@ -3,6 +3,7 @@ using PenBridge.Core.Input;
 namespace PenBridge.Core.Tests.Input;
 
 /// <summary>Pen, palm, gesture and arming rules, with the finger in draw mode (cursor mode: <see cref="InputFilterCursorTests"/>).</summary>
+[Collection(AllocationGroup.Name)]
 public class InputFilterTests
 {
     private static readonly PenSample PenHover = Samples.Hover(100, 200);
