@@ -187,3 +187,24 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
 - **Why not on the Mac:** cursor mode would need a new tool or a capability, which is a protocol change. Taps on the phone also have the exact touch timing.
 - **Click state:** a double-tap-hold drag must reach apps as a plain single-click drag (`kCGMouseEventClickState` 1): with click state 2 a text view selects by word and Finder may open the item instead of dragging it. The Mac injector repeats the click count for finger-fallback presses only at exactly the same point (`TabletEventMath.ClickSlopFor`: slop 0, pens keep 6 pt). The filter snaps a double tap's second click to the first tap's point, and nudges a drag's first sample one unit off that point. So a double tap is click state 1 then 2, and a double-tap drag is 1 then 1. In draw mode, a held tap within `DoubleTapWindow` and `DoubleTapSlop` of the previous tap is replayed at exactly that tap's point, so finger double-clicks a few pixels apart still reach click state 2.
 - **Consequences / deferred:** Settings ▸ One finger: "Cursor (tap to click…)" (default) or "Draw", persisted in `SettingsStore`. Button mapping still becomes configurable in Phase 5.
+
+## ADR-0023 — Trackpad-parity gestures on the Mac
+**Status:** accepted (2026-10-14). Resolves the open pinch item in `docs/architecture.md` and lifts ADR-0016's "gestures ignored until Phase 4".
+- **Context:** Core's `GestureRecognizer` (ADR-0012, Mac side) emits gestures from the raw touches in every datagram, and the Mac injector ignores them. The user wants the phone's fingers to behave **like a macOS trackpad**. macOS has no public API for posting magnify, rotate or Dock gestures.
+- **Principle:** match the trackpad's default behaviour with three-finger drag on. The mapping is fixed in Phase 4 and configurable in Phase 5. Only the natural-scrolling direction is read from the system (at each gesture start, never polled). There is no wire change, and the Android pen/one-finger behaviour is unchanged.
+- **Cursor:** gestures act at the **current cursor position**, which stays put like on a trackpad. Every posted scroll/gesture event carries that position. Only three-finger drag moves it, relatively.
+- **Recognition (Core, platform-free, tested):**
+  - **2 fingers:** scroll is exclusive. Pinch and rotate combine into one transform, which starts when the spread change or the rotation arc crosses its threshold and is ≥ the centroid travel. A **tap** is a secondary click, held back by the double-tap window so a **double tap** can be a smart zoom instead.
+  - **Scroll acceleration:** a trackpad-like curve. Slow movement stays ~1:1 in mapped points and fast movement scales up. **Momentum** after a flick is computed by a model that doesn't depend on the tick rate.
+  - **3 fingers: drag.** A left-button drag that moves the cursor by the centroid's relative motion, released when the fingers lift.
+  - **4 fingers:** swipe up = Mission Control, down = App Exposé, left/right = switch Space/full-screen app. Pinch in = Launchpad, spread = show desktop. Swipes report direction and progress.
+  - **Interrupts:** pen in range, the watchdog, pause or disconnect cancel the current gesture and its momentum. A finger landing stops a coast.
+- **Injection (Mac):**
+  - **Scroll:** continuous whole-pixel scroll-wheel events (the remainder is carried), with scroll phases and then momentum phases on a one-shot timer that runs only while coasting. **Swipe between pages** comes from posting these exactly like a trackpad, with phases, so AppKit's scroll-swipe tracking sees them.
+  - **Pinch/rotate/smart zoom:** trackpad gesture events posted through undocumented CGEvent gesture fields. Like a trackpad's, they reach only the frontmost app.
+  - **4-finger gestures:** interactive Dock gesture events that follow the fingers, if they work on this macOS. Otherwise the gesture fires once past a threshold through the default shortcuts (⌃↑, ⌃↓, ⌃←/→; Launchpad and show desktop through their system actions). The spike decides which.
+- **Why not ⌘+scroll for pinch:** browsers and Preview would scroll instead of zoom. **Why not touchscreen semantics (cursor at the fingers, fixed direction):** the user wants trackpad behaviour.
+- **Consequences / deferred:**
+  - The undocumented event fields can change with a macOS update. The Mac smoke test covers each gesture, and every injector logs once and degrades to the discrete fallback.
+  - Phase 5 Settings: per-gesture on/off, finger mapping, scroll gain/acceleration, invert.
+  - Mirroring the trackpad's own preference domain was rejected for now: its keys are undocumented and present on Macs without a trackpad.
