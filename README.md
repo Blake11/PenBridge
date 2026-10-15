@@ -13,7 +13,7 @@
 
 </div>
 
-PenBridge pairs your Android phone with your Mac. A small menu-bar app on the Mac receives pen input (pressure, tilt, hover and the side button) and turns it into native tablet events, so your drawing app sees a real pen rather than a mouse. The main target device is a Samsung Galaxy S23 Ultra with its S Pen, but any phone works with a finger.
+PenBridge pairs your Android phone with your Mac. A small menu-bar app on the Mac receives pen input (pressure, tilt, hover and the side button) and turns it into native tablet events, so your drawing app sees a real pen rather than a mouse. Two to four fingers work like a Mac trackpad: scroll, zoom, swipe and Mission Control. The main target device is a Samsung Galaxy S23 Ultra with its S Pen, but any phone works with a finger.
 
 > 📸 Screenshots coming soon.
 
@@ -36,7 +36,7 @@ flowchart LR
 
     subgraph Mac["💻 Mac menu-bar server"]
         direction TB
-        Tracker["Pen state tracker"] --> Gestures["Gestures<br/>scroll · pinch"]
+        Tracker["Pen state tracker"] --> Gestures["Trackpad gestures<br/>scroll · pinch · swipe"]
         Gestures --> Mapping["Display mapping"]
         Mapping --> Inject["CGEvent tablet events"]
     end
@@ -85,8 +85,16 @@ Everything marked ✅ works end to end, checked on a Galaxy S23 Ultra with a Mac
 - ✅ 🫧 **Hover**: the cursor follows the pen before it touches the screen
 - ✅ 🔘 **S Pen side button**: right-click while hovering, a right-button drag while the tip touches
 - ✅ 🖐️ **Palm rejection**: pen first, so fingers and palms are ignored while the pen is near
-- ✅ 👆 **Finger cursor mode**: one finger moves the cursor, tap to click, double-tap to double-click, double-tap and hold to drag. Switch it to **Draw** to paint with a finger instead
+- ✅ 👆 **Finger cursor mode**: one finger moves the cursor like a trackpad, relative to where it is ([ADR-0026](docs/decisions.md#adr-0026--one-finger-moves-the-cursor-relatively-like-a-trackpad-fingertouches-protocol-11)): tap to click, double-tap to double-click, tap-and-a-half to drag. Switch it to **Draw** to paint with a finger instead
 - ✅ ⚡ **Low latency** over UDP, keeping the S Pen's historical samples: about **3 ms** median and **8 ms** p95 from the phone sending a sample to the Mac injecting it, over Wi-Fi ([numbers](#how-fast-is-it))
+
+**Gestures**, like a Mac trackpad ([ADR-0023](docs/decisions.md#adr-0023--trackpad-parity-gestures-on-the-mac), [table](#4-gestures))
+
+- ✅ ✌️ **Two fingers**: scroll with momentum, swipe between pages, pinch to zoom and rotate, tap to right-click, double-tap for smart zoom (following the macOS Smart Zoom setting; with it off, right-click is instant)
+- ✅ 🤟 **Three-finger drag**: move windows and select text
+- ✅ 🖐️ **Four fingers**: Mission Control, App Exposé, switch Spaces, show desktop and the Apps launcher
+- ✅ 🎯 **Acts at the cursor**, which stays put; scroll direction follows the macOS natural-scrolling setting
+- ✅ ✍️ **The pen always wins**: bringing the pen near cancels a gesture and its momentum
 
 **Phone app**
 
@@ -97,6 +105,7 @@ Everything marked ✅ works end to end, checked on a Galaxy S23 Ultra with a Mac
 - ✅ 🟢 **Status dot** for the connection; tap it for latency, orientation, Disconnect and Change Mac
 - ✅ 🔄 **Orientation toggle**: landscape (default), portrait or auto
 - ✅ ⚙️ **Settings** for finger mode, finger pressure, finger hold before drawing and palm size
+- ✅ 🖼️ **App icon**: an adaptive launcher icon that also works as a themed icon
 - ✅ 🙈 **No telemetry**: the app talks to your Mac and nothing else ([ADR-0020](docs/decisions.md#adr-0020--no-third-party-telemetry-strip-ml-kit-datatransport))
 
 **Mac app**
@@ -105,15 +114,15 @@ Everything marked ✅ works end to end, checked on a Galaxy S23 Ultra with a Mac
 - ✅ 🔐 **Secure pairing** with a PIN or QR code (J-PAKE) in a floating window on the Mac, and **encryption** on every channel
 - ✅ 🪶 **Light on the Mac**: a NativeAOT build with about a 20 MB footprint, a 168 ms launch and 0% CPU when idle
 - ✅ 📲 **Multiple paired phones**; one draws at a time
+- ✅ 🖼️ **App icon** in Finder, the DMG and Login Items, with matching menu-bar glyphs for each state
 
 **Next**
 
-- ⏳ 🤏 **Two-finger scroll and pinch** gestures ([Phase 4](https://github.com/Blake11/PenBridge/issues/13))
 - ⏳ 🗺️ **Region and button mapping** settings ([Phase 5](https://github.com/Blake11/PenBridge/issues/14))
 
 ## Status
 
-**Beta, 1.0.0.** Phase 3 is done: a phone now draws on a Mac end to end. The Android client was verified on a Galaxy S23 Ultra against the release build of the Mac app ([#66](https://github.com/Blake11/PenBridge/issues/66)): discovery, QR and PIN pairing, pressure, tilt, hover, the side button, palm rejection, finger cursor mode and reconnecting all work, with no crashes. One known issue: a finger tap's click can be lost if its single datagram is dropped ([#92](https://github.com/Blake11/PenBridge/issues/92)).
+**Beta, 1.1.0.** Phase 4 is done: two to four fingers now work like a Mac trackpad, and both apps have their own icon. The gestures were checked on the Mac in Safari and Preview (scroll and momentum, swipe between pages, zoom, rotate, smart zoom, right-click, three-finger drag and the four-finger gestures), and on the S23 Ultra against the release build of the Mac app ([#110](https://github.com/Blake11/PenBridge/issues/110)). One finger now moves the cursor relatively, like a trackpad. Known issue: in Preview, a second smart-zoom double tap zooms into the next block instead of zooming back out ([#144](https://github.com/Blake11/PenBridge/issues/144)). Phase 3 (1.0.0) was verified on a Galaxy S23 Ultra against the release build of the Mac app ([#66](https://github.com/Blake11/PenBridge/issues/66)). 1.1.0 also recovers a finger tap whose datagram is lost ([#92](https://github.com/Blake11/PenBridge/issues/92)) and cancels a gesture when a palm touches down ([#114](https://github.com/Blake11/PenBridge/issues/114)). The wire protocol is now 1.1; 1.0.0 phones and Macs still work with 1.1.0 ones (with a 1.0.0 peer, one finger keeps the absolute cursor).
 
 | Phase | Scope | Status | Release |
 |---|---|---|---|
@@ -121,8 +130,8 @@ Everything marked ✅ works end to end, checked on a Galaxy S23 Ultra with a Mac
 | [1 — Core](https://github.com/Blake11/PenBridge/milestone/1) ([#10](https://github.com/Blake11/PenBridge/issues/10)) | Protocol, security, input processing, network engine and SimClient | ✅ Done | |
 | [2 — Mac server](https://github.com/Blake11/PenBridge/milestone/2) ([#11](https://github.com/Blake11/PenBridge/issues/11)) | Menu bar, run at startup, pause hotkey, Bonjour, PIN/QR pairing window, Accessibility, CGEvent injector, NativeAOT | ✅ Done | |
 | [3 — Android client](https://github.com/Blake11/PenBridge/milestone/3) ([#12](https://github.com/Blake11/PenBridge/issues/12)) | Drawing surface, S Pen, palm rejection, finger cursor mode, discovery, QR/PIN pairing, reconnect, on-device checks on the S23 Ultra | ✅ Done | **1.0.0** |
-| [4 — Gestures](https://github.com/Blake11/PenBridge/milestone/4) ([#13](https://github.com/Blake11/PenBridge/issues/13)) | Two-finger scroll, pinch-zoom | ⏳ Planned | 1.1.0 |
-| [5 — Settings](https://github.com/Blake11/PenBridge/milestone/5) ([#14](https://github.com/Blake11/PenBridge/issues/14)) | Display/region mapping, button mapping | ⏳ Planned | 1.2.0 |
+| [4 — Gestures](https://github.com/Blake11/PenBridge/milestone/4) ([#13](https://github.com/Blake11/PenBridge/issues/13)) | Trackpad-parity gestures: two-finger scroll, momentum, swipe pages, pinch/rotate, tap, smart zoom; three-finger drag; four-finger system gestures. App icon | ✅ Done | **1.1.0** |
+| [5 — Settings](https://github.com/Blake11/PenBridge/milestone/5) ([#14](https://github.com/Blake11/PenBridge/issues/14)) | Display/region mapping, button mapping | ⏳ Next | 1.2.0 |
 | [Later](https://github.com/Blake11/PenBridge/milestone/7) ([#95](https://github.com/Blake11/PenBridge/issues/95)) | Android UX improvements: scope to be defined | ⏳ Later | |
 | [Later](https://github.com/Blake11/PenBridge/milestone/7) | [Windows host](https://github.com/Blake11/PenBridge/issues/28), [iOS client](https://github.com/Blake11/PenBridge/issues/18), [screen mirroring](https://github.com/Blake11/PenBridge/issues/16), [DriverKit digitizer](https://github.com/Blake11/PenBridge/issues/17), [Air Actions](https://github.com/Blake11/PenBridge/issues/19), [trackpad mode](https://github.com/Blake11/PenBridge/issues/20), [notarization](https://github.com/Blake11/PenBridge/issues/21), [Google Play](https://github.com/Blake11/PenBridge/issues/22) | ⏳ Later | |
 
@@ -176,6 +185,25 @@ The APK isn't on Google Play, so sideload it:
 4. Draw. Next time, the phone connects to that Mac by itself.
 
 Open a pressure-aware app such as Krita to see pressure and tilt. More details are in [docs/releasing.md](docs/releasing.md#installing-the-android-apk-sideload) and [macOS signing](docs/releasing.md#macos-signing).
+
+#### 4. Gestures
+
+With the pen away from the screen, use fingers like a trackpad. Gestures act where the cursor is.
+
+| Fingers | Motion | Action |
+|---|---|---|
+| 2 | Move | Scroll, with momentum after a flick |
+| 2 | Swipe left or right | Back and forward between pages (Safari and other apps that support it) |
+| 2 | Pinch or twist | Zoom and rotate |
+| 2 | Tap | Right-click |
+| 2 | Double-tap | Smart zoom (if on in System Settings → Trackpad) |
+| 3 | Move | Drag (move a window, select text) |
+| 4 | Swipe up / down | Mission Control / App Exposé |
+| 4 | Swipe left / right | Switch Space or full-screen app |
+| 4 | Spread / pinch | Show desktop / Apps launcher |
+
+- Zoom, rotate and smart zoom reach only the frontmost app, as on a trackpad.
+- Four-finger gestures fire once per gesture through the default Mission Control keyboard shortcuts (⌃↑ ⌃↓ ⌃← ⌃→, and F11 for show desktop), so those need to be on in **System Settings → Keyboard → Keyboard Shortcuts → Mission Control**.
 
 ### For developers
 
