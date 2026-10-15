@@ -7,7 +7,7 @@ namespace PenBridge.Core.Tests.Input;
 /// <summary>The smart-zoom switch (ADR-0029): off makes a two-finger tap a Tap on lift, on holds it for the window.</summary>
 public class GestureSmartZoomSettingTests
 {
-    // Square 1000x1000 surface onto a 1000x1000 display: double-tap slop 20% = 200 pt, window 250 ms, tap 300 ms.
+    // Square 1000x1000 surface onto a 1000x1000 display: double-tap slop 20% = 200 pt, window 200 ms, tap 300 ms.
     private static readonly CoordinateMapper Square = new(1000, 1000, new DisplayRect(0, 0, 1000, 1000));
     private readonly RecordingSink _sink = new();
     private readonly GestureRecognizer _rec;
@@ -67,24 +67,24 @@ public class GestureSmartZoomSettingTests
     }
 
     [Fact]
-    public void On_a_tap_is_held_for_250_ms_then_taps()
+    public void On_a_tap_is_held_for_200_ms_then_taps()
     {
         _smartZoom = true;
         Tap(0);
         Assert.Empty(Gestures);
-        Assert.Equal(Ms(50 + 250 + 50), _rec.PendingDeadlineUs);
-        _rec.Process([], false, Ms(299)); // a frame inside the window keeps it held
+        Assert.Equal(Ms(50 + 200 + 20), _rec.PendingDeadlineUs);
+        _rec.Process([], false, Ms(249)); // a frame inside the window keeps it held
         Assert.Empty(Gestures);
-        _rec.Process([], false, Ms(300)); // the window passed on the frame clock
+        _rec.Process([], false, Ms(250)); // the window passed on the frame clock
         Assert.Equal([GestureKind.Tap], Kinds());
     }
 
     [Fact]
-    public void On_a_second_tap_within_250_ms_is_a_smart_zoom()
+    public void On_a_second_tap_within_200_ms_is_a_smart_zoom()
     {
         _smartZoom = true;
         Tap(0);
-        Tap(290, cx: 530); // lands 240 ms after the first lift
+        Tap(240, cx: 530); // lands 190 ms after the first lift
         Assert.Equal([GestureKind.SmartZoom], Kinds());
         Assert.Null(_rec.PendingDeadlineUs);
     }
@@ -138,8 +138,8 @@ public class GestureSmartZoomSettingTests
         _smartZoom = true;
         Tap(0);
         _smartZoom = false;
-        Assert.Equal(Ms(350), _rec.PendingDeadlineUs);
-        _rec.CheckDeadline(Ms(350));
+        Assert.Equal(Ms(270), _rec.PendingDeadlineUs);
+        _rec.CheckDeadline(Ms(270));
         Assert.Equal([GestureKind.Tap], Kinds());
     }
 
@@ -150,7 +150,7 @@ public class GestureSmartZoomSettingTests
         _smartZoom = true;
         Tap(150); // the first was already emitted: this one can't complete a smart zoom
         Assert.Equal([GestureKind.Tap], Kinds());
-        Assert.Equal(Ms(200 + 250 + 50), _rec.PendingDeadlineUs);
+        Assert.Equal(Ms(200 + 200 + 20), _rec.PendingDeadlineUs);
     }
 
     [Fact]

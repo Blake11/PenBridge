@@ -274,3 +274,4 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
   - A missing or unreadable setting counts as on, the macOS default.
   - Phase 5 adds a PenBridge setting that can override the macOS one.
 - **Why:** it matches what the same Mac does with a real trackpad, and it lets the user choose speed over smart zoom in the place they already know.
+- Amended 2026-10-15 (#142): DoubleTapWindow 200 ms, jitter allowance 20 ms, ~225 ms after lift; measured S23 double-tap gaps 78–135 ms, MacBook trackpad right-click ~300 ms after lift.
