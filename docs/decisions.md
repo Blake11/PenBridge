@@ -263,3 +263,14 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
   - The new `ClickWindow`, **400 ms**, applies to one-finger double clicks and tap-and-a-half.
   - The relaxed two-finger slops and tap duration from #128 stay as they are.
 - **Why:** the window is the only part of the smart-zoom fix that costs latency; the slops gave most of the reliability. Phase 5 may make both windows configurable.
+
+## ADR-0029 — The two-finger tap follows the macOS Smart Zoom setting
+**Status:** accepted (2026-10-15). Refines ADR-0023 (double tap = smart zoom) and ADR-0028 (the 300 ms `DoubleTapWindow`).
+- **Context:** in the S23 test (#110), the two-finger right-click still felt slow at about 350 ms after lift. The hold exists only to tell a single tap from a smart-zoom double tap. A Mac trackpad has the same trade-off: with Smart Zoom off, its two-finger tap right-clicks at once.
+- **Decision:**
+  - The Mac reads the macOS Smart Zoom setting (`TrackpadTwoFingerDoubleTapGesture` in the trackpad preference domains), as it does for natural scrolling (ADR-0023). It re-reads the setting when a two-finger tap is decided, so a change applies without a restart.
+  - **Smart Zoom off:** a two-finger tap is a secondary click on lift, with no hold, and a double tap makes two secondary clicks.
+  - **Smart Zoom on:** the tap is held for `DoubleTapWindow`, shortened to **250 ms** (about 300 ms after lift with the jitter allowance). The relaxed slops from #128 stay as they are.
+  - A missing or unreadable setting counts as on, the macOS default.
+  - Phase 5 adds a PenBridge setting that can override the macOS one.
+- **Why:** it matches what the same Mac does with a real trackpad, and it lets the user choose speed over smart zoom in the place they already know.
