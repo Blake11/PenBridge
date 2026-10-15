@@ -186,7 +186,7 @@ internal sealed class DrawSurfaceView : View
         }
 
         TouchSizeReadout?.Update(_fingers, cancelAll || action == MotionEventActions.Up ? 0 : _fingerCount);
-        Emit(e.EventTime, history, stylus >= 0 ? 0 : CollectFingerHistory(e));
+        Emit(e.EventTime, history, stylus >= 0 ? 0 : CollectFingerHistory(e), cancelAll);
 
         // Canceled pointers were reported once (so the filter suppresses them); they are gone afterwards.
         if (cancelAll || action == MotionEventActions.Up)
@@ -452,8 +452,9 @@ internal sealed class DrawSurfaceView : View
     /// <summary>Runs the filter over the current state and queues the frame(s). <paramref name="historyCount"/>
     /// samples in <see cref="_samples"/> precede the current pen sample; <paramref name="fingerHistoryCount"/> entries
     /// of <see cref="_fingerHistory"/> are this event's batched finger positions. Times are clamped to be monotonic
-    /// (hardware event times and the arm timer's deadline can interleave out of order).</summary>
-    private void Emit(long eventTimeMs, int historyCount, int fingerHistoryCount)
+    /// (hardware event times and the arm timer's deadline can interleave out of order). <paramref name="cancelAll"/>
+    /// marks an <c>ACTION_CANCEL</c>, so the filter knows every pointer is gone after it.</summary>
+    private void Emit(long eventTimeMs, int historyCount, int fingerHistoryCount, bool cancelAll = false)
     {
         if (eventTimeMs < _lastEmitMs)
         {
@@ -467,7 +468,8 @@ internal sealed class DrawSurfaceView : View
             pen,
             _fingers.AsSpan(0, _fingerCount),
             _touchOut,
-            _fingerHistory.AsSpan(0, fingerHistoryCount));
+            _fingerHistory.AsSpan(0, fingerHistoryCount),
+            cancelAll);
 
         bool active;
         if (result.HasPen)
@@ -510,7 +512,7 @@ internal sealed class DrawSurfaceView : View
         }
         else
         {
-            active = result.TouchCount > 0;
+            active = result.ContactCount > 0; // withdrawn touches (not in contact) are no active finger
             if (_filter.PendingDeadline is null)
             {
                 // While a lone finger is held back nothing is sent (the previous frame already had no input).
