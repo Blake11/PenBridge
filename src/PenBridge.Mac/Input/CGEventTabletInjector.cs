@@ -280,6 +280,12 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
             }
 
             _gestures.OnGesture(e);
+            if (e.Kind == GestureKind.Click || (e.Kind is GestureKind.PointerDrag or GestureKind.Drag && e.Phase == GesturePhase.Began))
+            {
+                // A finger pressed the left button in between: the pen's next tap is a new click (state 1), not a
+                // repeat of the pen tap before the finger's (same lock as the pen path, so no race with it).
+                _leftClicks = default;
+            }
         }
     }
 

@@ -151,7 +151,11 @@ internal sealed class CGEventPointerInjector
         }
     }
 
-    /// <summary>Left down + up at the current cursor with the recognizer's click state (1 single, 2 double, …).</summary>
+    /// <summary>
+    /// Left down + up at the current cursor with the recognizer's click state (1 single, 2 double, …). The cursor is
+    /// read now, the same source a move's Began reads: a click comes on a lift, after any move of this finger has
+    /// Ended and been applied, and the real mouse may have moved the cursor since, so a tracked position could be stale.
+    /// </summary>
     private void Click(int clickCount)
     {
         EndDrag();
@@ -162,10 +166,18 @@ internal sealed class CGEventPointerInjector
         }
 
         NativePoint at = Cursor();
+        _x = at.X;
+        _y = at.Y;
         long clickState = Math.Max(1, clickCount);
-        if (PostMouse(TypeLeftMouseDown, at, clickState, 0, 0))
+        if (!PostMouse(TypeLeftMouseDown, at, clickState, 0, 0))
         {
-            _ = PostMouse(TypeLeftMouseUp, at, clickState, 0, 0);
+            return;
+        }
+
+        _downPosted = true; // as for a drag: if the up fails, EndDrag/Repair posts it
+        if (PostMouse(TypeLeftMouseUp, at, clickState, 0, 0))
+        {
+            _downPosted = false;
         }
     }
 
@@ -207,13 +219,9 @@ internal sealed class CGEventPointerInjector
         _ = PostMouse(type, new NativePoint(x, y), type == TypeMouseMoved ? 0 : 1, deltaX, deltaY);
     }
 
+    /// <summary>Ends a drag and posts the left-up for any posted down without one (a drag's, or a click whose up failed).</summary>
     private void EndDrag()
     {
-        if (!_dragging)
-        {
-            return;
-        }
-
         _dragging = false;
         if (_downPosted && PostMouse(TypeLeftMouseUp, new NativePoint(_x, _y), 1, 0, 0))
         {
