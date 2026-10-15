@@ -144,6 +144,15 @@ public class GestureRelaxedDoubleTapTests
     }
 
     [Fact]
+    public void A_nudge_just_under_the_scroll_threshold_with_a_slow_lift_is_no_tap()
+    {
+        // 2.3 mm: inside the ~2.4 mm tap slop and under the ~2.7 mm scroll threshold, but lifted after 340 ms.
+        RelaxedTap(0, 70, 34, downMs: 330, staggerMs: 10, driftMm: 2.3);
+        _rec.CheckDeadline(Ms(2000));
+        Assert.Empty(Gestures);
+    }
+
+    [Fact]
     public void A_slow_two_finger_scroll_scrolls_and_never_taps()
     {
         RelaxedTap(0, 70, 34, downMs: 280, staggerMs: 10, driftMm: 6); // ~21 mm/s

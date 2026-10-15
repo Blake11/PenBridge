@@ -364,7 +364,7 @@ public class PenStateTrackerTests
     {
         Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000));
         Frame(null); // held tap: deadline in 400 ms
-        Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000)); // second touch: 200 ms + 1 µs
+        Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000)); // second touch: 300 ms + 1 µs
         Assert.Equal(TimeSpan.FromMilliseconds(150), _tracker.WatchdogDueIn); // contact watchdog
     }
 

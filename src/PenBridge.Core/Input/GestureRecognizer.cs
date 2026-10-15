@@ -49,7 +49,9 @@ public sealed record GestureRecognizerOptions
     /// <summary>
     /// How far each finger of a two-finger tap may move from where it landed. A finger's reported position drifts as
     /// its contact patch rolls and shrinks on lift (1-2 mm on a phone; 3.5% of a ~70 mm short side is ~2.5 mm). Keep it
-    /// below <see cref="ScrollThreshold"/>: movement that is too small to scroll can still be a tap, never both.
+    /// below <see cref="ScrollThreshold"/>: movement that is too small to scroll can still be a tap, never both. The gap
+    /// between them is deliberately small, so a nudge too short to scroll is a tap only if it also lifts within
+    /// <see cref="TapMaxDuration"/>.
     /// </summary>
     public double TapSlop { get; init; } = 0.035;
 
