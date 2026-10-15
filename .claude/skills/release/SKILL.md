@@ -30,6 +30,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 $ANDROID_HOME/build-tools/36.0.0/apksigne
 codesign -dv PenBridge.app           # from the .zip/.dmg: ad-hoc, identifier com.blake11.penbridge
 lipo -archs PenBridge.app/Contents/MacOS/PenBridge   # x86_64 arm64 (universal)
 ```
+- **Idle budget figures** (release checklist): `scripts/latency-report.sh --disable`, restart the Mac app, wait for "Server listening" + 30 s, then record idle CPU (`ps -o %cpu= -p <pid>`, expect 0.0), footprint (`footprint <pid>`, Activity Monitor's Memory) and RSS — always with the capture off (skill `mac-build-run`, "How to measure memory").
 - A locally built Release APK is signed with the same release keystore, so the published APK installs over it in place (`adb install -r`) and keeps the pairing.
 
 ## Dry run and rebuilds (ask the user before running workflows)
