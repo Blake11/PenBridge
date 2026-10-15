@@ -14,9 +14,10 @@ namespace PenBridge.Mac.Services;
 /// by a synthesized proximity enter. Contact events (Down/Drag/Up) and buttons are dropped until then, so a stroke in
 /// progress at resume time starts injecting after the pen lifts.</para>
 /// <para>Gestures likewise: pausing makes the injector cancel an open gesture and stop scroll momentum
-/// (<see cref="IReleasableInputSink.ReleaseAll"/>). After a resume the phased gestures (scroll, pinch, drag, system
-/// swipe/pinch) are dropped until a <see cref="GesturePhase.Began"/>, so a gesture in progress at resume time never
-/// continues with a dangling Changed/Ended. One-shot events (Tap, SmartZoom, TouchDown) pass at once.</para>
+/// (<see cref="IReleasableInputSink.ReleaseAll"/>), which also releases a one- or three-finger drag's button. After a
+/// resume the phased gestures (scroll, pinch, drag, system swipe/pinch, pointer move/drag) are dropped until a
+/// <see cref="GesturePhase.Began"/>, so a gesture in progress at resume time never continues with a dangling
+/// Changed/Ended. One-shot events (Tap, SmartZoom, TouchDown, Click) pass at once.</para>
 /// <para>Platform-free; a candidate for Core if another head needs it.</para>
 /// <para>Hot path: one uncontended lock per event, no allocations.</para>
 /// </remarks>
@@ -132,5 +133,6 @@ public sealed class PausableInputSink : IInputSink
 
     /// <summary>Gesture kinds with Began/Changed/Ended phases (the rest are one-shot events).</summary>
     private static bool IsPhased(GestureKind kind) =>
-        kind is GestureKind.Scroll or GestureKind.Pinch or GestureKind.Drag or GestureKind.SystemSwipe or GestureKind.SystemPinch;
+        kind is GestureKind.Scroll or GestureKind.Pinch or GestureKind.Drag or GestureKind.SystemSwipe or GestureKind.SystemPinch
+            or GestureKind.PointerMove or GestureKind.PointerDrag;
 }

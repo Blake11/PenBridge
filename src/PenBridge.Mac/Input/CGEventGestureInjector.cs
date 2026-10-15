@@ -23,7 +23,8 @@ namespace PenBridge.Mac.Input;
 /// The window server may then still hold a phase opened before the revoke (its end was skipped), so the injector
 /// remembers which phases it actually posted open and <see cref="RepairAfterGrant"/> closes them when the grant
 /// returns. A revoke is only noticed on the system broadcast, so posts in that short window count as delivered.</para>
-/// <para>Three-finger drag and the four-finger system gestures (Drag, SystemSwipe, SystemPinch) go to
+/// <para>The relative cursor gestures (one-finger PointerMove, Click and PointerDrag of ADR-0026, three-finger Drag)
+/// go to <see cref="CGEventPointerInjector"/>, the four-finger system gestures (SystemSwipe, SystemPinch) to
 /// <see cref="CGEventSystemGestureInjector"/>.</para>
 /// </remarks>
 internal sealed class CGEventGestureInjector : IDisposable
@@ -87,6 +88,7 @@ internal sealed class CGEventGestureInjector : IDisposable
     private readonly TimeSpan _tickInterval;
     private readonly TimerCallback _onCoastTick;
     private readonly CGEventSystemGestureInjector _system;
+    private readonly CGEventPointerInjector _pointer;
 
     private bool _scrollOpen;
     private bool _natural = true;
@@ -132,6 +134,7 @@ internal sealed class CGEventGestureInjector : IDisposable
         _tickInterval = _momentum.Options.TickInterval;
         _onCoastTick = OnCoastTick;
         _system = new CGEventSystemGestureInjector(source, trusted, logger);
+        _pointer = new CGEventPointerInjector(source, trusted);
     }
 
     /// <summary>Handles one gesture event. Call with the owner's lock held.</summary>
@@ -161,16 +164,23 @@ internal sealed class CGEventGestureInjector : IDisposable
                 break;
             case GestureKind.TouchDown:
                 break; // only stops the coast (done above)
+            case GestureKind.PointerMove or GestureKind.Click or GestureKind.PointerDrag or GestureKind.Drag:
+                _pointer.OnGesture(e);
+                break;
             default:
-                _system.OnGesture(e); // Drag, SystemSwipe, SystemPinch
+                _system.OnGesture(e); // SystemSwipe, SystemPinch
                 break;
         }
     }
 
-    /// <summary>A pen event arrived: the pen takes over, so stop a coast and release a three-finger drag.</summary>
+    /// <summary>
+    /// A pen event arrived: the pen takes over, so stop a coast and release a finger drag (one- or three-finger) before
+    /// the pen's own events, which then start with no button held.
+    /// </summary>
     public void OnPenActivity()
     {
         StopCoast();
+        _pointer.CancelAll();
         _system.CancelAll();
     }
 
@@ -201,6 +211,7 @@ internal sealed class CGEventGestureInjector : IDisposable
         }
 
         ClosePinch(PhaseCancelled);
+        _pointer.CancelAll();
         _system.CancelAll();
     }
 
@@ -244,7 +255,7 @@ internal sealed class CGEventGestureInjector : IDisposable
             PostGesture(HidRotation, PhaseCancelled, FieldGestureRotation, 0);
         }
 
-        _system.Repair();
+        _pointer.Repair();
     }
 
     /// <summary>Cancels everything and stops accepting events. Call with the owner's lock held.</summary>

@@ -9,9 +9,8 @@ using PenBridge.Core.Input;
 namespace PenBridge.Mac.Input;
 
 /// <summary>
-/// Posts the three- and four-finger gestures (ADR-0023): three-finger drag as a left-button drag that moves the cursor
-/// relatively, and the four-finger system gestures as their system shortcuts/actions, fired once per gesture when the
-/// progress crosses <see cref="CommitProgress"/>.
+/// Posts the four-finger system gestures (ADR-0023) as their system shortcuts/actions, fired once per gesture when the
+/// progress crosses <see cref="CommitProgress"/>. Three-finger drag is <see cref="CGEventPointerInjector"/>'s.
 /// </summary>
 /// <remarks>
 /// <para><b>Mapping (trackpad semantics, default shortcuts):</b> swipe up → ⌃↑ Mission Control; swipe down → ⌃↓ App
@@ -26,10 +25,6 @@ namespace PenBridge.Mac.Input;
 /// <para><b>Threading.</b> Owned by <see cref="CGEventGestureInjector"/>; every call is under the injector lock. The
 /// launcher opens on the main queue. <b>Allocation:</b> none per event (raw CGEvent handles); firing the launcher
 /// allocates once per gesture.</para>
-/// <para><b>Release.</b> The drag's button is always released: Ended, Cancelled, pause/no display
-/// (<see cref="CancelAll"/>), a pen event and disconnect (Core cancels open gestures at session end). A left-up skipped
-/// while Accessibility was missing is posted by <see cref="Repair"/> when the grant returns; a drag still in progress
-/// then is dropped.</para>
 /// </remarks>
 internal sealed class CGEventSystemGestureInjector
 {
@@ -43,12 +38,7 @@ internal sealed class CGEventSystemGestureInjector
     /// <summary>Progress (fraction of the mapped short side, Core's SystemSwipe/SystemPinch Progress) that fires the action.</summary>
     internal const double CommitProgress = 0.15;
 
-    private const uint TypeLeftMouseDown = 1;
-    private const uint TypeLeftMouseUp = 2;
-    private const uint TypeLeftMouseDragged = 6;
-    private const uint ButtonLeft = (uint)CGMouseButton.Left;
     private const uint HidEventTap = (uint)CGEventTapLocation.HID;
-    private const int MaxDisplays = 16;
 
     // Virtual key codes (kVK_*) and flags (kCGEventFlagMaskControl, kCGEventFlagMaskSecondaryFn).
     private const ushort KeyLeftArrow = 123;
@@ -70,19 +60,8 @@ internal sealed class CGEventSystemGestureInjector
     private readonly IntPtr _source;
     private readonly Func<bool> _trusted;
     private readonly ILogger _logger;
-    private readonly uint[] _displayIds = new uint[MaxDisplays];
-    private readonly NativeRect[] _displays = new NativeRect[MaxDisplays];
     private readonly Action _openLauncherOnMain;
     private readonly Action<NSRunningApplication?, NSError?> _onLauncherOpened;
-
-    private bool _dragging;
-    private bool _downPosted; // a left-down reached the window server and its left-up has not
-    private double _x;
-    private double _y;
-    private double _remainderX;
-    private double _remainderY;
-    private int _displayCount;
-    private int _display;
 
     private bool _systemActive;
     private bool _fired;
@@ -103,103 +82,20 @@ internal sealed class CGEventSystemGestureInjector
             : "discrete system shortcuts (interactive Dock gesture events are off)");
     }
 
-    /// <summary>Handles a Drag, SystemSwipe or SystemPinch event. Call with the injector lock held.</summary>
+    /// <summary>Handles a SystemSwipe or SystemPinch event. Call with the injector lock held.</summary>
     public void OnGesture(in GestureEvent e)
     {
-        switch (e.Kind)
+        if (e.Kind is GestureKind.SystemSwipe or GestureKind.SystemPinch)
         {
-            case GestureKind.Drag:
-                OnDrag(e);
-                break;
-            case GestureKind.SystemSwipe or GestureKind.SystemPinch:
-                OnSystem(e);
-                break;
+            OnSystem(e);
         }
     }
 
-    /// <summary>Releases the drag button (pause, no display, pen, disconnect, Dispose) and forgets a system gesture. Idempotent.</summary>
+    /// <summary>Forgets a system gesture in progress (pause, no display, pen, Dispose). Idempotent.</summary>
     public void CancelAll()
     {
-        EndDrag();
         _systemActive = false;
         _fired = false;
-    }
-
-    /// <summary>
-    /// The Accessibility grant returned: posts the left-up for a left-down that was posted but whose up was skipped, and
-    /// drops a drag still in progress (its later events are ignored until a new Began), as the two-finger gestures do.
-    /// </summary>
-    public void Repair()
-    {
-        _dragging = false;
-        if (_downPosted && PostMouse(TypeLeftMouseUp, Cursor(), 0, 0))
-        {
-            _downPosted = false;
-        }
-    }
-
-    private void OnDrag(in GestureEvent e)
-    {
-        switch (e.Phase)
-        {
-            case GesturePhase.Began:
-                EndDrag(); // never leave a press open
-                NativePoint at = Cursor();
-                _x = at.X;
-                _y = at.Y;
-                _remainderX = 0;
-                _remainderY = 0;
-                LoadDisplays();
-                _dragging = true;
-                if (PostMouse(TypeLeftMouseDown, at, 0, 0))
-                {
-                    _downPosted = true;
-                }
-
-                MoveBy(e.DeltaX, e.DeltaY);
-                break;
-            case GesturePhase.Changed:
-                if (_dragging)
-                {
-                    MoveBy(e.DeltaX, e.DeltaY);
-                }
-
-                break;
-            default:
-                EndDrag();
-                break;
-        }
-    }
-
-    private void MoveBy(double dx, double dy)
-    {
-        if (!double.IsFinite(dx) || !double.IsFinite(dy) || (dx == 0 && dy == 0))
-        {
-            return;
-        }
-
-        double x = _x + dx;
-        double y = _y + dy;
-        ClampToDisplays(ref x, ref y);
-        long deltaX = GestureOutput.TakeWhole(x - _x, ref _remainderX);
-        long deltaY = GestureOutput.TakeWhole(y - _y, ref _remainderY);
-        _x = x;
-        _y = y;
-        _ = PostMouse(TypeLeftMouseDragged, new NativePoint(x, y), deltaX, deltaY);
-    }
-
-    private void EndDrag()
-    {
-        if (!_dragging)
-        {
-            return;
-        }
-
-        _dragging = false;
-        if (_downPosted && PostMouse(TypeLeftMouseUp, new NativePoint(_x, _y), 0, 0))
-        {
-            _downPosted = false; // else Repair posts it when the grant returns
-        }
     }
 
     private void OnSystem(in GestureEvent e)
@@ -384,100 +280,6 @@ internal sealed class CGEventSystemGestureInjector
         if (error is not null)
         {
             InputLog.LauncherFailed(_logger, error.LocalizedDescription);
-        }
-    }
-
-    /// <summary>Posts a left-button mouse event (click state 1) unless Accessibility is missing; false when not posted.</summary>
-    private bool PostMouse(uint type, NativePoint at, long deltaX, long deltaY)
-    {
-        if (!_trusted())
-        {
-            return false;
-        }
-
-        IntPtr ev = NativeMethods.CGEventCreateMouseEvent(_source, type, at, ButtonLeft);
-        if (ev == IntPtr.Zero)
-        {
-            return false;
-        }
-
-        try
-        {
-            NativeMethods.CGEventSetIntegerValueField(ev, (uint)CGEventField.MouseEventClickState, 1);
-            NativeMethods.CGEventSetIntegerValueField(ev, (uint)CGEventField.MouseEventDeltaX, deltaX);
-            NativeMethods.CGEventSetIntegerValueField(ev, (uint)CGEventField.MouseEventDeltaY, deltaY);
-            NativeMethods.CGEventSetTimestamp(ev, NowNs());
-            NativeMethods.CGEventPost(HidEventTap, ev);
-        }
-        finally
-        {
-            NativeMethods.CFRelease(ev);
-        }
-
-        return true;
-    }
-
-    /// <summary>Caches the active display rectangles at drag start (no allocation; up to <see cref="MaxDisplays"/>).</summary>
-    private void LoadDisplays()
-    {
-        _displayCount = 0;
-        _display = -1;
-        if (NativeMethods.CGGetActiveDisplayList(MaxDisplays, _displayIds, out uint count) != 0)
-        {
-            return;
-        }
-
-        _displayCount = (int)Math.Min(count, MaxDisplays);
-        for (int i = 0; i < _displayCount; i++)
-        {
-            _displays[i] = NativeMethods.CGDisplayBounds(_displayIds[i]);
-            if (_display < 0 && _displays[i].Contains(_x, _y))
-            {
-                _display = i;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Keeps the point on a display: inside any display it moves freely (across displays, as a mouse does); otherwise
-    /// it is clamped to the display the cursor was last on.
-    /// </summary>
-    private void ClampToDisplays(ref double x, ref double y)
-    {
-        for (int i = 0; i < _displayCount; i++)
-        {
-            if (_displays[i].Contains(x, y))
-            {
-                _display = i;
-                return;
-            }
-        }
-
-        if (_display < 0)
-        {
-            return;
-        }
-
-        NativeRect r = _displays[_display];
-        x = Math.Clamp(x, r.X, r.X + r.Width - 1);
-        y = Math.Clamp(y, r.Y, r.Y + r.Height - 1);
-    }
-
-    private static NativePoint Cursor()
-    {
-        IntPtr ev = NativeMethods.CGEventCreate(IntPtr.Zero);
-        if (ev == IntPtr.Zero)
-        {
-            return default;
-        }
-
-        try
-        {
-            return NativeMethods.CGEventGetLocation(ev);
-        }
-        finally
-        {
-            NativeMethods.CFRelease(ev);
         }
     }
 

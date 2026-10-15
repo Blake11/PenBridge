@@ -16,7 +16,8 @@ namespace PenBridge.Mac.Input;
 /// mouse events with the tablet-point subtype carry position, pressure, tilt and rotation. The side button is a
 /// right-click while hovering (ADR-0016); held at contact-down it makes the stroke a right-button drag, latched until
 /// the tip lifts (ADR-0022). Gesture events go to <see cref="CGEventGestureInjector"/> (ADR-0023: scroll with momentum,
-/// magnify/rotate, smart zoom, two-finger tap), under the same lock.
+/// magnify/rotate, smart zoom, two-finger tap; ADR-0026: the relative one-finger cursor as plain mouse events), under
+/// the same lock. A pen event first releases any finger drag, so the pen's events start with no button held.
 /// </summary>
 /// <remarks>
 /// <para><b>Threading.</b> <see cref="ServerHost"/> wraps the injector in a <see cref="PausableInputSink"/>, so
@@ -279,6 +280,12 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
             }
 
             _gestures.OnGesture(e);
+            if (e.Kind == GestureKind.Click || (e.Kind is GestureKind.PointerDrag or GestureKind.Drag && e.Phase == GesturePhase.Began))
+            {
+                // A finger pressed the left button in between: the pen's next tap is a new click (state 1), not a
+                // repeat of the pen tap before the finger's (same lock as the pen path, so no race with it).
+                _leftClicks = default;
+            }
         }
     }
 
