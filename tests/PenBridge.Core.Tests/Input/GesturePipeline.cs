@@ -28,7 +28,8 @@ internal sealed class OrderedSink : IInputSink
 /// event → phone <see cref="InputFilter"/> (with the head's arm timer: <see cref="InputFilter.PendingDeadline"/> re-run
 /// at the ceiling millisecond) → frames as the head queues them (replays split into 8-sample history batches, nothing
 /// sent while a lone finger is held) → the client's keepalives (40 ms while touching, 200 ms while hovering, two
-/// release repeats; withdrawn touches don't count as contact) → <see cref="InputPayload"/> write/read round-trip → Mac <see cref="PenStateTracker"/> and its
+/// release repeats, which with FingerTouches resend a touch lift with the lift's own frame time; withdrawn touches
+/// don't count as contact) → <see cref="InputPayload"/> write/read round-trip → Mac <see cref="PenStateTracker"/> and its
 /// <see cref="GestureRecognizer"/> with the tracker's watchdog/held-tap timer. Zero network latency; the Mac clock
 /// follows the phone clock. Times are whole milliseconds since the session started.
 /// Not modelled: network latency, jitter and loss, and PadSendQueue coalescing (a full queue overwrites its newest
@@ -64,11 +65,14 @@ internal sealed class GesturePipeline
     private int _lastTouchCount;
     private bool _wasActive;
     private int _repeatsLeft;
+    private TimeSpan? _releaseTime;
     private TimeSpan? _keepaliveAt;
+    private readonly bool _fingerTouches;
 
     public GesturePipeline(InputFilterOptions? filterOptions = null, PenStateTrackerOptions? trackerOptions = null)
     {
         Filter = new InputFilter(filterOptions);
+        _fingerTouches = filterOptions?.FingerTouches ?? false;
         Tracker = new PenStateTracker(Sink, _macClock, trackerOptions) { Mapper = Mapper };
     }
 
@@ -268,6 +272,7 @@ internal sealed class GesturePipeline
     /// <summary>PenBridgeClient.SendState: serialize, deliver to the Mac, re-arm the keepalive.</summary>
     private void Send(TimeSpan t, PenSample? pen, ReadOnlySpan<TouchSample> touches, ReadOnlySpan<PenSample> history)
     {
+        bool hadContactTouch = HasContact(_lastTouches.AsSpan(0, _lastTouchCount));
         _lastPen = pen;
         touches.CopyTo(_lastTouches);
         _lastTouchCount = touches.Length;
@@ -279,7 +284,8 @@ internal sealed class GesturePipeline
         }
 
         _wasActive = active;
-        Deliver(t, pen, touches, history);
+        _releaseTime = !active && hadContactTouch && history.IsEmpty && _repeatsLeft > 0 && _fingerTouches ? t : null;
+        Deliver(t, t, pen, touches, history);
         ArmKeepalive(t, contact, active);
     }
 
@@ -318,14 +324,15 @@ internal sealed class GesturePipeline
             _repeatsLeft--;
         }
 
-        Deliver(t, _lastPen, _lastTouches.AsSpan(0, _lastTouchCount), []);
+        Deliver(t, active ? t : _releaseTime ?? t, _lastPen, _lastTouches.AsSpan(0, _lastTouchCount), []);
         ArmKeepalive(t, contact, active);
     }
 
-    private void Deliver(TimeSpan t, PenSample? pen, ReadOnlySpan<TouchSample> touches, ReadOnlySpan<PenSample> history)
+    /// <summary>A frame stamped <paramref name="frameTime"/> arrives at the Mac at <paramref name="t"/>.</summary>
+    private void Deliver(TimeSpan t, TimeSpan frameTime, PenSample? pen, ReadOnlySpan<TouchSample> touches, ReadOnlySpan<PenSample> history)
     {
         AdvanceMac(t);
-        uint timeUs = (uint)(t.Ticks / TimeSpan.TicksPerMicrosecond);
+        uint timeUs = (uint)(frameTime.Ticks / TimeSpan.TicksPerMicrosecond);
         int size = InputPayload.Write(_wire, timeUs, pen, touches, history);
         Assert.True(InputPayload.TryRead(_wire.AsSpan(0, size), out InputPayload payload));
         Tracker.ProcessFrame(payload.TimeUs, payload.Pen, payload.History, payload.Touches);

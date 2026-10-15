@@ -70,11 +70,12 @@ public sealed record GestureRecognizerOptions
     /// two-finger tap landing within it (and within <see cref="DoubleTapSlop"/>) makes a SmartZoom instead. Zero emits
     /// taps at once (no smart zoom). It delays every secondary click by this much (plus
     /// <see cref="TapDeadlineJitterAllowance"/>), so it trades the longest lift-to-landing gap a double tap may have
-    /// against right-click latency: 250 ms keeps the right-click near 300 ms after the lift (ADR-0029) and still
-    /// catches a deliberate double tap, short of the macOS double-click interval (500 ms by default). The tap and
-    /// double-tap slops, not a long window, are what make relaxed double taps register.
+    /// against right-click latency: 200 ms puts the right-click about 225 ms after the lift (ADR-0029, a MacBook
+    /// trackpad's is about 300 ms) and still catches relaxed double taps (measured gaps 78-135 ms on an S23 Ultra,
+    /// 120-140 ms on a trackpad). The tap and double-tap slops, not a long window, are what make relaxed double taps
+    /// register.
     /// </summary>
-    public TimeSpan DoubleTapWindow { get; init; } = TimeSpan.FromMilliseconds(250);
+    public TimeSpan DoubleTapWindow { get; init; } = TimeSpan.FromMilliseconds(200);
 
     /// <summary>
     /// Whether two-finger double taps smart zoom (ADR-0029; the Mac supplies the macOS Smart Zoom setting). Consulted
@@ -98,10 +99,14 @@ public sealed record GestureRecognizerOptions
 
     /// <summary>
     /// Added to the double-tap window for the timer-driven deadline (<see cref="GestureRecognizer.PendingDeadlineUs"/>),
-    /// which runs on host time estimated from the last frame: a second tap's landing datagram delayed by network
-    /// jitter still arrives before the timer gives up on it. Frames themselves are judged on the frame clock, without it.
+    /// which runs on host time estimated from the lift frame's arrival: a second tap's landing datagram delayed by up to
+    /// this much more than the lift's still arrives before the timer gives up on it. Frames themselves are judged on the
+    /// frame clock, without it. It only matters for a landing in the last part of the window: a landing that much
+    /// earlier than the window's end tolerates that much more delay. Typical LAN delay varies by a few ms; the 20 ms
+    /// default plus the window's headroom over real double-tap gaps (about 65 ms at 200 ms) covers Wi-Fi bunching, and
+    /// a later landing datagram turns the double tap into two Taps (never loses a click).
     /// </summary>
-    public TimeSpan TapDeadlineJitterAllowance { get; init; } = TimeSpan.FromMilliseconds(50);
+    public TimeSpan TapDeadlineJitterAllowance { get; init; } = TimeSpan.FromMilliseconds(20);
 
     /// <summary>
     /// One finger moves the cursor relatively, taps click and tap-and-a-half drags (ADR-0026): PointerMove, Click and

@@ -148,7 +148,7 @@ public class GesturePipelineTests
         TwoFingers(0, stagger);
         _p.Up(stagger + 60, 1); // staggered lifts
         _p.Up(stagger + 90, 0);
-        _p.Wait(stagger + 90 + 299);
+        _p.Wait(stagger + 90 + 219);
         Assert.Equal(["TouchDown"], _p.Names()); // held for the double-tap window
 
         _p.Wait(stagger + 1000);

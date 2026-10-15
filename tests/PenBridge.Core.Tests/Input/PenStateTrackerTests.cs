@@ -343,11 +343,11 @@ public class PenStateTrackerTests
     {
         // Square maps 1 normalized unit to 1 point; fingers 200 pt apart.
         Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000)); // t = 10 ms
-        Frame(null); // lift at 15 ms: the tap is held for the 250 ms window + 50 ms jitter allowance
+        Frame(null); // lift at 15 ms: the tap is held for the 200 ms window + 20 ms jitter allowance
         Assert.DoesNotContain(_sink.Gestures, g => g.Kind == GestureKind.Tap);
-        Assert.Equal(TimeSpan.FromMilliseconds(300), _tracker.WatchdogDueIn);
+        Assert.Equal(TimeSpan.FromMilliseconds(220), _tracker.WatchdogDueIn);
 
-        _time.Advance(TimeSpan.FromMilliseconds(299));
+        _time.Advance(TimeSpan.FromMilliseconds(219));
         Assert.False(_tracker.CheckWatchdog());
         Assert.DoesNotContain(_sink.Gestures, g => g.Kind == GestureKind.Tap);
         Assert.Equal(TimeSpan.FromMilliseconds(1), _tracker.WatchdogDueIn);
@@ -355,8 +355,59 @@ public class PenStateTrackerTests
         _time.Advance(TimeSpan.FromMilliseconds(1));
         Assert.False(_tracker.CheckWatchdog()); // the watchdog itself didn't fire
         GestureEvent tap = Assert.Single(_sink.Gestures, g => g.Kind == GestureKind.Tap);
-        Assert.Equal(315_000, tap.TimestampUs);
+        Assert.Equal(235_000, tap.TimestampUs);
         Assert.Null(_tracker.WatchdogDueIn); // idle again: no timer
+    }
+
+    [Fact]
+    public void Lift_repeats_with_the_same_time_dont_delay_the_held_tap()
+    {
+        // #142: the phone repeats the lift frame 40 and 80 ms later with the lift's own time.
+        TouchSample[] pair = [new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000)];
+        _tracker.ProcessFrame(10_000, null, [], pair);
+        _time.Advance(TimeSpan.FromMilliseconds(5));
+        _tracker.ProcessFrame(15_000, null, [], []); // the lift
+        _time.Advance(TimeSpan.FromMilliseconds(40));
+        _tracker.ProcessFrame(15_000, null, [], []); // repeat 1
+        Assert.Equal(TimeSpan.FromMilliseconds(180), _tracker.WatchdogDueIn);
+        _time.Advance(TimeSpan.FromMilliseconds(40));
+        _tracker.ProcessFrame(15_000, null, [], []); // repeat 2
+        Assert.Equal(TimeSpan.FromMilliseconds(140), _tracker.WatchdogDueIn);
+
+        _time.Advance(TimeSpan.FromMilliseconds(139));
+        _tracker.CheckWatchdog();
+        Assert.DoesNotContain(_sink.Gestures, g => g.Kind == GestureKind.Tap);
+        _time.Advance(TimeSpan.FromMilliseconds(1)); // 220 ms after the first copy arrived
+        _tracker.CheckWatchdog();
+        GestureEvent tap = Assert.Single(_sink.Gestures, g => g.Kind == GestureKind.Tap);
+        Assert.Equal(235_000, tap.TimestampUs);
+    }
+
+    [Fact]
+    public void A_late_reordered_frame_doesnt_delay_the_held_tap()
+    {
+        TouchSample[] pair = [new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000)];
+        _tracker.ProcessFrame(10_000, null, [], pair);
+        _tracker.ProcessFrame(15_000, null, [], []); // the lift
+        _time.Advance(TimeSpan.FromMilliseconds(100));
+        _tracker.ProcessFrame(12_000, null, [], []); // an earlier frame arriving late: the clock holds
+        Assert.Equal(TimeSpan.FromMilliseconds(120), _tracker.WatchdogDueIn);
+    }
+
+    [Fact]
+    public void A_repeated_frame_still_feeds_the_watchdog()
+    {
+        _tracker.ProcessFrame(50_000, Samples.Touch(1, 1), [], []);
+        _time.Advance(TimeSpan.FromMilliseconds(100));
+        _tracker.ProcessFrame(50_000, Samples.Touch(1, 1), [], []); // a resend: the link is alive
+        Assert.Equal(TimeSpan.FromMilliseconds(150), _tracker.WatchdogDueIn);
+
+        _time.Advance(TimeSpan.FromMilliseconds(149));
+        Assert.False(_tracker.CheckWatchdog());
+        _sink.Clear();
+        _time.Advance(TimeSpan.FromMilliseconds(1));
+        Assert.True(_tracker.CheckWatchdog());
+        Assert.All(_sink.Pen, e => Assert.Equal(300_000, e.TimestampUs)); // the frame clock ran on since the first copy
     }
 
     [Fact]
@@ -439,6 +490,9 @@ public class PenStateTrackerTests
             else if (phase == 40)
             {
                 tracker.ProcessFrame((uint)(i * 5000), null, [], []);
+                time.Advance(TimeSpan.FromMilliseconds(40));
+                tracker.ProcessFrame((uint)(i * 5000), null, [], []); // a release repeat: same time
+                _ = tracker.WatchdogDueIn;
             }
             else if (phase < 90)
             {

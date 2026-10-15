@@ -44,7 +44,9 @@ public sealed record PenStateTrackerOptions
 /// Timestamps: the frame's u32 <c>timeUs</c> is unwrapped to a monotonic 64-bit µs clock (forward steps under
 /// 2^31 µs; a backwards step holds the clock). That clock is the per-session sample-dedupe watermark: history samples
 /// of a frame that doesn't advance it are skipped (<see cref="ProcessFrame"/>); a new session has a new tracker, and a
-/// SurfaceInfo change keeps the watermark (the phone clock runs on). Not thread-safe: the caller serializes <see cref="ProcessFrame"/>,
+/// SurfaceInfo change keeps the watermark (the phone clock runs on). Between frames (held-tap deadline, synthesized
+/// releases) the clock is estimated as that clock plus the host time since the frame that last advanced it arrived;
+/// the watchdog's silence is measured from the last frame of any time. Not thread-safe: the caller serializes <see cref="ProcessFrame"/>,
 /// <see cref="CheckWatchdog"/> and <see cref="Reset"/>. Allocation-free per call. The tracker owns no timer
 /// (idle ≈ 0% CPU): after each frame, schedule a one-shot timer for <see cref="WatchdogDueIn"/> and call
 /// <see cref="CheckWatchdog"/> when it fires.
@@ -57,6 +59,7 @@ public sealed class PenStateTracker
     private readonly PenStateTrackerOptions _options;
     private readonly long _historyIntervalUs;
     private long _lastFrameTimestamp;
+    private long _clockTimestamp;
     private bool _hasTime;
     private uint _lastRawTimeUs;
     private long _frameTimeUs;
@@ -146,10 +149,18 @@ public sealed class PenStateTracker
             return;
         }
 
-        _lastFrameTimestamp = _time.GetTimestamp();
+        long arrival = _time.GetTimestamp();
+        _lastFrameTimestamp = arrival; // any frame proves the link is alive (watchdog)
         long previousFrameUs = _frameTimeUs;
         bool hadTime = _hasTime;
         long now = Unwrap(timeUs);
+        if (!hadTime || now > previousFrameUs)
+        {
+            // Only a frame that advances the frame clock re-anchors the estimated clock. A copy with the same (or an
+            // earlier) time, such as the phone's release repeats or a resend, arrives later than the first copy;
+            // anchoring to it would rewind the estimate and push the held-tap deadline back by the copy's delay.
+            _clockTimestamp = arrival;
+        }
 
         // Sample dedupe (ProtocolCapabilities.SampleDedupe): history samples were taken before the frame time, so a
         // frame whose time doesn't advance past the last applied frame carries only samples already applied (a
@@ -206,8 +217,7 @@ public sealed class PenStateTracker
     /// </summary>
     public void Reset()
     {
-        long elapsedUs = _time.GetElapsedTime(_lastFrameTimestamp).Ticks / TimeSpan.TicksPerMicrosecond;
-        _sampleTimeUs = _frameTimeUs + Math.Max(0, elapsedUs);
+        _sampleTimeUs = EstimatedNowUs();
         if (_inRange)
         {
             ReleaseContactAndButtons(synthetic: true);
@@ -220,10 +230,13 @@ public sealed class PenStateTracker
         }
     }
 
-    /// <summary>The frame clock now: the last frame's time plus the host time elapsed since it arrived.</summary>
+    /// <summary>
+    /// The frame clock now: the frame clock plus the host time elapsed since the frame that last advanced it arrived
+    /// (a repeat of an earlier frame time doesn't re-anchor it).
+    /// </summary>
     private long EstimatedNowUs()
     {
-        long elapsedUs = _time.GetElapsedTime(_lastFrameTimestamp).Ticks / TimeSpan.TicksPerMicrosecond;
+        long elapsedUs = _time.GetElapsedTime(_clockTimestamp).Ticks / TimeSpan.TicksPerMicrosecond;
         return _frameTimeUs + Math.Max(0, elapsedUs);
     }
 

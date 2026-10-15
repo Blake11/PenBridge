@@ -102,6 +102,24 @@ public class GesturePipelineOneFingerTests
     }
 
     [Fact]
+    public void The_lift_repeats_dont_delay_the_right_click()
+    {
+        // #142: the two release repeats (at +40 and +80 ms) carry the lift's frame time; the held tap still ends at
+        // the lift + the 200 ms window + the 20 ms jitter allowance, not that long after the last repeat.
+        _p.Down(0, 0, 600, 400);
+        _p.Down(30, 1, 680, 400);
+        _p.Up(120, 0, 1);
+        int frames = _p.Frames;
+        _p.Wait(339);
+        Assert.Equal(2, _p.Frames - frames); // both repeats arrived
+        Assert.Empty(Names());
+
+        _p.Wait(340);
+        GestureEvent tap = Assert.Single(_p.GestureEvents(), g => g.Kind == GestureKind.Tap);
+        Assert.Equal(340_000, tap.TimestampUs);
+    }
+
+    [Fact]
     public void A_palm_cancels_a_move_and_the_pen_cancels_a_drag()
     {
         _p.Down(0, 0, 400, 300);
