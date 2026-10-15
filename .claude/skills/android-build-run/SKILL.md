@@ -66,6 +66,7 @@ Default deploy is `dotnet build -t:Run` (fast deployment). It builds, installs a
 - **Never dispose a `Java.Lang.Runnable` while it's posted.** `View.RemoveCallbacks` misses runnables already queued once the view is detached, so a disposed one can still run and crash (#78). Post timers on an owned `new Handler(Looper.MainLooper!)` and `handler.RemoveCallbacks(r)` before disposing.
 - **ML Kit results are Java objects:** cast list items with `JavaCast<Barcode>()`, not C# `is`/`as` (the runtime type is a generic `Java.Lang.Object` peer, so the type test fails silently).
 - ML Kit pulls in `com.google.android.datatransport` telemetry; the manifest strips it with `tools:node="remove"` (ADR-0020). Keep those entries when touching the manifest or ML Kit packages; logcat then shows only "Transport backend 'cct' is not registered".
+- **Launcher icons:** themed (monochrome) icons on the emulator need `adb root` plus the launcher's `icon_themed` setting, and show only on the home screen, not in the app drawer. New icon resources still need the merged-manifest review (ADR-0020).
 - **Activity recreation** (rotation, config change): the old activity's `OnStop` already left the host `Idle`, so decide "mid-session?" from `Host.CurrentMac` (kept target), never from the host state.
 
 ## Release APK (what CI does)

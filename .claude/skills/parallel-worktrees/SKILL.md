@@ -25,12 +25,14 @@ git worktree add .claude/worktrees/<branch> -b <branch> origin/main
 - `.claude/progress/` is untracked → only in the main tree. Pass its absolute path.
 - Mac app runs from a worktree get a different bundle path; the Accessibility grant is per signed identity + path in practice — prefer running the Mac app from one place (the main tree) or re-grant.
 - Two worktrees can't check out the same branch.
+- An agent's `cd` into a worktree can change the architect's primary working directory: the architect uses `git -C <path>` and absolute paths.
+- Long-running agents with huge contexts can stall (stream watchdog, "no progress for 600s"). Don't resume the stalled one again: hand off to a fresh agent in the same worktree with a compact, self-contained brief (state, branch heads, uncommitted files, remaining tasks). Tell agents to keep tool calls short and background long app/SimClient runs.
 
 ## Merge back
 1. In the worktree: `scripts/test.sh`, `dotnet build PenBridge.slnx`.
 2. Rebase on fresh main if needed: `git fetch origin && git rebase origin/main`.
 3. PR via skill `pr` (user approval to push).
-4. After a squash merge, branches stacked on it: `git rebase --onto origin/main <old-base-branch> <branch>`.
+4. Stacked branches + squash merge + no force-push: don't open a stacked PR you'd have to force-push. After the base PR squash-merges, publish the dependent work as a **fresh branch from origin/main** carrying only its own commits (`git rebase --onto origin/main <old-base-tip> <branch>` on a never-pushed branch, or cherry-pick), and push it under a new name.
 
 ## Clean up
 ```bash
