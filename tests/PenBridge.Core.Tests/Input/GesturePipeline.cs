@@ -129,7 +129,7 @@ internal sealed class GesturePipeline
             _fingers[i] = _fingers[i] with { Canceled = true };
         }
 
-        Emit(Ms(ms));
+        Emit(Ms(ms), cancelAll: true);
         _fingers.Clear();
     }
 
@@ -218,7 +218,7 @@ internal sealed class GesturePipeline
     }
 
     /// <summary>DrawSurfaceView.Emit: filter the current state and queue the resulting frame(s).</summary>
-    private void Emit(TimeSpan t, bool withHistory = false)
+    private void Emit(TimeSpan t, bool withHistory = false, bool cancelAll = false)
     {
         if (t < _lastEmit)
         {
@@ -228,7 +228,7 @@ internal sealed class GesturePipeline
         _lastEmit = t;
         RawTouch[] fingers = _fingers.ToArray();
         RawTouch[] history = withHistory ? _history.ToArray() : [];
-        InputFilterResult result = Filter.Process(t, _pen, fingers, _out, history);
+        InputFilterResult result = Filter.Process(t, _pen, fingers, _out, history, cancelAll);
         if (result.HasPen)
         {
             PenSample current = result.Pen;

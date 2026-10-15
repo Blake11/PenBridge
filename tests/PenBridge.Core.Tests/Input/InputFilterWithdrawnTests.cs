@@ -68,7 +68,7 @@ public class InputFilterWithdrawnTests
         // Android ACTION_CANCEL: every pointer once, canceled; the head sends nothing more until the next touch.
         Assert.Equal(
             [new TouchSample(0, false, 1000, 2000), new TouchSample(1, false, 5000, 2000)],
-            Touches(f.Process(Ms(10), null, [Finger(0, 1000, canceled: true), Finger(1, 5000, canceled: true)], _out)));
+            Touches(f.Process(Ms(10), null, [Finger(0, 1000, canceled: true), Finger(1, 5000, canceled: true)], _out, cancelAll: true)));
 
         // Ids restart at 0: a new finger, held as a lone finger again (not suppressed, not withdrawn).
         Assert.Equal(0, f.Process(Ms(500), null, [Finger(0, 9000)], _out).TouchCount);
@@ -79,10 +79,74 @@ public class InputFilterWithdrawnTests
     }
 
     [Fact]
+    public void Full_cancel_withdraws_pointers_even_without_their_canceled_flag()
+    {
+        var f = new InputFilter();
+        f.Process(Ms(0), null, [Finger(0, 1000), Finger(1, 5000)], _out);
+
+        InputFilterResult r = f.Process(Ms(10), null, [Finger(0, 1000), Finger(1, 5000)], _out, cancelAll: true);
+        Assert.Equal([new TouchSample(0, false, 1000, 2000), new TouchSample(1, false, 5000, 2000)], Touches(r));
+        Assert.Equal(0, r.ContactCount);
+    }
+
+    [Fact]
+    public void Contact_count_excludes_withdrawn_touches()
+    {
+        var f = new InputFilter();
+        InputFilterResult two = f.Process(Ms(0), null, [Finger(1, 1000), Finger(2, 5000)], _out);
+        Assert.Equal(2, two.ContactCount);
+
+        InputFilterResult one = f.Process(Ms(10), null, [Finger(1, 1000), Finger(2, 5000, canceled: true)], _out);
+        Assert.Equal((2, 1), (one.TouchCount, one.ContactCount));
+
+        InputFilterResult palm = f.Process(Ms(20), null, [Finger(1, 1000), Finger(2, 5000), Palm(3)], _out);
+        Assert.Equal((2, 0), (palm.TouchCount, palm.ContactCount));
+
+        InputFilterResult canceled = f.Process(Ms(30), null, [Finger(1, 1000), Finger(2, 5000)], _out, cancelAll: true);
+        Assert.Equal((2, 0), (canceled.TouchCount, canceled.ContactCount));
+    }
+
+    [Fact]
+    public void Resting_palm_tool_that_flips_to_a_finger_stays_suppressed_until_it_lifts()
+    {
+        // TOOL_TYPE_PALM: the head reports it as canceled on every event. That alone is no full cancel, so its
+        // suppression survives; when the platform later reports the same pointer as a finger, it must not leak.
+        var f = new InputFilter();
+        for (int i = 0; i < 5; i++)
+        {
+            Assert.Empty(Touches(f.Process(Ms(i * 10), null, [Finger(0, 1000, canceled: true)], _out)));
+        }
+
+        Assert.Equal(default, f.Process(Ms(60), null, [Finger(0, 1000)], _out));
+        Assert.Null(f.PendingDeadline); // not held as a new lone finger
+        Assert.Equal(default, f.Process(Ms(300), null, [Finger(0, 1200)], _out));
+        // Finger 1 lands beside it: a lone finger (held), not a two-finger gesture with the palm.
+        Assert.Equal(default, f.Process(Ms(310), null, [Finger(0, 1200), Finger(1, 5000)], _out));
+        Assert.NotNull(f.PendingDeadline);
+
+        f.Process(Ms(320), null, [], _out); // both lift
+        f.Process(Ms(330), null, [Finger(0, 1000)], _out); // a new finger on the same id
+        Assert.NotNull(f.PendingDeadline);
+    }
+
+    [Fact]
+    public void Resting_palm_tool_beside_sent_fingers_does_not_reset_them()
+    {
+        var f = new InputFilter();
+        f.Process(Ms(0), null, [Finger(1, 1000), Finger(2, 5000)], _out);
+        RawTouch[] withPalm = [Finger(1, 1000), Finger(2, 5000), Finger(3, 9000, canceled: true)];
+        Assert.Equal(2, f.Process(Ms(10), null, withPalm, _out).ContactCount);
+
+        // Palm tool flips to a finger: still suppressed (never sent), the others carry on.
+        InputFilterResult r = f.Process(Ms(20), null, [Finger(1, 1000), Finger(2, 5000), Finger(3, 9000)], _out);
+        Assert.Equal([new TouchSample(1, true, 1000, 2000), new TouchSample(2, true, 5000, 2000)], Touches(r));
+    }
+
+    [Fact]
     public void A_pointer_still_canceled_after_a_stream_cancel_stays_suppressed()
     {
         var f = new InputFilter();
-        f.Process(Ms(0), null, [Finger(0, canceled: true)], _out); // e.g. a palm-tool pointer, canceled every event
+        f.Process(Ms(0), null, [Finger(0, canceled: true)], _out, cancelAll: true);
         Assert.Empty(Touches(f.Process(Ms(10), null, [Finger(0, canceled: true), Finger(1)], _out)));
     }
 
@@ -136,26 +200,36 @@ public class InputFilterWithdrawnTests
         RawTouch[] palm = [Finger(1, 1000), Finger(2, 5000), Palm(3)];
         RawTouch[] canceled = [Finger(1, 1000, canceled: true), Finger(2, 5000, canceled: true)];
         RawTouch[] none = [];
+        PenSample hover = Samples.Hover(100, 200);
         long withdrawn = 0;
+        long penWithdrawn = 0;
+        long canceledAll = 0;
         int t = 0;
 
         Alloc.AssertZero(2_000, i =>
         {
-            t += i % 8 == 6 ? 300 : 10; // past the palm window after all lifted
-            RawTouch[] state = (i % 8) switch
+            int step = i % 12;
+            t += step is 6 or 11 ? 700 : 10; // past the palm and pen windows after all lifted
+            RawTouch[] state = step switch
             {
                 0 or 1 => two,
-                2 or 3 => palm,
+                2 or 3 => palm, // palm suppression: WriteWithdrawn
                 4 => two, // palm lifted, still withdrawn
                 5 => none, // all lift
-                6 => two,
-                _ => canceled, // the stream is canceled: ids are new next time
+                6 or 7 => two,
+                8 => two, // with the pen in range
+                9 => two, // pen left: pen suppression, WriteWithdrawn
+                10 => canceled, // ACTION_CANCEL: ids are new next time
+                _ => none,
             };
-            InputFilterResult r = f.Process(Ms(t), null, state, _out);
-            if (r.TouchCount > 0 && !_out[0].Contact)
+            PenSample? pen = step == 8 ? hover : null;
+            InputFilterResult r = f.Process(Ms(t), pen, state, _out, default, cancelAll: step == 10);
+            if (r.TouchCount > 0 && r.ContactCount == 0)
             {
                 withdrawn++;
+                penWithdrawn += step == 9 ? 1 : 0;
+                canceledAll += step == 10 ? 1 : 0;
             }
-        }, () => withdrawn);
+        }, () => withdrawn, () => penWithdrawn, () => canceledAll);
     }
 }

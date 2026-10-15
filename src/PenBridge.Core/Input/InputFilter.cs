@@ -81,12 +81,17 @@ public sealed record InputFilterOptions
 /// <summary>Result of <see cref="InputFilter.Process"/>.</summary>
 /// <param name="HasPen">True when <see cref="Pen"/> should be sent.</param>
 /// <param name="Pen">The pen (or finger-fallback) sample to send.</param>
-/// <param name="TouchCount">Number of touches written to the destination span.</param>
+/// <param name="TouchCount">
+/// Number of touches written to the destination span, including withdrawn ones (present, not in contact).
+/// </param>
 /// <param name="ReplayCount">
 /// Number of held finger-fallback samples (<see cref="InputFilter.ReplaySamples"/>) to send before <see cref="Pen"/>,
 /// oldest first.
 /// </param>
-public readonly record struct InputFilterResult(bool HasPen, PenSample Pen, int TouchCount, int ReplayCount = 0);
+/// <param name="ContactCount">
+/// Number of the written touches that are in contact. Zero with only withdrawn touches left: no finger is active.
+/// </param>
+public readonly record struct InputFilterResult(bool HasPen, PenSample Pen, int TouchCount, int ReplayCount = 0, int ContactCount = 0);
 
 /// <summary>
 /// Phone-side, pen-first input filter. Feed it the full current pointer state on every platform input event; it
@@ -95,8 +100,9 @@ public readonly record struct InputFilterResult(bool HasPen, PenSample Pen, int 
 /// <remarks>
 /// <para>Pen: while the pen is in range or in contact, and for <see cref="InputFilterOptions.PenSuppression"/>
 /// afterwards, touches are suppressed. A finger that landed during suppression, or was canceled by the platform,
-/// stays suppressed until it lifts (a resting palm never leaks through). When every pointer of a call was canceled
-/// (the platform canceled the whole stream), they all count as lifted next call: ids seen again are new fingers.</para>
+/// stays suppressed until it lifts (a resting palm never leaks through). When the head reports a full cancel
+/// (<c>cancelAll</c>, Android <c>ACTION_CANCEL</c>), every pointer of that call counts as lifted next call: ids seen
+/// again are new fingers. Canceled pointers alone never imply that (a resting palm canceled on every event).</para>
 /// <para>Palm: a contact with <see cref="RawTouch.Size"/> at or above <see cref="InputFilterOptions.PalmSizeThreshold"/>
 /// suppresses every touch until all fingers lift, then for <see cref="InputFilterOptions.PalmSuppression"/>; a finger
 /// landing in that window is suppressed until it lifts and restarts the window.</para>
@@ -144,7 +150,7 @@ public sealed class InputFilter
     private readonly bool[] _suppressed = new bool[256];
     private readonly bool[] _reported = new bool[256]; // sent as a contact touch since it landed (ADR-0024)
     private readonly bool[] _present = new bool[256];
-    private bool _allCanceled; // the previous call's pointers were all canceled (the platform canceled the stream)
+    private bool _cancelAll; // the previous call was a full cancel: its pointers are gone (the head said so)
     private readonly byte[] _previousIds = new byte[256];
     private readonly long _tapSlopSq;
     private readonly long _doubleTapSlopSq;
@@ -231,15 +237,20 @@ public sealed class InputFilter
     /// Earlier finger positions batched into this event (e.g. Android historical samples), each pointer's entries in
     /// time order. Only the lone finger's entries are used (held, or replayed while it is armed).
     /// </param>
+    /// <param name="cancelAll">
+    /// The platform canceled the whole stream (Android <c>ACTION_CANCEL</c>): every pointer in <paramref name="touches"/>
+    /// is treated as canceled, and all of them count as lifted next call (ids seen again are new fingers).
+    /// </param>
     public InputFilterResult Process(
         TimeSpan timestamp,
         in PenSample? pen,
         ReadOnlySpan<RawTouch> touches,
         Span<TouchSample> touchesOut,
-        ReadOnlySpan<RawTouch> history = default)
+        ReadOnlySpan<RawTouch> history = default,
+        bool cancelAll = false)
     {
         _replayCount = 0;
-        ForgetLiftedPointers(touches);
+        ForgetLiftedPointers(touches, cancelAll);
 
         bool anyContact = false;
         bool palmNow = false;
@@ -302,7 +313,7 @@ public sealed class InputFilter
         for (int i = 0; i < touches.Length; i++)
         {
             RawTouch t = touches[i];
-            if (t.Canceled)
+            if (t.Canceled || cancelAll)
             {
                 _suppressed[t.PointerId] = true;
             }
@@ -341,7 +352,7 @@ public sealed class InputFilter
             }
 
             _mode = FingerMode.Idle;
-            return new InputFilterResult(false, default, written);
+            return new InputFilterResult(false, default, written); // only withdrawn touches: ContactCount 0
         }
 
         if (active >= 2)
@@ -405,7 +416,7 @@ public sealed class InputFilter
     {
         Array.Clear(_suppressed);
         Array.Clear(_reported);
-        _allCanceled = false;
+        _cancelAll = false;
         _previousCount = 0;
         _penSeen = false;
         _lastPenTime = default;
@@ -632,28 +643,26 @@ public sealed class InputFilter
     }
 
     /// <summary>Un-suppresses ids that were present in the previous call but are gone now (the finger lifted).</summary>
-    private void ForgetLiftedPointers(ReadOnlySpan<RawTouch> touches)
+    private void ForgetLiftedPointers(ReadOnlySpan<RawTouch> touches, bool cancelAll)
     {
-        bool allCanceled = touches.Length > 0;
         for (int i = 0; i < touches.Length; i++)
         {
             _present[touches[i].PointerId] = true;
-            allCanceled &= touches[i].Canceled;
         }
 
         for (int i = 0; i < _previousCount; i++)
         {
-            // Lifted, or the whole stream was canceled last time (Android ACTION_CANCEL: every pointer is gone after
-            // it and ids restart, so an id seen again is a new finger; one still canceled is suppressed again).
+            // Lifted, or the head reported a full cancel last time (Android ACTION_CANCEL: every pointer is gone
+            // after it and ids restart, so an id seen again is a new finger).
             byte id = _previousIds[i];
-            if (!_present[id] || _allCanceled)
+            if (!_present[id] || _cancelAll)
             {
                 _suppressed[id] = false;
                 _reported[id] = false;
             }
         }
 
-        _allCanceled = allCanceled;
+        _cancelAll = cancelAll;
 
         // Record this call's distinct ids and clear the presence marks again.
         _previousCount = 0;
@@ -671,15 +680,17 @@ public sealed class InputFilter
     /// <summary>Raw touches to send: marks the contacts as reported, so a later suppression keeps them on the wire.</summary>
     private InputFilterResult Touches(ReadOnlySpan<TouchSample> touchesOut, int written)
     {
+        int contacts = 0;
         for (int i = 0; i < written; i++)
         {
             if (touchesOut[i].Contact)
             {
                 _reported[touchesOut[i].PointerId] = true;
+                contacts++;
             }
         }
 
-        return new InputFilterResult(false, default, written);
+        return new InputFilterResult(false, default, written, 0, contacts);
     }
 
     /// <summary>Writes every reported (already-sent) touch as not in contact; returns the count (ADR-0024).</summary>
