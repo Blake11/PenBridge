@@ -11,6 +11,7 @@ using PenBridge.Core.Input;
 using PenBridge.Core.Net;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
+using PenBridge.Mac.Input;
 
 namespace PenBridge.Mac.Services;
 
@@ -497,6 +498,11 @@ public sealed partial class ServerHost : IAsyncDisposable
             TimeProvider = _time,
             LoggerFactory = _loggers,
             LatencyRecorder = _latency?.Recorder,
+            // Read live at each two-finger tap: Smart Zoom off right-clicks on the lift (ADR-0029).
+            TrackerOptions = new PenStateTrackerOptions
+            {
+                Gestures = new GestureRecognizerOptions { SmartZoomEnabled = SmartZoom.Delegate },
+            },
         });
         server.SessionStarted += OnSessionStarted;
         server.SessionEnded += OnSessionEnded;
@@ -522,6 +528,7 @@ public sealed partial class ServerHost : IAsyncDisposable
         _error = null;
         _status = ServerHostStatus.Listening;
         _bonjour.Publish(name, server.Port, _identity.Fingerprint);
+        InputLog.SmartZoom(_log, SmartZoom.IsEnabled());
         Log.Started(_log, server.Port, _identity.FingerprintBase64Url);
         PublishState();
     }

@@ -32,4 +32,7 @@ internal static partial class InputLog
 
     [LoggerMessage(108, LogLevel.Warning, "Opening the app launcher failed: {Error}")]
     public static partial void LauncherFailed(ILogger logger, string error);
+
+    [LoggerMessage(109, LogLevel.Information, "Smart zoom (two-finger double tap): {Enabled}")]
+    public static partial void SmartZoom(ILogger logger, bool enabled);
 }

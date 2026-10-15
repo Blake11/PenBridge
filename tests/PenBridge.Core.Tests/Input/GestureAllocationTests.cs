@@ -154,6 +154,41 @@ public class GestureAllocationTests
         }, () => sink.Count(GestureKind.PointerMove), () => sink.Count(GestureKind.Click), () => sink.Count(GestureKind.PointerDrag));
     }
 
+    [Fact]
+    public void Two_finger_taps_with_the_smart_zoom_switch_are_allocation_free()
+    {
+        var sink = new CountingSink();
+        bool smartZoom = false;
+        var rec = new GestureRecognizer(sink, new GestureRecognizerOptions { SmartZoomEnabled = () => smartZoom }) { Mapper = Square };
+        var two = new TouchSample[2];
+        var none = Array.Empty<TouchSample>();
+        long t = 0;
+        two[0] = new TouchSample(1, true, N(400), N(500));
+        two[1] = new TouchSample(2, true, N(600), N(500));
+
+        Alloc.AssertZero(3_000, i =>
+        {
+            int phase = i % 12;
+            t += 40_000;
+            smartZoom = (i / 12) % 2 == 0; // alternate whole rounds: on (held, smart zoom), off (taps on lift)
+            if (phase is 0 or 2 or 4)
+            {
+                rec.Process(two, false, t);
+            }
+            else if (phase is 1 or 3 or 5)
+            {
+                rec.Process(none, false, t);
+            }
+            else if (phase == 6)
+            {
+                t += 400_000;
+                rec.CheckDeadline(t);
+            }
+
+            _ = rec.PendingDeadlineUs;
+        }, () => sink.Count(GestureKind.Tap), () => sink.Count(GestureKind.SmartZoom));
+    }
+
     private sealed class CountingSink : IInputSink
     {
         private readonly long[] _counts = new long[16];

@@ -5,7 +5,8 @@ namespace PenBridge.Core.Tests.Input;
 /// <summary>
 /// Relaxed two-finger taps and double taps on an S23 Ultra-sized surface with the default options (#121): each
 /// offset or timing here was rejected by the earlier defaults (2% tap slop, 5% double-tap slop, 200 ms tap). The
-/// guards check that single taps still right-click and slow scrolls stay no tap.
+/// guards check that single taps still right-click and slow scrolls stay no tap. Gaps between the taps fit the 250 ms
+/// double-tap window (ADR-0029).
 /// </summary>
 public class GestureRelaxedDoubleTapTests
 {
@@ -70,7 +71,7 @@ public class GestureRelaxedDoubleTapTests
     public void Second_tap_landing_8_mm_off_the_first_smart_zooms()
     {
         RelaxedTap(0, 70, 34);
-        RelaxedTap(450, 76, 39); // midpoint ~7.8 mm away (the old 5% slop was ~3.4 mm), 260 ms after the lift
+        RelaxedTap(400, 76, 39); // midpoint ~7.8 mm away (the old 5% slop was ~3.4 mm), 210 ms after the lift
         Assert.Equal([GestureKind.SmartZoom], Kinds());
     }
 
@@ -78,7 +79,7 @@ public class GestureRelaxedDoubleTapTests
     public void Fingers_drifting_2_mm_on_lift_still_tap_and_smart_zoom()
     {
         RelaxedTap(0, 70, 34, driftMm: 2); // the old 2% per-finger slop was ~1.4 mm
-        RelaxedTap(450, 70, 34, driftMm: 2);
+        RelaxedTap(400, 70, 34, driftMm: 2);
         Assert.Equal([GestureKind.SmartZoom], Kinds());
     }
 
@@ -86,23 +87,32 @@ public class GestureRelaxedDoubleTapTests
     public void A_slow_relaxed_tap_of_270_ms_still_counts()
     {
         RelaxedTap(0, 70, 34, downMs: 200, staggerMs: 70); // 270 ms from first landing to last lift (old max 200)
-        RelaxedTap(520, 70, 34, downMs: 200, staggerMs: 70); // lands 250 ms after the first lift
+        RelaxedTap(490, 70, 34, downMs: 200, staggerMs: 70); // lands 220 ms after the first lift
         Assert.Equal([GestureKind.SmartZoom], Kinds());
     }
 
     [Fact]
-    public void A_280_ms_gap_between_the_taps_smart_zooms()
+    public void A_240_ms_gap_between_the_taps_smart_zooms()
     {
         RelaxedTap(0, 70, 34); // lifts at 190 ms
-        RelaxedTap(470, 70, 34); // lands 280 ms later, near the end of the 300 ms window
+        RelaxedTap(430, 70, 34); // lands 240 ms later, near the end of the 250 ms window
         Assert.Equal([GestureKind.SmartZoom], Kinds());
+    }
+
+    [Fact]
+    public void A_260_ms_gap_is_two_right_clicks()
+    {
+        RelaxedTap(0, 70, 34); // lifts at 190 ms
+        RelaxedTap(450, 70, 34); // lands 260 ms later: past the 250 ms window (ADR-0029 traded it for latency)
+        _rec.CheckDeadline(Ms(2000));
+        Assert.Equal([GestureKind.Tap, GestureKind.Tap], Kinds());
     }
 
     [Fact]
     public void A_relaxed_double_tap_with_every_offset_at_once_smart_zooms()
     {
         RelaxedTap(0, 70, 34, downMs: 180, staggerMs: 60, driftMm: 1.8);
-        RelaxedTap(520, 64, 30, downMs: 170, staggerMs: 50, driftMm: -1.8); // 280 ms gap, ~7 mm off
+        RelaxedTap(480, 64, 30, downMs: 170, staggerMs: 50, driftMm: -1.8); // 240 ms gap, ~7 mm off
         GestureEvent zoom = Assert.Single(Gestures);
         Assert.Equal(GestureKind.SmartZoom, zoom.Kind);
     }
@@ -112,8 +122,8 @@ public class GestureRelaxedDoubleTapTests
     {
         RelaxedTap(0, 70, 34, downMs: 200, staggerMs: 60, driftMm: 2); // lifts at 260 ms
         Assert.Empty(Gestures);
-        Assert.Equal(Ms(260 + 300 + 50), _rec.PendingDeadlineUs);
-        _rec.CheckDeadline(Ms(610));
+        Assert.Equal(Ms(260 + 250 + 50), _rec.PendingDeadlineUs);
+        _rec.CheckDeadline(Ms(560));
         Assert.Equal([GestureKind.Tap], Kinds());
     }
 
