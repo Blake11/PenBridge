@@ -208,3 +208,13 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
   - The undocumented event fields can change with a macOS update. The Mac smoke test covers each gesture, and every injector logs once and degrades to the discrete fallback.
   - Phase 5 Settings: per-gesture on/off, finger mapping, scroll gain/acceleration, invert.
   - Mirroring the trackpad's own preference domain was rejected for now: its keys are undocumented and present on Macs without a trackpad.
+
+## ADR-0024 — A suppressed finger stays on the wire as "not in contact" until it lifts
+**Status:** accepted (2026-10-15). Refines ADR-0022's palm/cancel handling for gestures (ADR-0023); no protocol version change.
+- **Context:** when a palm or a platform cancel (`FLAG_CANCELED`) suppressed touches, the phone-side `InputFilter` dropped them from the next datagram. The Mac's `GestureRecognizer` read that as a lift, so a palm within ~200 ms of two fingers landing produced a stray two-finger Tap (a right-click), and a palm mid-scroll Ended the scroll with momentum instead of cancelling it (#114).
+- **Decision:**
+  - The phone keeps reporting each already-sent touch that gets suppressed as present with `Contact=false` (touch state 0), every frame, until that pointer lifts. The value is already valid on the wire; no phone sent it before.
+  - The Mac treats a present non-contact touch as a cancel: an active or held gesture is **Cancelled** (no Tap, no momentum), and no new gesture starts until all touches are gone.
+- **Why not a new "canceled" bit:** the touch decoder (1.0.0 included) rejects datagrams with unknown state bits, so a new bit would need a capability negotiation. **Why not freezing the contact as still down:** it breaks ADR-0022's palm rule (a quick palm-and-lift would still tap) and would hold a three-finger drag's button.
+- **Compatibility:** a 1.0.0 phone with a 1.1.0 Mac behaves as before. A 1.1.0 phone with a 1.0.0 Mac: the datagrams are valid, and 1.0.0 ignores gestures.
+- **Consequences:** `docs/specs/phase-1-core.md` documents the `Contact=false` semantics. The end-to-end pipeline tests cover it.
