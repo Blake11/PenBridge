@@ -59,7 +59,7 @@ gh pr create --fill          # then edit the title and body to match the templat
 | Job (required check) | Runner | Covers |
 |---|---|---|
 | Core tests | ubuntu | `dotnet test --project tests/PenBridge.Core.Tests`, SimClient build, trimmed pairing smoke test |
-| macOS build | macos (`xcode-27`) | Release and Debug builds, `check-bundle.sh --mac` |
+| macOS build | macos (`xcode-27`) | `gen-icons.sh --check` (generated icons match `assets/icon`), Release and Debug builds, `check-bundle.sh --mac` |
 | Android build | ubuntu | Release APK (unsigned), `check-bundle.sh --android` |
 | iOS build (placeholder) | macos (`xcode-27`) | Simulator build (unsigned), `check-bundle.sh --ios`. Required even while iOS is a placeholder, so head build/trim regressions can't merge. |
 | Conventional Commit title | ubuntu | PR title check (`pr-title.yml`), runs on every PR |
@@ -71,6 +71,7 @@ All five are required checks. Which paths trigger which jobs:
 | infra: `.github/workflows/**`, `.github/actions/**`, `scripts/**`, `.githooks/**` | yes | yes | yes | yes |
 | core: `src/PenBridge.Core/**`, `tests/**`, `tools/**`, `build/**`, `**/Directory.Build.*`, `**/Directory.Packages.props`, `global.json`, `PenBridge.slnx`, `.editorconfig` | yes | yes | yes | yes |
 | `src/PenBridge.Mac/**` | | yes | | |
+| `assets/icon/**`, generated Android icons (`src/PenBridge.Android/Resources/drawable/ic_launcher_*.xml`, `.../mipmap-anydpi-v26/ic_launcher*.xml`) | | yes | | |
 | `src/PenBridge.Android/**` | | | yes | |
 | `src/PenBridge.iOS/**` | | | | yes |
 | anything else (`docs/**`, root `*.md`, `.claude/**`, `LICENSE`, issue/PR templates, `dependabot.yml`) | | | | |

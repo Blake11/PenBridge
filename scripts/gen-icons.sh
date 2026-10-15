@@ -96,10 +96,16 @@ if ! xcrun actool --compile "$compiled" --platform macosx --minimum-deployment-t
   cat "$actool_log" >&2
   die "actool failed"
 fi
-if grep -qE ': (warning|error):' "$actool_log"; then
+if grep -qE ': error:' "$actool_log"; then
   cat "$actool_log" >&2
-  die "actool reported warnings"
+  die "actool reported errors"
 fi
+# Warnings don't fail: a new Xcode can add a warning while the committed icons are still current, and that
+# must not turn the CI check red. Surface them (as annotations on GitHub Actions) so they get looked at.
+while IFS= read -r line; do
+  warn "actool: $line"
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then echo "::warning title=actool warning::$line"; fi
+done < <(grep -E ': warning:' "$actool_log" || true)
 for f in Assets.car AppIcon.icns; do
   [[ -f "$compiled/$f" ]] || { cat "$actool_log" >&2; die "actool produced no $f"; }
 done
