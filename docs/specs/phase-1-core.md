@@ -90,6 +90,7 @@ Messages (C = phone → Mac, S = Mac → phone):
 - `u8 reserved`.
 
 **TouchSample (6 B):** `u8 pointerId` ‖ `u8 state` (Contact = 2) ‖ `u16 x` ‖ `u16 y`.
+- State 2 is a finger in contact. State 0 (`Contact=false`) is a **withdrawn** touch (ADR-0024): the phone already sent it as a contact, then suppressed it (palm, platform cancel, pen suppression), and keeps sending it this way in every datagram until that pointer lifts. The Mac cancels the gesture (Cancelled: no tap, no momentum), counts only contacts as fingers, and starts no new gesture until every touch present then is gone. Withdrawn touches count toward the 10-touch cap; they don't need the 50 ms contact keepalive. Any other state bit is invalid and the datagram is dropped. Phones before 1.1.0 never send state 0.
 
 **Rules:**
 - Every datagram carries the **complete current state**: the pen if it's in range, plus all active touches.
