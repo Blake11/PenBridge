@@ -220,6 +220,10 @@ public sealed class PenBridgeClient : IAsyncDisposable
             {
                 // A whole click whose finger was held back since it landed: nothing active was sent before it.
                 c.RepeatsLeft = _options.ReleaseRepeats;
+                if (c.RepeatsLeft <= 0)
+                {
+                    c.ClickHistoryCount = 0; // no repeats configured: nothing will resend it
+                }
             }
 
             bool sent = SendLocked(c, timeUs, pen, touches, history);
@@ -329,9 +333,9 @@ public sealed class PenBridgeClient : IAsyncDisposable
     /// The frame time for a new frame: µs since the session start, strictly after the previous new frame's (wrapping),
     /// so the server's sample dedupe never mistakes a new frame's history for a resend.
     /// </summary>
-    private uint NextTimeUsLocked(Connection c)
+    private static uint NextTimeUsLocked(Connection c)
     {
-        uint timeUs = unchecked((uint)(_time.GetElapsedTime(c.Start).Ticks / TimeSpan.TicksPerMicrosecond));
+        uint timeUs = unchecked((uint)(c.Time.GetElapsedTime(c.Start).Ticks / TimeSpan.TicksPerMicrosecond));
         if (c.HasTime && unchecked((int)(timeUs - c.LastTimeUs)) <= 0)
         {
             timeUs = unchecked(c.LastTimeUs + 1);
@@ -371,6 +375,23 @@ public sealed class PenBridgeClient : IAsyncDisposable
         }
 
         return contact;
+    }
+
+    /// <summary>
+    /// The time and history for resending the unchanged current state (keepalive, release repeat, fallback switch,
+    /// probe): while a click frame is kept, that frame as it was, so no frame moves the server's dedupe watermark past
+    /// the click before its resend lands; otherwise a new time and no history.
+    /// </summary>
+    private static uint CurrentFrameLocked(Connection c, out ReadOnlySpan<PenSample> history)
+    {
+        if (c.ClickHistoryCount > 0)
+        {
+            history = c.ClickHistory.AsSpan(0, c.ClickHistoryCount);
+            return c.ClickTimeUs;
+        }
+
+        history = default;
+        return NextTimeUsLocked(c);
     }
 
     private bool SendLocked(Connection c, uint timeUs, in PenSample? pen, ReadOnlySpan<TouchSample> touches, ReadOnlySpan<PenSample> history)
@@ -448,16 +469,15 @@ public sealed class PenBridgeClient : IAsyncDisposable
                 }
 
                 c.RepeatsLeft--;
-                if (c.ClickHistoryCount > 0)
-                {
-                    // Resend the click frame as it was: same time, same samples (the server dedupes by frame time).
-                    SendLocked(c, c.ClickTimeUs, c.LastPen, c.LastTouches.AsSpan(0, c.LastTouchCount), c.ClickHistory.AsSpan(0, c.ClickHistoryCount));
-                    ArmKeepaliveLocked(c);
-                    return;
-                }
             }
 
-            SendLocked(c, NextTimeUsLocked(c), c.LastPen, c.LastTouches.AsSpan(0, c.LastTouchCount), default);
+            uint timeUs = CurrentFrameLocked(c, out ReadOnlySpan<PenSample> history);
+            SendLocked(c, timeUs, c.LastPen, c.LastTouches.AsSpan(0, c.LastTouchCount), history);
+            if (c.RepeatsLeft <= 0)
+            {
+                c.ClickHistoryCount = 0; // the resend window ends with the repeats; a much later click would surprise
+            }
+
             ArmKeepaliveLocked(c);
         }
     }
@@ -478,8 +498,9 @@ public sealed class PenBridgeClient : IAsyncDisposable
             c.StartFallbackWriter();
             c.ProbeTimer.Change(_options.UdpProbeInterval, _options.UdpProbeInterval);
 
-            // Deliver the current state over the new path right away.
-            SendLocked(c, NextTimeUsLocked(c), c.LastPen, c.LastTouches.AsSpan(0, c.LastTouchCount), default);
+            // Deliver the current state over the new path right away (a pending click frame as it was).
+            uint timeUs = CurrentFrameLocked(c, out ReadOnlySpan<PenSample> history);
+            SendLocked(c, timeUs, c.LastPen, c.LastTouches.AsSpan(0, c.LastTouchCount), history);
             ArmKeepaliveLocked(c);
         }
     }
@@ -494,7 +515,8 @@ public sealed class PenBridgeClient : IAsyncDisposable
                 return;
             }
 
-            SendDatagramLocked(c, NextTimeUsLocked(c), c.LastPen, c.LastTouches.AsSpan(0, c.LastTouchCount), default);
+            uint timeUs = CurrentFrameLocked(c, out ReadOnlySpan<PenSample> history);
+            SendDatagramLocked(c, timeUs, c.LastPen, c.LastTouches.AsSpan(0, c.LastTouchCount), history);
             c.ProbeSequence = c.Sequence;
         }
     }

@@ -196,22 +196,36 @@ public class LatencyRecorderTests
         // Both sides ping every 2 s; one fake-time step per second lets each round cross the loopback.
         await Wait.Step(h.Time, TimeSpan.FromSeconds(4));
         await Wait.Until(() => Count(recorder, LatencyRecordKind.ClientPing) >= 2 && Count(recorder, LatencyRecordKind.ServerRtt) >= 2, "pings recorded");
-        EndToEndTests.DrawStroke(client);
+        // The stroke of EndToEndTests.DrawStroke, one frame per fake millisecond: each frame is applied before the clock
+        // moves, and frame times never need the client's same-instant bump.
+        PenSample?[] stroke =
+        [
+            Pens.Hover(1000, 1000), Pens.Contact(1000, 1000),
+            .. Enumerable.Range(1, 5).Select(i => (PenSample?)Pens.Contact((ushort)(1000 + (i * 500)), 1000, (ushort)(20000 + (i * 1000)))),
+            Pens.Hover(4000, 1000), null,
+        ];
+        foreach (PenSample? pen in stroke)
+        {
+            long accepted = h.Server.GetStats().Counters.Accepted;
+            Assert.True(client.SendState(pen, []));
+            await Wait.Until(() => h.Server.GetStats().Counters.Accepted > accepted, "frame applied");
+            h.Time.Advance(TimeSpan.FromMilliseconds(1));
+        }
+
         await EndToEndTests.AssertStrokeAsync(h.Sink);
 
         LatencyRecord[] records = recorder.Snapshot();
         Assert.All(records, r => Assert.Equal(session, r.SessionId));
         Assert.True(Count(recorder, LatencyRecordKind.Input) >= 7);
 
-        // One shared fake clock that doesn't move during I/O: every corrected latency is zero, except that the client
-        // keeps frame times strictly increasing (1 µs per frame sent at the same instant), which reads as a few µs early.
+        // One shared fake clock that doesn't move during I/O: every corrected latency is exactly zero.
         LatencyReport report = LatencyAnalyzer.Analyze(records, h.Time.TimestampFrequency);
         SessionClock clock = Assert.Single(report.Sessions);
         Assert.True(clock.HasOffset);
         Assert.Equal(0, clock.MinRttUs);
         Assert.Equal(1, report.PenDown.Count);
-        Assert.InRange(report.Inject.MinUs, -32, 0);
-        Assert.InRange(report.Inject.MaxUs, -32, 0);
+        Assert.Equal(0, report.Inject.MinUs, 1);
+        Assert.Equal(0, report.Inject.MaxUs, 1);
         Assert.Equal(0, report.UnmeasuredInputs);
     }
 

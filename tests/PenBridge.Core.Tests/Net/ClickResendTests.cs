@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using PenBridge.Core.Input;
 using PenBridge.Core.Net;
 using PenBridge.Core.Protocol;
@@ -141,6 +142,71 @@ public class ClickResendTests
 
         Assert.Equal([.. OneClick, .. OneClick], h.Sink.PenKinds());
         Assert.Equal([1L, 2L], ClickCounts(h.Sink.Pen()));
+    }
+
+    [Fact]
+    public async Task A_tls_fallback_between_a_lost_tap_and_its_repeats_delivers_the_tap()
+    {
+        await using var h = new NetHarness();
+        PenBridgeClient client = await h.PairAsync(filter: _ => false); // UDP lost from here on
+        client.SendState(Finger(PenState.InRange), []); // arms the 2 s ack deadline
+        h.Time.Advance(TimeSpan.FromMilliseconds(1980));
+        SendTap(client); // lost; its first repeat is due after the fallback
+
+        h.Time.Advance(TimeSpan.FromMilliseconds(20)); // the ack deadline: the switch to TLS sends the kept click frame
+        Assert.Equal(InputTransport.Tls, client.Transport);
+        await Wait.Until(() => h.Sink.PenKinds().Length == 4, "click delivered over TLS");
+        for (int i = 0; i < 2; i++)
+        {
+            long accepted = h.Server.GetStats().Counters.Accepted;
+            h.Time.Advance(Repeat);
+            await Wait.Until(() => h.Server.GetStats().Counters.Accepted > accepted, "repeat " + i);
+        }
+
+        Assert.Equal(OneClick, h.Sink.PenKinds());
+    }
+
+    [Fact]
+    public async Task A_probe_while_a_click_is_pending_resends_it_and_keeps_the_watermark()
+    {
+        await using var h = new NetHarness();
+        var blocked = new StrongBox<bool>(true);
+        PenBridgeClient client = await h.PairAsync(filter: _ => !blocked.Value);
+        client.SendState(Finger(PenState.InRange) with { X = 1000 }, []);
+        await Wait.Step(h.Time, TimeSpan.FromSeconds(2)); // fallback to TLS; the first probe is due 10 s later
+        Assert.Equal(InputTransport.Tls, client.Transport);
+        await Wait.Step(h.Time, TimeSpan.FromMilliseconds(9980));
+        blocked.Value = false;
+
+        SendTap(client); // over TLS; its first repeat is due after the probe
+        await Wait.Until(() => h.Sink.PenKinds().Contains(Down), "tap delivered over TLS");
+        uint tapTime = h.Server.ActiveInput!.LastTimeUs;
+
+        h.Time.Advance(TimeSpan.FromMilliseconds(20)); // the probe
+        await Wait.Until(() => client.Transport == InputTransport.Udp, "switched back to UDP after the probe ack");
+        Assert.Equal(tapTime, h.Server.ActiveInput!.LastTimeUs); // the probe was the click frame, not a newer time
+        for (int i = 0; i < 2; i++)
+        {
+            long accepted = h.Server.GetStats().Counters.Accepted;
+            h.Time.Advance(Repeat);
+            await Wait.Until(() => h.Server.GetStats().Counters.Accepted > accepted, "repeat " + i);
+        }
+
+        Assert.Equal(1, h.Sink.PenKinds().Count(k => k == Down));
+        Assert.Equal(tapTime, h.Server.ActiveInput!.LastTimeUs);
+    }
+
+    [Fact]
+    public async Task The_kept_click_ends_with_the_repeats()
+    {
+        await using var h = new NetHarness();
+        var blocked = new StrongBox<bool>(true);
+        PenBridgeClient client = await h.PairAsync(filter: _ => !blocked.Value);
+        SendTap(client);
+        await Wait.Step(h.Time, TimeSpan.FromSeconds(2)); // repeats done (lost), then the fallback sends a new frame
+        Assert.Equal(InputTransport.Tls, client.Transport);
+        await Wait.Until(() => h.Server.GetStats().Counters.Accepted == 1, "fallback frame delivered");
+        Assert.Empty(h.Sink.Pen()); // no click seconds late: the resend window was the repeats
     }
 
     [Fact]

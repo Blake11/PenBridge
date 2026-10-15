@@ -162,6 +162,18 @@ internal sealed class SessionInput : IDisposable
         }
     }
 
+    /// <summary>The <c>timeUs</c> of the last accepted frame (tests: the sample-dedupe watermark).</summary>
+    internal uint LastTimeUs
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _lastTimeUs;
+            }
+        }
+    }
+
     /// <summary>Applies SurfaceInfo: (re)configures the mapper. Frames are dropped until this is called.</summary>
     public void ConfigureSurface(ushort widthPx, ushort heightPx)
     {
