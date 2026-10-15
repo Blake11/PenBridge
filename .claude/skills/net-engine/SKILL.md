@@ -11,6 +11,7 @@ Design and timings: `docs/specs/phase-1-core.md` (connection flow), ADR-0012/001
 - Server: accept loop, UDP receive loop, one async task per TCP connection. Client: one read loop + one background fallback writer. No polling anywhere (idle ≈ 0% CPU).
 - All timers come from the injected `TimeProvider` (`CreateTimer`), never `Task.Delay`/`System.Threading.Timer` directly, so `FakeTime` drives them in tests. Use `static` callbacks with a state object (no closure per arm).
 - **Pen watchdog pattern:** `PenStateTracker` owns no timer. After every frame (and after each watchdog fire) re-arm a one-shot `ITimer` with `tracker.WatchdogDueIn` (`null` → `Timeout.InfiniteTimeSpan`, `≤ 0` → 1 ms), then call `CheckWatchdog()` when it fires. See `SessionInput.RearmLocked`/`OnWatchdog`.
+- **Phone clock vs host clock:** a host timer whose deadline is derived from the phone's frame clock (e.g. a held-tap deadline via `EstimatedNowUs`) races Wi-Fi jitter. While contacts are down, decide timing from frame timestamps only (frames arrive at least every 50 ms; the watchdog covers link loss). Use a host-time deadline only when no frames are expected, plus a jitter allowance (`TapDeadlineJitterAllowance`). Momentum/coast models step on host elapsed time, not the phone clock.
 - **Serialize every tracker/recognizer/sink call** (UDP datagrams, TLS `InputFrame`s, watchdog, SurfaceInfo, shutdown) under one server-wide lock, so `IInputSink` is never called concurrently — including while an old session releases on takeover.
 
 ## Fault isolation (`IInputSink` is foreign code)

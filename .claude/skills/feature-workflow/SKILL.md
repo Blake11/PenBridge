@@ -15,6 +15,7 @@ The main session does **not** implement. It clarifies, specifies, delegates, rev
 ## 2. Specify
 - Decisions with lasting impact → ADR (skill `adr`). Design changes → `docs/architecture.md`.
 - Wire-format changes → follow skill `protocol-change`.
+- UI or visual assets (icons): have an agent render 2–3 concepts as a self-contained preview HTML plus PNG renders, `open` it locally for the user to pick, and iterate before wiring anything in.
 
 ## 3. Track (issues first — ADR-0014, skill `issues`)
 - Create or update the **epic** issue (`type: epic`, phase milestone) and one **workstream issue** per workstream from step 4 (template `workstream.yml`: goal, owned files, acceptance, tests, dependencies; labels `type: feature` + `area: *`; same milestone). Add each to the epic's task list.
