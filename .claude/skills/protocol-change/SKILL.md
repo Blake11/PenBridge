@@ -49,3 +49,8 @@ Protocol lives in `src/PenBridge.Core` (ADR-0004). Mac server and phone clients 
 - Network-side rules (deadlines, endpoint pinning, per-IP limits, forged-datagram budget): skill `net-engine`.
 - Readers ignore trailing bytes in known messages (minor-version extension point). Unknown enum values in *input samples* are rejected; unknown Error codes, Bye reasons and capability bits are accepted.
 - Control-stream reads have no built-in timeout: callers pass a per-read deadline (`CancellationTokenSource.CancelAfter`) and a pre-auth handshake timeout. Reserved (`0xF0–0xFF`) frames are skipped but count toward a cap (`ControlFrameReader.MaxConsecutiveReservedFrames`), so they can't keep a dead or hostile peer "alive". Any read failure or cancellation desyncs the stream: dispose and close.
+
+## Minor bumps (compatibility facts)
+- A minor bump is safe only because every released version compares the **major** only (`ProtocolVersion.IsCompatibleWith`), accepts any `d.d` in the TXT/QR `v=`, and ignores unknown **capability** bits in Hello/HelloAck. Gate new behaviour on a capability bit, never on the minor number.
+- Touch and sample **state** bits are different: decoders reject unknown state bits and drop the whole datagram. Don't add state bits without a capability (ADR-0024 reused the valid `Contact=false` state instead).
+- Before relying on any of this, verify it at the oldest supported release tag (`git show <tag>:<path>`).

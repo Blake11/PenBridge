@@ -196,7 +196,22 @@ public class LatencyRecorderTests
         // Both sides ping every 2 s; one fake-time step per second lets each round cross the loopback.
         await Wait.Step(h.Time, TimeSpan.FromSeconds(4));
         await Wait.Until(() => Count(recorder, LatencyRecordKind.ClientPing) >= 2 && Count(recorder, LatencyRecordKind.ServerRtt) >= 2, "pings recorded");
-        EndToEndTests.DrawStroke(client);
+        // The stroke of EndToEndTests.DrawStroke, one frame per fake millisecond: each frame is applied before the clock
+        // moves, and frame times never need the client's same-instant bump.
+        PenSample?[] stroke =
+        [
+            Pens.Hover(1000, 1000), Pens.Contact(1000, 1000),
+            .. Enumerable.Range(1, 5).Select(i => (PenSample?)Pens.Contact((ushort)(1000 + (i * 500)), 1000, (ushort)(20000 + (i * 1000)))),
+            Pens.Hover(4000, 1000), null,
+        ];
+        foreach (PenSample? pen in stroke)
+        {
+            long accepted = h.Server.GetStats().Counters.Accepted;
+            Assert.True(client.SendState(pen, []));
+            await Wait.Until(() => h.Server.GetStats().Counters.Accepted > accepted, "frame applied");
+            h.Time.Advance(TimeSpan.FromMilliseconds(1));
+        }
+
         await EndToEndTests.AssertStrokeAsync(h.Sink);
 
         LatencyRecord[] records = recorder.Snapshot();

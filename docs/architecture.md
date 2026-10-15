@@ -63,7 +63,7 @@ Rule: platform apps contain only platform glue; anything testable without a devi
   - Every packet carries the full pen state, so a lost packet is corrected by the next one. Old sequence numbers are dropped (latest wins).
   - Safety: if the pen is down and no packet arrives for 150 ms, the server issues pen-up.
   - Fallback: if UDP is blocked, input goes over the TLS channel.
-- **Versioning**: the protocol version is in the hello and the TXT record. A major mismatch is refused with a clear message on both sides.
+- **Versioning**: the protocol version is in the hello and the TXT record. A major mismatch is refused with a clear message on both sides; minor versions interoperate, with new features gated by capability bits (protocol 1.1 adds `SampleDedupe`: a lost one-datagram finger tap is recovered by resending its frame, ADR-0025).
 - **Wire contract**: the exact message table, datagram layout and key schedule are in `docs/specs/phase-1-core.md`, with all integers big-endian.
 - **Serialization**: hand-written `BinaryPrimitives`/`Span<T>`, with no reflection. It must stay trim/AOT-safe and allocation-free on the hot path.
 - **Diagnostics (latency)**: off by default; enabled with `PENBRIDGE_LATENCY_LOG=1` or `scripts/latency-report.sh --enable` (the `PenBridgeLatencyLog` user default), then restart the Mac app.

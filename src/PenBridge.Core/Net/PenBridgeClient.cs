@@ -24,7 +24,9 @@ namespace PenBridge.Core.Net;
 /// <para>Send rules: every call sends the complete current state at once. While the pen is in contact or touches
 /// are active, the state is resent every <see cref="PenBridgeClientOptions.ContactKeepaliveInterval"/>; while it
 /// only hovers, every <see cref="PenBridgeClientOptions.HoverKeepaliveInterval"/>. Earlier samples batched by the
-/// platform go into <c>history</c> (oldest first; only the newest 8 are kept). If no UdpAck arrives within
+/// platform go into <c>history</c> (oldest first; only the newest 8 are kept). When the state becomes empty it is
+/// repeated <see cref="PenBridgeClientOptions.ReleaseRepeats"/> times; a frame that ended with a whole click is
+/// resent as it was instead, if the server dedupes samples (#92). If no UdpAck arrives within
 /// <see cref="PenBridgeClientOptions.UdpAckTimeout"/> of the first datagram, input switches to InputFrame over TLS.</para>
 /// <para>Threads: <c>SendState</c> may be called from any thread (one lock serializes it with the keepalive and
 /// fallback timers). The UDP send path is allocation-free. A background loop reads the control channel; timers
@@ -101,6 +103,9 @@ public sealed class PenBridgeClient : IAsyncDisposable
 
     /// <summary>The connected server's name (untrusted peer text), or null.</summary>
     public string? ServerName => Volatile.Read(ref _connection)?.ServerName;
+
+    /// <summary>Capabilities the connected server advertised in HelloAck (None when not connected).</summary>
+    public ProtocolCapabilities ServerCapabilities => Volatile.Read(ref _connection)?.ServerCapabilities ?? ProtocolCapabilities.None;
 
     /// <summary>The negotiated TLS version of the current connection (ADR-0013: 1.2 or 1.3).</summary>
     public SslProtocols NegotiatedTlsProtocol => Volatile.Read(ref _connection)?.Protocol ?? SslProtocols.None;
@@ -210,7 +215,18 @@ public sealed class PenBridgeClient : IAsyncDisposable
             }
 
             c.WasActive = active;
-            bool sent = SendLocked(c, pen, touches, history);
+            uint timeUs = NextTimeUsLocked(c);
+            if (RecordClickLocked(c, active, timeUs, pen, history))
+            {
+                // A whole click whose finger was held back since it landed: nothing active was sent before it.
+                c.RepeatsLeft = _options.ReleaseRepeats;
+                if (c.RepeatsLeft <= 0)
+                {
+                    c.ClickHistoryCount = 0; // no repeats configured: nothing will resend it
+                }
+            }
+
+            bool sent = SendLocked(c, timeUs, pen, touches, history);
             ArmKeepaliveLocked(c);
             return sent;
         }
@@ -313,9 +329,73 @@ public sealed class PenBridgeClient : IAsyncDisposable
     private static bool IsActive(Connection c) =>
         InContact(c) || (c.LastPen is { } p && (p.State & PenState.InRange) != 0);
 
-    private bool SendLocked(Connection c, in PenSample? pen, ReadOnlySpan<TouchSample> touches, ReadOnlySpan<PenSample> history)
+    /// <summary>
+    /// The frame time for a new frame: µs since the session start, strictly after the previous new frame's (wrapping),
+    /// so the server's sample dedupe never mistakes a new frame's history for a resend.
+    /// </summary>
+    private static uint NextTimeUsLocked(Connection c)
     {
-        uint timeUs = unchecked((uint)(_time.GetElapsedTime(c.Start).Ticks / TimeSpan.TicksPerMicrosecond));
+        uint timeUs = unchecked((uint)(c.Time.GetElapsedTime(c.Start).Ticks / TimeSpan.TicksPerMicrosecond));
+        if (c.HasTime && unchecked((int)(timeUs - c.LastTimeUs)) <= 0)
+        {
+            timeUs = unchecked(c.LastTimeUs + 1);
+        }
+
+        c.HasTime = true;
+        c.LastTimeUs = timeUs;
+        return timeUs;
+    }
+
+    /// <summary>
+    /// Keeps a frame that ends the input with a whole click (a contact sample in its history, then the empty state: a
+    /// finger tap or double-tap replay) so the release repeats resend it as it was
+    /// (<see cref="ProtocolCapabilities.SampleDedupe"/>): a lost click datagram is recovered, and the server applies
+    /// its samples once. Only if the server advertised the capability; any other frame drops the kept click.
+    /// </summary>
+    private static bool RecordClickLocked(Connection c, bool active, uint timeUs, in PenSample? pen, ReadOnlySpan<PenSample> history)
+    {
+        c.ClickHistoryCount = 0;
+        if (active || history.IsEmpty || !pen.HasValue
+            || (c.ServerCapabilities & ProtocolCapabilities.SampleDedupe) == 0)
+        {
+            return false;
+        }
+
+        bool contact = false;
+        foreach (ref readonly PenSample h in history)
+        {
+            contact |= (h.State & PenState.Contact) != 0;
+        }
+
+        if (contact)
+        {
+            history.CopyTo(c.ClickHistory);
+            c.ClickHistoryCount = history.Length;
+            c.ClickTimeUs = timeUs;
+        }
+
+        return contact;
+    }
+
+    /// <summary>
+    /// The time and history for resending the unchanged current state (keepalive, release repeat, fallback switch,
+    /// probe): while a click frame is kept, that frame as it was, so no frame moves the server's dedupe watermark past
+    /// the click before its resend lands; otherwise a new time and no history.
+    /// </summary>
+    private static uint CurrentFrameLocked(Connection c, out ReadOnlySpan<PenSample> history)
+    {
+        if (c.ClickHistoryCount > 0)
+        {
+            history = c.ClickHistory.AsSpan(0, c.ClickHistoryCount);
+            return c.ClickTimeUs;
+        }
+
+        history = default;
+        return NextTimeUsLocked(c);
+    }
+
+    private bool SendLocked(Connection c, uint timeUs, in PenSample? pen, ReadOnlySpan<TouchSample> touches, ReadOnlySpan<PenSample> history)
+    {
         if (c.Transport == InputTransport.Tls)
         {
             // Never blocks: the frame goes into the bounded queue drained by the fallback writer.
@@ -391,7 +471,13 @@ public sealed class PenBridgeClient : IAsyncDisposable
                 c.RepeatsLeft--;
             }
 
-            SendLocked(c, c.LastPen, c.LastTouches.AsSpan(0, c.LastTouchCount), default);
+            uint timeUs = CurrentFrameLocked(c, out ReadOnlySpan<PenSample> history);
+            SendLocked(c, timeUs, c.LastPen, c.LastTouches.AsSpan(0, c.LastTouchCount), history);
+            if (c.RepeatsLeft <= 0)
+            {
+                c.ClickHistoryCount = 0; // the resend window ends with the repeats; a much later click would surprise
+            }
+
             ArmKeepaliveLocked(c);
         }
     }
@@ -412,8 +498,9 @@ public sealed class PenBridgeClient : IAsyncDisposable
             c.StartFallbackWriter();
             c.ProbeTimer.Change(_options.UdpProbeInterval, _options.UdpProbeInterval);
 
-            // Deliver the current state over the new path right away.
-            SendLocked(c, c.LastPen, c.LastTouches.AsSpan(0, c.LastTouchCount), default);
+            // Deliver the current state over the new path right away (a pending click frame as it was).
+            uint timeUs = CurrentFrameLocked(c, out ReadOnlySpan<PenSample> history);
+            SendLocked(c, timeUs, c.LastPen, c.LastTouches.AsSpan(0, c.LastTouchCount), history);
             ArmKeepaliveLocked(c);
         }
     }
@@ -428,8 +515,8 @@ public sealed class PenBridgeClient : IAsyncDisposable
                 return;
             }
 
-            uint timeUs = unchecked((uint)(_time.GetElapsedTime(c.Start).Ticks / TimeSpan.TicksPerMicrosecond));
-            SendDatagramLocked(c, timeUs, c.LastPen, c.LastTouches.AsSpan(0, c.LastTouchCount), default);
+            uint timeUs = CurrentFrameLocked(c, out ReadOnlySpan<PenSample> history);
+            SendDatagramLocked(c, timeUs, c.LastPen, c.LastTouches.AsSpan(0, c.LastTouchCount), history);
             c.ProbeSequence = c.Sequence;
         }
     }
@@ -549,7 +636,7 @@ public sealed class PenBridgeClient : IAsyncDisposable
             }
 
             byte[] fingerprint = CertificateFingerprint.Compute(channel.Ssl.RemoteCertificate!);
-            await channel.WriteAsync(new HelloMessage(ProtocolVersion.Current, _deviceIdBytes, _deviceName, ProtocolCapabilities.None)).ConfigureAwait(false);
+            await channel.WriteAsync(new HelloMessage(ProtocolVersion.Current, _deviceIdBytes, _deviceName, ProtocolCapabilities.SampleDedupe)).ConfigureAwait(false);
             HelloAckMessage ack = (await ReadHandshakeAsync(channel).ConfigureAwait(false)).Read<HelloAckMessage>();
             if (!ack.Version.IsCompatibleWith(ProtocolVersion.Current))
             {
@@ -587,7 +674,10 @@ public sealed class PenBridgeClient : IAsyncDisposable
                 SendTimeout = (int)ControlChannel.SyncSendTimeout.TotalMilliseconds,
             };
             udp.Connect(new IPEndPoint(server, start.UdpPort));
-            connection = new Connection(this, channel, udp, new InputCipher(inputKey, start.SessionId), start.SessionId, fingerprint, ack.ServerName, channel.Ssl.SslProtocol, _time, _options.FallbackQueueCapacity);
+            connection = new Connection(this, channel, udp, new InputCipher(inputKey, start.SessionId), start.SessionId, fingerprint, ack.ServerName, channel.Ssl.SslProtocol, _time, _options.FallbackQueueCapacity)
+            {
+                ServerCapabilities = ack.Capabilities,
+            };
 
             await channel.WriteAsync(_options.Surface).ConfigureAwait(false);
             await deadline.DisposeAsync().ConfigureAwait(false);
@@ -1009,11 +1099,19 @@ public sealed class PenBridgeClient : IAsyncDisposable
 
         public TouchSample[] LastTouches { get; } = new TouchSample[InputPayload.MaxTouches];
 
+        public PenSample[] ClickHistory { get; } = new PenSample[InputPayload.MaxHistory];
+
+        public ProtocolCapabilities ServerCapabilities { get; init; }
+
 #pragma warning disable SA1401, CA1051 // Hot-path state of a private class; fields keep it simple and ref-friendly.
         public PenSample? LastPen;
         public int LastTouchCount;
         public bool WasActive;
         public int RepeatsLeft;
+        public int ClickHistoryCount;
+        public uint ClickTimeUs;
+        public uint LastTimeUs;
+        public bool HasTime;
         public ulong Sequence;
         public ulong ProbeSequence;
         public ulong AwaitedSequence;

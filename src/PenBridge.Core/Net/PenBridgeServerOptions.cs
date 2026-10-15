@@ -2,6 +2,7 @@ using System.Net;
 using Microsoft.Extensions.Logging;
 using PenBridge.Core.Diagnostics;
 using PenBridge.Core.Input;
+using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
 
 namespace PenBridge.Core.Net;
@@ -65,6 +66,9 @@ public sealed class PenBridgeServerOptions
 
     /// <summary>Tests only: the exact ports to try, replacing <see cref="Port"/> + <see cref="PortFallbackCount"/>.</summary>
     internal IReadOnlyList<int>? PortCandidates { get; init; }
+
+    /// <summary>Capabilities sent in HelloAck. Tests override it to act as an older server.</summary>
+    internal ProtocolCapabilities Capabilities { get; init; } = ProtocolCapabilities.SampleDedupe;
 
     /// <summary>Sustained rate of failed datagram decryptions tolerated per session (bursts up to twice this).</summary>
     public int MaxAuthFailuresPerSecond { get; init; } = 16;
