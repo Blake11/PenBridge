@@ -4,7 +4,7 @@ namespace PenBridge.Core.Protocol;
 
 /// <summary>
 /// Protocol version as <c>major.minor</c>. On the wire it is two bytes (<c>u8 major ‖ u8 minor</c>);
-/// in text (Bonjour TXT <c>v=</c>, QR <c>v=</c>) it is <c>"1.0"</c>.
+/// in text (Bonjour TXT <c>v=</c>, QR <c>v=</c>) it is <c>"major.minor"</c>, e.g. <c>"1.1"</c>.
 /// </summary>
 public readonly record struct ProtocolVersion(byte Major, byte Minor)
 {

@@ -581,7 +581,7 @@ public sealed partial class ServerHost : IAsyncDisposable
         {
             _session = null;
             _status = ServerHostStatus.Listening;
-            _sink.StopMomentum(); // a coast outlives the fingers; not after a takeover (a newer session is current)
+            _sink.StopMomentum(); // a coast outlives the fingers; on a takeover Core ends this session before the new one starts, so it runs then too
         }
 
         Log.SessionEnded(_log, PeerText.Sanitize(e.Session.DeviceName), e.Reason.ToString());

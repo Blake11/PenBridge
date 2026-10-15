@@ -116,7 +116,7 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
 - **Consequence:** platform heads must keep Core free of macOS assumptions: no Apple-specific coordinate conventions in Core, and the display model stays generic.
 
 ## ADR-0016 — Mac server UX defaults for Phase 2
-**Status:** accepted (2026-10-13); the side-button-while-touching rule is amended by ADR-0022 (2026-10-14)
+**Status:** accepted (2026-10-13); the side-button-while-touching rule is amended by ADR-0022 (2026-10-14); the gestures phase boundary is lifted by ADR-0023 (2026-10-14)
 - **S Pen side button:** right-click, following the Wacom side-switch default. Pressing it posts right-down at the current point and releasing posts right-up, both while hovering and while touching. The mapping becomes configurable in Phase 5.
 - **Eraser:** the eraser tool is reported as the eraser pointer type in tablet proximity events, so drawing apps switch tools themselves.
 - **Pairing UI:** a floating panel. Opening it opens the pairing window (ADR-0009), and it closes on success.
