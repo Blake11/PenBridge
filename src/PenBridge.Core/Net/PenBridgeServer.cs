@@ -457,6 +457,15 @@ public sealed class PenBridgeServer : IAsyncDisposable
 
     internal void OnConnectionEnded(ServerConnection connection)
     {
+        lock (_inputLock)
+        {
+            // The ending connection already shut its input down; don't retain it until the next session publishes.
+            if (connection.Input is { } input && ReferenceEquals(_inputOwner, input))
+            {
+                _inputOwner = null;
+            }
+        }
+
         lock (_gate)
         {
             _connections.Remove(connection);
