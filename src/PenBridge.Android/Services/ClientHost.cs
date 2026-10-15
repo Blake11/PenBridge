@@ -56,7 +56,7 @@ public sealed class ClientHost : IAsyncDisposable
     private readonly HashSet<string> _rejectedEndpoints = new(StringComparer.Ordinal);
 
     /// <param name="context">Any context; the application context is used.</param>
-    /// <param name="surface">Initial drawing surface (e.g. <see cref="CreateSurface(Context)"/>); update with <see cref="UpdateSurface"/>.</param>
+    /// <param name="surface">Initial drawing surface (e.g. <see cref="CreateSurface(Context, bool)"/>); update with <see cref="UpdateSurface"/>.</param>
     /// <param name="loggerFactory">Optional Core engine logging (never logs secrets or per-sample data).</param>
     public ClientHost(Context context, SurfaceInfoMessage surface, ILoggerFactory? loggerFactory = null)
     {
@@ -115,22 +115,26 @@ public sealed class ClientHost : IAsyncDisposable
     /// <summary>The Mac the current or wanted session is with, or null.</summary>
     public KnownMac? CurrentMac => _target is { } t ? new KnownMac(t.Fingerprint, t.Name, t.Host, t.Port, DateTimeOffset.UtcNow) : null;
 
-    /// <summary>A surface description of the whole display in its current orientation (finger fallback enabled).</summary>
-    public static SurfaceInfoMessage CreateSurface(Context context)
+    /// <summary>
+    /// A surface description of the whole display in its current orientation. <paramref name="fingerFallbackEnabled"/>
+    /// must match the pad's finger fallback: the Mac gates the one-finger cursor on <see cref="SurfaceCapabilities.FingerFallback"/>.
+    /// </summary>
+    public static SurfaceInfoMessage CreateSurface(Context context, bool fingerFallbackEnabled)
     {
         ArgumentNullException.ThrowIfNull(context);
         DisplayMetrics metrics = context.Resources?.DisplayMetrics ?? throw new InvalidOperationException("No display metrics.");
-        return CreateSurface(metrics.WidthPixels, metrics.HeightPixels, metrics.Xdpi, metrics.Ydpi);
+        return CreateSurface(metrics.WidthPixels, metrics.HeightPixels, metrics.Xdpi, metrics.Ydpi, fingerFallbackEnabled);
     }
 
     /// <summary>A surface description for a view of <paramref name="widthPx"/> x <paramref name="heightPx"/>.</summary>
-    public static SurfaceInfoMessage CreateSurface(int widthPx, int heightPx, float xDpi, float yDpi)
+    public static SurfaceInfoMessage CreateSurface(int widthPx, int heightPx, float xDpi, float yDpi, bool fingerFallbackEnabled)
     {
         ushort w = (ushort)Math.Clamp(widthPx, 1, ushort.MaxValue);
         ushort h = (ushort)Math.Clamp(heightPx, 1, ushort.MaxValue);
         float dx = float.IsFinite(xDpi) && xDpi > 0 ? xDpi : 160f;
         float dy = float.IsFinite(yDpi) && yDpi > 0 ? yDpi : 160f;
-        return new SurfaceInfoMessage(w, h, dx, dy, w >= h ? SurfaceOrientation.Landscape : SurfaceOrientation.Portrait, SurfaceCapabilities.FingerFallback);
+        return new SurfaceInfoMessage(w, h, dx, dy, w >= h ? SurfaceOrientation.Landscape : SurfaceOrientation.Portrait,
+            fingerFallbackEnabled ? SurfaceCapabilities.FingerFallback : SurfaceCapabilities.None);
     }
 
     /// <summary>True when this phone holds a device key for the Mac. Cached: a keystore decrypt only on the first query per Mac.</summary>
