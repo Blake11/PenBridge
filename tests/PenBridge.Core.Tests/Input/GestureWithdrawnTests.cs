@@ -151,6 +151,42 @@ public class GestureWithdrawnTests
     }
 
     [Fact]
+    public void Pen_block_ends_when_no_contact_is_left_even_with_withdrawn_touches()
+    {
+        Frame(F(1, 400, 500), F(2, 600, 500));
+        Frame(pen: true, F(1, 400, 500), F(2, 600, 500)); // blocked until the fingers lift
+        Frame(W(1, 400, 500), W(2, 600, 500)); // pen left: the phone withdraws them, no contact left
+        Frame(F(1, 400, 500), F(2, 600, 500)); // ACTION_CANCEL restarted the ids: new fingers
+        Scroll(1, 2, 4, 500);
+
+        Assert.Equal(["TouchDown", "TouchDown", "Scroll.Began"], Names()[..3]);
+    }
+
+    [Fact]
+    public void Cancel_block_ends_when_no_contact_is_left_even_with_withdrawn_touches()
+    {
+        Frame(F(1, 400, 500), F(2, 600, 500));
+        _rec.Cancel(_t); // watchdog with fingers down: blocked until a frame without contacts
+        Frame(W(1, 400, 500), W(2, 600, 500));
+        Frame(F(1, 400, 500), F(2, 600, 500)); // reused ids after the cancel
+        Scroll(1, 2, 4, 500);
+
+        Assert.Equal(["TouchDown", "TouchDown", "Scroll.Began"], Names()[..3]);
+    }
+
+    [Fact]
+    public void Contacts_landing_while_withdrawn_remain_still_block_after_a_pen_block()
+    {
+        Frame(F(1, 400, 500), F(2, 600, 500));
+        Frame(pen: true, F(1, 400, 500), F(2, 600, 500));
+        Frame(W(1, 400, 500), W(2, 600, 500)); // no contact: the pen block is over, the withdrawal still blocks
+        Frame(W(1, 400, 500), F(3, 700, 500), F(4, 800, 500)); // landed beside a withdrawn touch
+        Scroll(3, 4, 4, 500);
+
+        Assert.Equal(["TouchDown"], Names());
+    }
+
+    [Fact]
     public void Old_phone_stream_without_withdrawn_touches_behaves_as_before()
     {
         // A 1.0.0 phone drops suppressed touches: the Mac still reads a quick lift as a tap (the pre-ADR-0024 result).

@@ -517,10 +517,15 @@ public sealed class GestureRecognizer
             case State.Blocked:
             case State.Ignored:
             case State.Finished:
-                if (count == 0 && _withdrawnCount == 0)
+                if (count == 0)
                 {
-                    _state = State.Idle;
+                    // Every contact lifted: the pen/Cancel block is over, even while withdrawn touches remain (they
+                    // keep blocking on their own until they are gone).
                     _blockUntilLift = false;
+                    if (_withdrawnCount == 0)
+                    {
+                        _state = State.Idle;
+                    }
                 }
 
                 return;
