@@ -39,20 +39,35 @@ public sealed record GestureRecognizerOptions
     /// <summary>Four fingers: finger-spread change that starts a system pinch.</summary>
     public double SystemPinchThreshold { get; init; } = 0.05;
 
-    /// <summary>A two-finger tap lasts at most this long, from the first finger landing to the last lifting.</summary>
-    public TimeSpan TapMaxDuration { get; init; } = TimeSpan.FromMilliseconds(200);
+    /// <summary>
+    /// A two-finger tap lasts at most this long, from the first finger landing to the last lifting. A relaxed tap
+    /// lands and lifts its two fingers a few tens of ms apart, so it often takes over 200 ms; a press held for 300 ms
+    /// is still well short of a long press (400-500 ms).
+    /// </summary>
+    public TimeSpan TapMaxDuration { get; init; } = TimeSpan.FromMilliseconds(300);
 
-    /// <summary>How far each finger of a two-finger tap may move from where it landed.</summary>
-    public double TapSlop { get; init; } = 0.02;
+    /// <summary>
+    /// How far each finger of a two-finger tap may move from where it landed. A finger's reported position drifts as
+    /// its contact patch rolls and shrinks on lift (1-2 mm on a phone; 3.5% of a ~70 mm short side is ~2.5 mm). Keep it
+    /// below <see cref="ScrollThreshold"/>: movement that is too small to scroll can still be a tap, never both.
+    /// </summary>
+    public double TapSlop { get; init; } = 0.035;
 
     /// <summary>
     /// A two-finger tap is held this long after its lift: a second two-finger tap landing within it (and within
-    /// <see cref="DoubleTapSlop"/>) makes a SmartZoom instead. Zero emits taps at once (no smart zoom).
+    /// <see cref="DoubleTapSlop"/>) makes a SmartZoom instead. Zero emits taps at once (no smart zoom). It delays every
+    /// secondary click by this much (plus <see cref="TapDeadlineJitterAllowance"/>), so it trades a relaxed double
+    /// tap's lift-to-landing gap (often 200-350 ms) against right-click latency, short of the macOS double-click
+    /// interval (500 ms by default).
     /// </summary>
-    public TimeSpan DoubleTapWindow { get; init; } = TimeSpan.FromMilliseconds(300);
+    public TimeSpan DoubleTapWindow { get; init; } = TimeSpan.FromMilliseconds(400);
 
-    /// <summary>How near the second tap's landing midpoint must be to the first's for a SmartZoom.</summary>
-    public double DoubleTapSlop { get; init; } = 0.05;
+    /// <summary>
+    /// How near the second tap's landing midpoint must be to the first's for a SmartZoom. Two fingers re-landing
+    /// without looking rarely hit the same spot: 20% of a ~70 mm short side is ~14 mm, below Android's double-tap
+    /// slop (100 dp, ~16 mm). Two separate secondary clicks that close together inside the window are rare.
+    /// </summary>
+    public double DoubleTapSlop { get; init; } = 0.2;
 
     /// <summary>
     /// Added to the double-tap window for the timer-driven deadline (<see cref="GestureRecognizer.PendingDeadlineUs"/>),

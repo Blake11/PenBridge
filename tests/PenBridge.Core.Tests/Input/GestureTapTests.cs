@@ -8,7 +8,7 @@ namespace PenBridge.Core.Tests.Input;
 /// </summary>
 public class GestureTapTests
 {
-    // Square 1000x1000 surface onto a 1000x1000 display: tap slop 2% = 20 pt.
+    // Square 1000x1000 surface onto a 1000x1000 display: tap slop 3.5% = 35 pt, tap duration 300 ms.
     private static readonly CoordinateMapper Square = new(1000, 1000, new DisplayRect(0, 0, 1000, 1000));
     private readonly RecordingSink _sink = new();
 
@@ -62,13 +62,13 @@ public class GestureTapTests
     }
 
     [Theory]
-    [InlineData(200, true)]
-    [InlineData(201, false)]
+    [InlineData(300, true)]
+    [InlineData(301, false)]
     [InlineData(400, false)]
     public void Duration_is_measured_from_the_first_landing_to_the_last_lift(double liftMs, bool taps)
     {
         Frame(0, false, F(1, 400, 500));
-        Frame(150, false, F(1, 400, 500), F(2, 600, 500)); // second finger only 50 ms before the lift
+        Frame(250, false, F(1, 400, 500), F(2, 600, 500)); // second finger only 50 ms before the lift
         Lift(liftMs);
         Assert.Equal(taps ? 1 : 0, Taps().Length);
     }
@@ -77,14 +77,14 @@ public class GestureTapTests
     public void A_held_pair_is_no_tap_even_without_a_lift_frame_in_time()
     {
         Frame(0, false, F(1, 400, 500), F(2, 600, 500));
-        Frame(250, false, F(1, 400, 500), F(2, 600, 500));
-        Lift(260);
+        Frame(350, false, F(1, 400, 500), F(2, 600, 500));
+        Lift(360);
         Assert.Empty(Gestures);
     }
 
     [Theory]
-    [InlineData(15, true)]
-    [InlineData(25, false)]
+    [InlineData(30, true)]
+    [InlineData(38, false)]
     public void Each_finger_may_move_at_most_the_tap_slop(double move, bool taps)
     {
         Frame(0, false, F(1, 400, 500), F(2, 600, 500));
@@ -98,7 +98,7 @@ public class GestureTapTests
     {
         Frame(0, false, F(1, 400, 500), F(2, 600, 500));
         Frame(40, false, F(2, 600, 500));
-        Frame(60, false, F(2, 600, 530));
+        Frame(60, false, F(2, 600, 540));
         Lift(80);
         Assert.Empty(Gestures);
     }

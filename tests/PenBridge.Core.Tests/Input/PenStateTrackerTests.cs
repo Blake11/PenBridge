@@ -343,11 +343,11 @@ public class PenStateTrackerTests
     {
         // Square maps 1 normalized unit to 1 point; fingers 200 pt apart.
         Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000)); // t = 10 ms
-        Frame(null); // lift at 15 ms: the tap is held for the 300 ms window + 50 ms jitter allowance
+        Frame(null); // lift at 15 ms: the tap is held for the 400 ms window + 50 ms jitter allowance
         Assert.DoesNotContain(_sink.Gestures, g => g.Kind == GestureKind.Tap);
-        Assert.Equal(TimeSpan.FromMilliseconds(350), _tracker.WatchdogDueIn);
+        Assert.Equal(TimeSpan.FromMilliseconds(450), _tracker.WatchdogDueIn);
 
-        _time.Advance(TimeSpan.FromMilliseconds(349));
+        _time.Advance(TimeSpan.FromMilliseconds(449));
         Assert.False(_tracker.CheckWatchdog());
         Assert.DoesNotContain(_sink.Gestures, g => g.Kind == GestureKind.Tap);
         Assert.Equal(TimeSpan.FromMilliseconds(1), _tracker.WatchdogDueIn);
@@ -355,7 +355,7 @@ public class PenStateTrackerTests
         _time.Advance(TimeSpan.FromMilliseconds(1));
         Assert.False(_tracker.CheckWatchdog()); // the watchdog itself didn't fire
         GestureEvent tap = Assert.Single(_sink.Gestures, g => g.Kind == GestureKind.Tap);
-        Assert.Equal(365_000, tap.TimestampUs);
+        Assert.Equal(465_000, tap.TimestampUs);
         Assert.Null(_tracker.WatchdogDueIn); // idle again: no timer
     }
 
@@ -363,7 +363,7 @@ public class PenStateTrackerTests
     public void Watchdog_comes_first_when_it_is_sooner_than_the_tap_deadline()
     {
         Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000));
-        Frame(null); // held tap: deadline in 300 ms
+        Frame(null); // held tap: deadline in 400 ms
         Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000)); // second touch: 200 ms + 1 µs
         Assert.Equal(TimeSpan.FromMilliseconds(150), _tracker.WatchdogDueIn); // contact watchdog
     }

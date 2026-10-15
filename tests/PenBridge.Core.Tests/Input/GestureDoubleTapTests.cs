@@ -5,7 +5,7 @@ namespace PenBridge.Core.Tests.Input;
 /// <summary>Held two-finger taps, the double-tap window, SmartZoom and the deadline hook (ADR-0023).</summary>
 public class GestureDoubleTapTests
 {
-    // Square 1000x1000 surface onto a 1000x1000 display: double-tap slop 5% = 50 pt.
+    // Square 1000x1000 surface onto a 1000x1000 display: double-tap slop 20% = 200 pt, window 400 ms, tap 300 ms.
     private static readonly CoordinateMapper Square = new(1000, 1000, new DisplayRect(0, 0, 1000, 1000));
     private readonly RecordingSink _sink = new();
     private readonly GestureRecognizer _rec;
@@ -37,16 +37,16 @@ public class GestureDoubleTapTests
     {
         Tap(0);
         Assert.Empty(Gestures);
-        Assert.Equal(Ms(400), _rec.PendingDeadlineUs); // lift + 300 ms window + 50 ms jitter allowance
+        Assert.Equal(Ms(500), _rec.PendingDeadlineUs); // lift + 400 ms window + 50 ms jitter allowance
 
-        _rec.CheckDeadline(Ms(399));
+        _rec.CheckDeadline(Ms(499));
         Assert.Empty(Gestures);
 
-        _rec.CheckDeadline(Ms(400));
+        _rec.CheckDeadline(Ms(500));
         GestureEvent tap = Assert.Single(Gestures);
         Assert.Equal(GestureKind.Tap, tap.Kind);
         Assert.Equal(GesturePhase.Ended, tap.Phase);
-        Assert.Equal(Ms(400), tap.TimestampUs);
+        Assert.Equal(Ms(500), tap.TimestampUs);
         Assert.Equal(500, tap.Center.X, 0.1);
         Assert.Null(_rec.PendingDeadlineUs);
 
@@ -58,9 +58,9 @@ public class GestureDoubleTapTests
     public void A_late_landing_frame_within_the_window_still_makes_a_smart_zoom()
     {
         Tap(0);
-        _rec.CheckDeadline(Ms(390)); // the timer fires late in host time, but within the jitter allowance
-        Frame(340, false, F(1, 400, 500), F(2, 600, 500)); // landed at 340 ms on the frame clock: in the window
-        Frame(380);
+        _rec.CheckDeadline(Ms(490)); // the timer fires late in host time, but within the jitter allowance
+        Frame(440, false, F(1, 400, 500), F(2, 600, 500)); // landed at 440 ms on the frame clock: in the window
+        Frame(480);
         Assert.Equal(GestureKind.SmartZoom, Assert.Single(Gestures).Kind);
     }
 
@@ -79,7 +79,7 @@ public class GestureDoubleTapTests
     public void A_frame_after_the_window_flushes_the_tap_too()
     {
         Tap(0);
-        Frame(400); // e.g. an empty keepalive
+        Frame(500); // e.g. an empty keepalive
         Assert.Equal(GestureKind.Tap, Assert.Single(Gestures).Kind);
     }
 
@@ -100,19 +100,19 @@ public class GestureDoubleTapTests
     public void A_second_tap_landing_after_the_window_is_a_new_tap()
     {
         Tap(0);
-        Tap(360);
+        Tap(460);
         Assert.Equal(GestureKind.Tap, Assert.Single(Gestures).Kind);
-        Assert.Equal(Ms(360), Gestures[0].TimestampUs); // flushed when the next touch arrived
-        Assert.Equal(Ms(760), _rec.PendingDeadlineUs);
+        Assert.Equal(Ms(460), Gestures[0].TimestampUs); // flushed when the next touch arrived
+        Assert.Equal(Ms(960), _rec.PendingDeadlineUs);
     }
 
     [Fact]
     public void A_second_tap_too_far_away_is_two_taps()
     {
-        Tap(0, cx: 400);
+        Tap(0, cx: 350);
         Tap(150, cx: 600);
         Assert.Equal(GestureKind.Tap, Assert.Single(Gestures).Kind);
-        Assert.Equal(400, Gestures[0].Center.X, 0.1);
+        Assert.Equal(350, Gestures[0].Center.X, 0.1);
         _rec.CheckDeadline(Ms(1000));
         Assert.Equal([GestureKind.Tap, GestureKind.Tap], Gestures.Select(g => g.Kind));
         Assert.Equal(600, Gestures[1].Center.X, 0.1);
@@ -123,9 +123,9 @@ public class GestureDoubleTapTests
     {
         Tap(0);
         Frame(100, false, F(1, 400, 500), F(2, 600, 500));
-        Frame(300, false, F(1, 400, 500), F(2, 600, 500));
-        Assert.Empty(Gestures); // exactly 200 ms: still a possible tap
-        Frame(301, false, F(1, 400, 500), F(2, 600, 500)); // frame clock past the tap duration
+        Frame(400, false, F(1, 400, 500), F(2, 600, 500));
+        Assert.Empty(Gestures); // exactly 300 ms: still a possible tap
+        Frame(401, false, F(1, 400, 500), F(2, 600, 500)); // frame clock past the tap duration
         Assert.Equal(GestureKind.Tap, Assert.Single(Gestures).Kind);
     }
 
