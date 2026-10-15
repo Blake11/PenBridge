@@ -176,7 +176,7 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
 - **Consequences:** each phase's Ship step includes the README update and merging the release PR (skill `feature-workflow`). The Phase 6 epic (#15) closes as superseded by #88; its scope moves into #88. The 0.x line is skipped: no 0.2.0 is published.
 
 ## ADR-0022 — Finger move/tap-click and side-button right-drag
-**Status:** accepted (2026-10-14). Amends the finger-fallback behaviour of ADR-0006 and the side-button-while-touching rule of ADR-0016.
+**Status:** accepted (2026-10-14). Its absolute one-finger cursor is superseded by ADR-0026 (2026-10-15) when both sides support `FingerTouches`, and stays the fallback. Amends the finger-fallback behaviour of ADR-0006 and the side-button-while-touching rule of ADR-0016.
 - **Context:** in the S23 test (P3-D), a finger touch pressed the mouse button, so moving the cursor alone was impossible and dragging selected text (#91). The side button right-clicked while hovering but did nothing useful while the tip touched (#90).
 - **Decision (finger, #91):** with finger fallback, one finger moves the cursor without pressing (`FingerFallbackMode.Cursor`, the default). Core's phone-side `InputFilter` does it, so the wire format is unchanged and the only Mac change is the click state of finger presses (below):
   - while the finger moves it emits hover samples (in range, no contact), so the client's hover keepalive keeps the cursor alive;
@@ -227,3 +227,20 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
   - Capability bit `SampleDedupe` (protocol **1.1**): the Mac advertises it. Only then do the phone's release repeats resend a click frame (contact in history, ending empty; up to 8 samples) **unchanged**. Each new frame gets a strictly later `timeUs`, and any new frame cancels the resend.
 - **Compatibility:** a 1.0.0 Mac doesn't advertise the bit, so a 1.1 phone behaves as before (no double-click). A 1.0.0 phone with a 1.1 Mac: the dedupe is practically harmless: 1.0.0 truncates frame times to µs without bumping, so only two frames in the same µs could share a time, and the second would lose its history samples (not its state). Minor-version mismatches are accepted (major only is refused).
 - **Why not sending clicks over the TLS channel:** it needs new message types and a second input path, and the head would have to order them against UDP samples.
+
+## ADR-0026 — One finger moves the cursor relatively, like a trackpad (`FingerTouches`, protocol 1.1)
+**Status:** accepted (2026-10-15). Supersedes ADR-0022's absolute one-finger cursor when both sides support it; ADR-0022 stays the fallback. Adds a capability bit to protocol 1.1 (still unreleased, so no further minor bump).
+- **Context:** in the P4-C device test (#110), one finger put the cursor where it touched, because cursor mode sends absolute hover samples (ADR-0022). On a trackpad, one finger moves the cursor from where it already is, and the user wants trackpad parity (ADR-0023). The phone can't do this alone, because it doesn't know where the Mac's cursor is.
+- **Decision:**
+  - New capability bit `FingerTouches` (2). When both sides advertise it and the finger mode is `Cursor`, the phone's `InputFilter` sends a lone finger as raw touches, the same touch stream gestures use, instead of hover samples. The phone no longer holds or arms a lone finger in this mode, and no longer decides its taps. Palm rejection, pen suppression and the withdrawn-touch rule (ADR-0024) stay phone-side.
+  - Core's `GestureRecognizer` on the Mac handles one finger, with the cursor staying put until it moves:
+    - **Move:** the finger's movement moves the cursor by the same amount, through the gain and acceleration curve of three-finger drag (no jump to the touch point). Movement within `TapSlop` of the landing point is held back, so a second finger landing doesn't nudge the cursor first.
+    - **Tap = left click** at the current cursor, posted on lift with no delay (one-finger taps aren't held). Two taps within the double-tap window and slop give a double click (click state 2).
+    - **Tap, then touch and move** within the double-tap window ("tap and a half") is a left drag from the current cursor, released on lift.
+    - **A second finger** ends the one-finger action and starts the two-finger decision as today. A one-finger drag in progress is released first.
+  - The Mac moves the cursor by posting mouse-moved events, or dragged events during a drag, at the current location plus the delta, clamped to the displays. Clicks and drags use mouse events at the cursor. Pause, the watchdog, pen proximity and disconnect cancel these like other gestures, and a drag is always released.
+  - The pen stays absolute: it puts the cursor where it touches, as with a tablet.
+  - Draw mode (`FingerFallbackMode.Draw`) is unchanged: absolute strokes.
+- **Compatibility:** if either side lacks `FingerTouches` (a 1.0.0 peer, or a 1.1 build from before this ADR), the phone keeps ADR-0022's absolute cursor mode. Old Macs never receive lone-finger touches.
+- **Why the recognizer:** it already sees every finger and owns tap/slop timing, the first-finger hold and gesture switching, so one finger becomes another gesture there. The phone-side alternative (sending deltas as samples) would need a new sample kind and still couldn't share the trackpad's tap and gesture decisions.
+- **Consequences / deferred:** in this mode a tap is decided from touch frames, so losing one frame must neither lose nor double a click (tests cover it); ADR-0025 still covers the fallback mode. Pointer speed becomes configurable in Phase 5.
