@@ -37,7 +37,8 @@ public sealed record PenStateTrackerOptions
 /// Event order within one sample: Up, ButtonUp, ButtonDown, Down, then Move/Drag (only if something changed and no
 /// Down/Up was emitted). A tool change releases contact and buttons, emits ToolChanged, then re-applies the new
 /// sample. Leaving range emits Up and ButtonUp first, then ProximityLeave. An in-range sample with an unknown tool
-/// (including <see cref="PenTool.None"/>) is ignored.
+/// (including <see cref="PenTool.None"/>) is ignored. Coming into range first ends the gestures
+/// (<see cref="GestureRecognizer.PenEntering"/>: a held Tap, an active gesture's Cancelled), then ProximityEnter.
 /// </para>
 /// <para>
 /// Timestamps: the frame's u32 <c>timeUs</c> is unwrapped to a monotonic 64-bit µs clock (forward steps under
@@ -287,6 +288,8 @@ public sealed class PenStateTracker
                 return;
             }
 
+            // A held two-finger tap and an open gesture end first: they act at the cursor this pen is about to move.
+            Gestures.PenEntering(EventTime(_sampleTimeUs));
             _inRange = true;
             _contact = false;
             _buttons = PenButtons.None;

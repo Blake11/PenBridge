@@ -103,7 +103,8 @@ public sealed record GestureRecognizerOptions
 /// </para>
 /// <para>
 /// When the pen comes into range an active gesture is Cancelled, and fingers already down are blocked until all have
-/// lifted (fingers landing in a later pen-free frame are new).
+/// lifted (fingers landing in a later pen-free frame are new). <see cref="PenStateTracker"/> does it through
+/// <see cref="PenEntering"/> before the pen's first event, so the Cancelled (and a held Tap) precede it.
 /// <see cref="Cancel"/> (watchdog, session end) cancels likewise: fingers still down in later frames are blocked until
 /// all lift. Frames are ignored until a configured <see cref="Mapper"/> is set (apply SurfaceInfo first). Not
 /// thread-safe; allocation-free per call.
@@ -323,6 +324,30 @@ public sealed class GestureRecognizer
         _pendingTap = false;
         _orderCount = 0;
         ContactCount = 0;
+    }
+
+    /// <summary>
+    /// The pen (or a one-finger cursor hover) is about to come into range: emits a held Tap and cancels an active
+    /// gesture now, so both come before the pen's events. A Tap right-clicks and a scroll ends at the current cursor,
+    /// which the pen's events then move. Fingers already down are blocked until all lift, as in <see cref="Process"/>
+    /// with the pen in range (which stays the rule for the rest of the frame). <see cref="PenStateTracker"/> calls it
+    /// right before ProximityEnter.
+    /// </summary>
+    public void PenEntering(long timestampUs)
+    {
+        if (!Mapper.IsConfigured)
+        {
+            return;
+        }
+
+        FlushPendingTap(timestampUs);
+        if (IsActive)
+        {
+            Emit(GesturePhase.Cancelled, 0, 0, 1, 0, _prevCenter, synthetic: false, timestampUs);
+        }
+
+        _tapCandidate = false;
+        _state = ContactCount > 0 ? State.Blocked : State.Idle;
     }
 
     private static void RequireNonNegative(double value, string name)
