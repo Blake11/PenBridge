@@ -77,10 +77,24 @@ public class TakeoverInputReleaseTests
     public async Task Late_frames_datagrams_and_the_watchdog_of_a_taken_over_session_reach_no_sink()
     {
         await using NetHarness h = CreateTakeoverHarness();
-        PenBridgeClient first = await h.PairAsync();
+        byte[]? withheld = null;
+        bool capture = false;
+        PenBridgeClient first = await h.PairAsync(filter: d =>
+        {
+            if (!capture)
+            {
+                return true;
+            }
+
+            withheld ??= d.ToArray(); // a genuine sealed datagram of the old session the server never saw
+            return false;
+        });
         Assert.True(first.SendState(Pens.Contact(2000, 2000), [])); // contact arms the 150 ms pen watchdog
         await Wait.Until(() => h.Sink.PenKinds().Contains(PenEventKind.Down), "first device's Down");
         SessionInput old = h.Server.ActiveInput!;
+        capture = true;
+        Assert.True(first.SendState(Pens.Contact(2500, 2500), []));
+        await Wait.Until(() => Volatile.Read(ref withheld) is not null, "withheld datagram");
 
         await h.PairAsync(); // takeover; the new device sends nothing
         Assert.NotSame(old, h.Server.ActiveInput);
@@ -88,13 +102,14 @@ public class TakeoverInputReleaseTests
         Assert.Equal([PenEventKind.Up, PenEventKind.ProximityLeave], pen[^2..].Select(e => e.Kind));
         int count = h.Sink.All().Length;
 
-        // A late TLS InputFrame and UDP datagram for the old session, then well past its watchdog deadline.
+        // A late TLS InputFrame and a late, validly sealed UDP datagram (the old session's id and key, a sequence
+        // above the highest it accepted), then well past its watchdog deadline.
         byte[] frame = new byte[InputPayload.MaxSize];
         int n = InputPayload.Write(frame, uint.MaxValue / 2, Pens.Contact(3000, 3000), [new TouchSample(1, true, 100, 100)], default);
         old.ProcessInputFrame(frame.AsSpan(0, n));
-        byte[] datagram = new byte[InputDatagram.MaxSize];
-        old.ProcessDatagram(datagram.AsSpan(0, 64), new IPEndPoint(IPAddress.Loopback, 1).Serialize());
+        old.ProcessDatagram(withheld!, new IPEndPoint(IPAddress.Loopback, 1).Serialize());
         h.Time.Advance(TimeSpan.FromMilliseconds(500));
+        Assert.Equal(0, old.Counters.AuthFailures + old.Counters.Malformed + old.Counters.Stale); // dropped as closed, not as invalid
 
         Assert.Equal(count, h.Sink.All().Length);
     }
