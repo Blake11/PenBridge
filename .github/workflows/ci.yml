@@ -149,7 +149,7 @@ jobs:
       - name: Check generated icons
         run: |
           if ! scripts/gen-icons.sh --check; then
-            echo "::error title=Stale generated icons::Generated icon assets differ from assets/icon: run scripts/gen-icons.sh and commit the result"
+            echo "::error title=gen-icons.sh --check failed::See the log (stale icons: run scripts/gen-icons.sh and commit the result)"
             exit 1
           fi
 
