@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.1.0](https://github.com/Blake11/PenBridge/compare/v1.0.0...v1.1.0) (2026-10-15)
+
+
+### Features
+
+* add the PenBridge app icon on Android and macOS ([#105](https://github.com/Blake11/PenBridge/issues/105)) ([81edc5c](https://github.com/Blake11/PenBridge/commit/81edc5c85492a524ae1b2e3b5d7f3944d7374e26))
+* **input:** add trackpad-parity gesture recognition ([#106](https://github.com/Blake11/PenBridge/issues/106)) ([e9e863c](https://github.com/Blake11/PenBridge/commit/e9e863c8b0a741ec1398f7d36a73d71faf66dfbb))
+* **input:** relative one-finger cursor like a trackpad (FingerTouches) ([#131](https://github.com/Blake11/PenBridge/issues/131)) ([43f4679](https://github.com/Blake11/PenBridge/commit/43f467905babd53002ce355686f75c8cfedf10ce))
+* **input:** two-finger tap follows the macOS smart zoom setting ([#141](https://github.com/Blake11/PenBridge/issues/141)) ([0e4bcd2](https://github.com/Blake11/PenBridge/commit/0e4bcd2cd0ab85d3b7bbb74787db59762f8f854f))
+* **mac:** post the relative one-finger cursor, clicks and drags ([#132](https://github.com/Blake11/PenBridge/issues/132)) ([b67a317](https://github.com/Blake11/PenBridge/commit/b67a317a7b6b87bb8187f039ad469185dc894d99))
+* **mac:** post trackpad-parity gestures ([#111](https://github.com/Blake11/PenBridge/issues/111)) ([935940c](https://github.com/Blake11/PenBridge/commit/935940c43d87e2e8539963fdf01a6f4afce89e60))
+
+
+### Bug Fixes
+
+* **input:** cancel gestures on a palm or platform cancel ([#116](https://github.com/Blake11/PenBridge/issues/116)) ([daf0c9b](https://github.com/Blake11/PenBridge/commit/daf0c9b143fa38eec329b55dd3842e51496b1c85))
+* **input:** don't let repeated lift frames delay the two-finger right-click ([#143](https://github.com/Blake11/PenBridge/issues/143)) ([14e3708](https://github.com/Blake11/PenBridge/commit/14e3708555872d27d4f98da9abb6736b784fbc11)), closes [#142](https://github.com/Blake11/PenBridge/issues/142)
+* **input:** faster two-finger right-click with a separate one-finger click window ([#133](https://github.com/Blake11/PenBridge/issues/133)) ([6fae160](https://github.com/Blake11/PenBridge/commit/6fae1601263282f9c537891ff628fcbf6d3bc6af))
+* **input:** order a held two-finger tap before the pen's events ([#115](https://github.com/Blake11/PenBridge/issues/115)) ([5d7255e](https://github.com/Blake11/PenBridge/commit/5d7255e26867ca1eea7eb12173ff29d39513ea26))
+* **input:** recover a finger tap whose datagram is lost (protocol 1.1) ([#117](https://github.com/Blake11/PenBridge/issues/117)) ([c460fb1](https://github.com/Blake11/PenBridge/commit/c460fb12c735433daea72c3ebb45fce0af66b3de))
+* **input:** relax two-finger tap and double-tap tolerances for smart zoom ([#128](https://github.com/Blake11/PenBridge/issues/128)) ([14ee6ff](https://github.com/Blake11/PenBridge/commit/14ee6ff738268386b0c55229697ed28149f3d671))
+* **mac:** close a cancelled scroll so the next scroll's first step isn't doubled ([#119](https://github.com/Blake11/PenBridge/issues/119)) ([90b424f](https://github.com/Blake11/PenBridge/commit/90b424ffdeaa33a90a1a090cd72c86f99293094f))
+
+
+### Refactoring
+
+* **net:** enforce takeover input-release ordering ([#113](https://github.com/Blake11/PenBridge/issues/113)) ([860c585](https://github.com/Blake11/PenBridge/commit/860c5852d548f9da2432391248df6b716ed846d6))
+
+
+### Documentation
+
+* add a later Android UX improvements phase to the roadmap ([#96](https://github.com/Blake11/PenBridge/issues/96)) ([612d560](https://github.com/Blake11/PenBridge/commit/612d5604c81af6b96563eb6ae0e29566d0a47114)), closes [#95](https://github.com/Blake11/PenBridge/issues/95)
+* add ADR-0023 trackpad-parity gestures on the Mac ([#104](https://github.com/Blake11/PenBridge/issues/104)) ([e37f4da](https://github.com/Blake11/PenBridge/commit/e37f4da7c21ecc2488d213efc867b66b0fbd3658)), closes [#13](https://github.com/Blake11/PenBridge/issues/13)
+* add ADR-0026 for a relative one-finger cursor like a trackpad ([#126](https://github.com/Blake11/PenBridge/issues/126)) ([cecf1c5](https://github.com/Blake11/PenBridge/commit/cecf1c58eb549964fb06d59c466b1b589082260e)), closes [#124](https://github.com/Blake11/PenBridge/issues/124) [#125](https://github.com/Blake11/PenBridge/issues/125)
+* add ADR-0029 for following the macOS smart zoom setting ([#135](https://github.com/Blake11/PenBridge/issues/135)) ([12df1e3](https://github.com/Blake11/PenBridge/commit/12df1e3589c0220866d722685434e43a8d6814ee)), closes [#134](https://github.com/Blake11/PenBridge/issues/134)
+* capture Phase 4 learnings into skills ([#112](https://github.com/Blake11/PenBridge/issues/112)) ([b03703c](https://github.com/Blake11/PenBridge/commit/b03703c1a6d0202a108055826b26ccd75f546c1c)), closes [#13](https://github.com/Blake11/PenBridge/issues/13)
+* correct Phase 4 notes left stale by later changes ([#118](https://github.com/Blake11/PenBridge/issues/118)) ([10cd0c6](https://github.com/Blake11/PenBridge/commit/10cd0c62c9798bf5b3cc4765a11b0f52fbc6143b)), closes [#13](https://github.com/Blake11/PenBridge/issues/13)
+* record device-test and release learnings in skills ([#97](https://github.com/Blake11/PenBridge/issues/97)) ([915e8ca](https://github.com/Blake11/PenBridge/commit/915e8ca6b549241b78faf3c424501e9198c0fcac)), closes [#12](https://github.com/Blake11/PenBridge/issues/12)
+* update the README for Phase 4 and the 1.1.0 release ([#145](https://github.com/Blake11/PenBridge/issues/145)) ([f47ca65](https://github.com/Blake11/PenBridge/commit/f47ca65b66dd0322284f0e54d9616402c3b3bae3))
+
 ## [1.0.0](https://github.com/Blake11/PenBridge/compare/v0.1.0...v1.0.0) (2026-10-14)
 
 
