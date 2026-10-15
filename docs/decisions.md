@@ -229,7 +229,7 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
 - **Why not sending clicks over the TLS channel:** it needs new message types and a second input path, and the head would have to order them against UDP samples.
 
 ## ADR-0026 — One finger moves the cursor relatively, like a trackpad (`FingerTouches`, protocol 1.1)
-**Status:** accepted (2026-10-15). Supersedes ADR-0022's absolute one-finger cursor when both sides support it; ADR-0022 stays the fallback. Adds a capability bit to protocol 1.1 (still unreleased, so no further minor bump).
+**Status:** accepted (2026-10-15); its pointer slop is refined by ADR-0027 (2026-10-15). Supersedes ADR-0022's absolute one-finger cursor when both sides support it; ADR-0022 stays the fallback. Adds a capability bit to protocol 1.1 (still unreleased, so no further minor bump).
 - **Context:** in the P4-C device test (#110), one finger put the cursor where it touched, because cursor mode sends absolute hover samples (ADR-0022). On a trackpad, one finger moves the cursor from where it already is, and the user wants trackpad parity (ADR-0023). The phone can't do this alone, because it doesn't know where the Mac's cursor is.
 - **Decision:**
   - New capability bit `FingerTouches` (2). When both sides advertise it and the finger mode is `Cursor`, the phone's `InputFilter` sends a lone finger as raw touches, the same touch stream gestures use, instead of hover samples. The phone no longer holds or arms a lone finger in this mode, and no longer decides its taps. Palm rejection, pen suppression and the withdrawn-touch rule (ADR-0024) stay phone-side.
@@ -241,7 +241,16 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
   - The Mac moves the cursor by posting mouse-moved events, or dragged events during a drag, at the current location plus the delta, clamped to the displays. Clicks and drags use mouse events at the cursor. Pause, the watchdog, pen proximity and disconnect cancel these like other gestures, and a drag is always released.
   - The pen stays absolute: it puts the cursor where it touches, as with a tablet.
   - Draw mode (`FingerFallbackMode.Draw`) is unchanged: absolute strokes.
-  - Amended 2026-10-15 (#124): the pointer slop is smaller than `TapSlop` (`PointerSlop` 1.5%, about 1 mm), so the cursor starts promptly. During the first 100 ms after landing (`PointerSettleTime`), while a second finger can still land, the finger starts moving the cursor only beyond `TapSlop`, so a staggered two-finger tap or smart zoom stays one. Either way the first move catches up all movement since landing. A one-finger double click or tap-and-a-half must land within `ClickSlop` (5%, as in ADR-0022) of the previous click, not the wider smart-zoom `DoubleTapSlop`. The phone's finger fallback must be on (SurfaceInfo `FingerFallback`).
 - **Compatibility:** if either side lacks `FingerTouches` (a 1.0.0 peer, or a 1.1 build from before this ADR), the phone keeps ADR-0022's absolute cursor mode. Old Macs never receive lone-finger touches.
 - **Why the recognizer:** it already sees every finger and owns tap/slop timing, the first-finger hold and gesture switching, so one finger becomes another gesture there. The phone-side alternative (sending deltas as samples) would need a new sample kind and still couldn't share the trackpad's tap and gesture decisions.
 - **Consequences / deferred:** in this mode a tap is decided from touch frames, so losing one frame must neither lose nor double a click (tests cover it); ADR-0025 still covers the fallback mode. Pointer speed becomes configurable in Phase 5.
+
+## ADR-0027 — One-finger pointer slop and settle time
+**Status:** accepted (2026-10-15). Refines ADR-0026's "movement within `TapSlop` is held back".
+- **Context:** holding a lone finger until `TapSlop` (3.5%, about 2.5 mm) would make every cursor move start late and feel sticky. A smaller slop alone lets the first finger of a staggered two-finger tap drift into a cursor move, which loses the right-click or the smart zoom (review of #124).
+- **Decision:**
+  - **Pointer slop:** a lone finger starts moving the cursor beyond `PointerSlop` (1.5%, about 1 mm).
+  - **Settle time:** during the first `PointerSettleTime` (100 ms) after it lands, while a second finger can still land, it starts only beyond `TapSlop`. Either way, the first move catches up all the movement since landing.
+  - **Click slop:** a one-finger double click or tap-and-a-half must land within `ClickSlop` (5%, as in ADR-0022) of the previous click, not within the wider smart-zoom `DoubleTapSlop`.
+  - **Finger fallback gate:** the one-finger cursor needs the phone's finger fallback to be on (SurfaceInfo `FingerFallback`), so a lone finger does nothing when fallback is off.
+- **Why:** a gesture that can turn into another must not decide before that other gesture's slop does.
