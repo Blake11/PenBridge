@@ -66,15 +66,28 @@ public sealed record GestureRecognizerOptions
     public double TapSlop { get; init; } = 0.035;
 
     /// <summary>
-    /// A two-finger tap is held this long after its lift: a second two-finger tap landing within it (and within
-    /// <see cref="DoubleTapSlop"/>) makes a SmartZoom instead. Zero emits taps at once (no smart zoom). It delays every
-    /// secondary click by this much (plus <see cref="TapDeadlineJitterAllowance"/>), so it trades a relaxed double
-    /// tap's lift-to-landing gap (usually 200-280 ms) against right-click latency: 300 ms keeps the right-click near
-    /// a third of a second after the lift while still catching a relaxed double tap, short of the macOS double-click
-    /// interval (500 ms by default). The tap and double-tap slops, not a long window, are what make relaxed double
-    /// taps register.
+    /// With smart zoom on (<see cref="SmartZoomEnabled"/>), a two-finger tap is held this long after its lift: a second
+    /// two-finger tap landing within it (and within <see cref="DoubleTapSlop"/>) makes a SmartZoom instead. Zero emits
+    /// taps at once (no smart zoom). It delays every secondary click by this much (plus
+    /// <see cref="TapDeadlineJitterAllowance"/>), so it trades the longest lift-to-landing gap a double tap may have
+    /// against right-click latency: 250 ms keeps the right-click near 300 ms after the lift (ADR-0029) and still
+    /// catches a deliberate double tap, short of the macOS double-click interval (500 ms by default). The tap and
+    /// double-tap slops, not a long window, are what make relaxed double taps register.
     /// </summary>
-    public TimeSpan DoubleTapWindow { get; init; } = TimeSpan.FromMilliseconds(300);
+    public TimeSpan DoubleTapWindow { get; init; } = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>
+    /// Whether two-finger double taps smart zoom (ADR-0029; the Mac supplies the macOS Smart Zoom setting). Consulted
+    /// once per decided two-finger tap, at its lift (never per frame), on the thread calling
+    /// <see cref="GestureRecognizer.Process"/> (on the server: the session input thread, under the input lock). True:
+    /// the tap is held for <see cref="DoubleTapWindow"/> so a second tap can make a SmartZoom. False: the tap is a Tap on
+    /// lift, with no hold and no <see cref="GestureRecognizer.PendingDeadlineUs"/>; a double tap makes two Taps. A tap
+    /// already held when the value turns false still ends as a Tap: when its window passes, or at the next tap's lift if
+    /// that comes first (that tap then is a second Tap, not a SmartZoom). Null (the default) means on, the macOS
+    /// default. The delegate must be quick, must not throw and must not allocate; it may return a different value on
+    /// every call.
+    /// </summary>
+    public Func<bool>? SmartZoomEnabled { get; init; }
 
     /// <summary>
     /// How near the second tap's landing midpoint must be to the first's for a SmartZoom. Two fingers re-landing
@@ -157,7 +170,8 @@ public sealed record GestureRecognizerOptions
 /// <b>Taps.</b> A two-finger tap: exactly two landings in the touch sequence (a third finger, or a finger re-landing
 /// with a reused pointer id, is no tap), the last lift within <see cref="GestureRecognizerOptions.TapMaxDuration"/>
 /// of the first landing, each finger within <see cref="GestureRecognizerOptions.TapSlop"/> of where it landed, and no
-/// gesture began. It is held for <see cref="GestureRecognizerOptions.DoubleTapWindow"/>: a second tap landing in that
+/// gesture began. With smart zoom off (<see cref="GestureRecognizerOptions.SmartZoomEnabled"/>, read at the lift) it is
+/// a Tap at once. Otherwise it is held for <see cref="GestureRecognizerOptions.DoubleTapWindow"/>: a second tap landing in that
 /// window within <see cref="GestureRecognizerOptions.DoubleTapSlop"/> emits SmartZoom on its lift. Otherwise Tap is
 /// emitted when the window passes with no touch down (judged on the frame clock by the next frame, or by the timer
 /// deadline <see cref="PendingDeadlineUs"/>/<see cref="CheckDeadline"/> with a jitter allowance), or as soon as it can no longer become a double tap, before the event that interrupts it: the pen (or a one-finger
@@ -1179,7 +1193,8 @@ public sealed class GestureRecognizer
         }
 
         var mid = new DisplayPoint((_tapLand0.X + _tapLand1.X) / 2, (_tapLand0.Y + _tapLand1.Y) / 2);
-        if (_pendingTap && Distance(mid, _pendingMid) <= _options.DoubleTapSlop * Mapper.ShortSide)
+        bool smartZoom = _doubleTapWindowUs > 0 && (_options.SmartZoomEnabled?.Invoke() ?? true);
+        if (smartZoom && _pendingTap && Distance(mid, _pendingMid) <= _options.DoubleTapSlop * Mapper.ShortSide)
         {
             _pendingTap = false;
             _sink.OnGestureEvent(new GestureEvent(GestureKind.SmartZoom, GesturePhase.Ended, 0, 0, 1, 0, GestureDirection.None, 0, mid, false, timestampUs));
@@ -1190,7 +1205,7 @@ public sealed class GestureRecognizer
         _pendingTap = true;
         _pendingLiftUs = timestampUs;
         _pendingMid = mid;
-        if (_doubleTapWindowUs == 0)
+        if (!smartZoom)
         {
             FlushPendingTap(timestampUs);
         }

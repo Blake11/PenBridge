@@ -67,8 +67,9 @@ public enum GestureKind : byte
     Pinch = 2,
 
     /// <summary>
-    /// Two-finger tap, a secondary click at the current cursor. One event with <see cref="GesturePhase.Ended"/>,
-    /// emitted once it can no longer become a double tap: the double-tap window passed (up to
+    /// Two-finger tap, a secondary click at the current cursor. One event with <see cref="GesturePhase.Ended"/>. With
+    /// smart zoom off (<see cref="GestureRecognizerOptions.SmartZoomEnabled"/>) it is emitted on the lift; otherwise
+    /// once it can no longer become a double tap: the double-tap window passed (up to
     /// <see cref="GestureRecognizerOptions.DoubleTapWindow"/> after the lift), or other input interrupts it (pen or
     /// cursor hover, a gesture, a third finger), in which case it comes just before that input's events. Only a cancel
     /// (watchdog, pause, session end) drops it.

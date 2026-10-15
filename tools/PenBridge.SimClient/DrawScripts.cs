@@ -20,8 +20,9 @@ internal static class DrawScripts
         ];
 
     /// <summary>
-    /// Long enough after a tap for the server's held-tap deadline (GestureRecognizerOptions.DoubleTapWindow 300 ms +
-    /// TapDeadlineJitterAllowance 50 ms) to pass before the script ends, so the right-click is posted.
+    /// Long enough after a tap for the server's held-tap deadline (GestureRecognizerOptions.DoubleTapWindow 250 ms +
+    /// TapDeadlineJitterAllowance 50 ms, when smart zoom is on) to pass before the script ends, so the right-click is
+    /// posted.
     /// </summary>
     private static readonly TimeSpan TapSettle = TimeSpan.FromMilliseconds(600);
 
@@ -227,7 +228,10 @@ internal static class DrawScripts
     /// </summary>
     private static IEnumerable<ScriptFrame> TwoFingerTap() => TapFrames(TapSettle);
 
-    /// <summary>Two two-finger taps 150 ms apart at nearly the same place: a smart zoom (no right-click).</summary>
+    /// <summary>
+    /// Two two-finger taps 150 ms apart at nearly the same place: a smart zoom (no right-click) when the Mac's Smart Zoom
+    /// setting is on, two right-clicks when it is off (ADR-0029).
+    /// </summary>
     private static IEnumerable<ScriptFrame> SmartZoom()
     {
         foreach (ScriptFrame f in TapFrames(TimeSpan.FromMilliseconds(150)))
