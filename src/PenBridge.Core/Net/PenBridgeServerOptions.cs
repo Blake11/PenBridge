@@ -67,8 +67,26 @@ public sealed class PenBridgeServerOptions
     /// <summary>Tests only: the exact ports to try, replacing <see cref="Port"/> + <see cref="PortFallbackCount"/>.</summary>
     internal IReadOnlyList<int>? PortCandidates { get; init; }
 
-    /// <summary>Capabilities sent in HelloAck. Tests override it to act as an older server.</summary>
-    internal ProtocolCapabilities Capabilities { get; init; } = ProtocolCapabilities.SampleDedupe;
+    /// <summary>
+    /// Advertise <see cref="ProtocolCapabilities.FingerTouches"/> (ADR-0026): when the phone advertises it too, it sends
+    /// a lone finger as raw touches and the session's recognizer emits <see cref="GestureKind.PointerMove"/>,
+    /// <see cref="GestureKind.Click"/> and <see cref="GestureKind.PointerDrag"/> (a relative trackpad cursor). Off by
+    /// default: turn it on only once <see cref="InputSink"/> posts those kinds, or one-finger input does nothing.
+    /// </summary>
+    public bool FingerTouches { get; init; }
+
+    /// <summary>
+    /// Capabilities sent in HelloAck: <see cref="ProtocolCapabilities.SampleDedupe"/>, plus
+    /// <see cref="ProtocolCapabilities.FingerTouches"/> when <see cref="FingerTouches"/> is set. Tests override it to act
+    /// as an older server.
+    /// </summary>
+    internal ProtocolCapabilities Capabilities
+    {
+        get => _capabilities ?? (ProtocolCapabilities.SampleDedupe | (FingerTouches ? ProtocolCapabilities.FingerTouches : ProtocolCapabilities.None));
+        init => _capabilities = value;
+    }
+
+    private readonly ProtocolCapabilities? _capabilities;
 
     /// <summary>Sustained rate of failed datagram decryptions tolerated per session (bursts up to twice this).</summary>
     public int MaxAuthFailuresPerSecond { get; init; } = 16;

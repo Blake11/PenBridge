@@ -91,11 +91,12 @@ internal sealed class SessionInput : IDisposable
         int maxAuthFailuresPerSecond,
         Action<ulong>? onAck,
         Action<Exception>? onFault,
-        LatencyRecorder? latency = null)
+        LatencyRecorder? latency = null,
+        ProtocolCapabilities negotiated = ProtocolCapabilities.None)
     {
         _lock = inputLock;
         _time = time;
-        _tracker = new PenStateTracker(sink, time, trackerOptions);
+        _tracker = new PenStateTracker(sink, time, WithNegotiated(trackerOptions, negotiated));
         _cipher = new InputCipher(inputKey, sessionId);
         _display = display;
         _region = region;
@@ -108,6 +109,19 @@ internal sealed class SessionInput : IDisposable
         _budgetTimestamp = time.GetTimestamp();
         _watchdog = time.CreateTimer(WatchdogCallback, this, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         _ackTimer = time.CreateTimer(TrailingAckCallback, this, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+    }
+
+    /// <summary>
+    /// The tracker options for this session: the recognizer's one-finger cursor follows the negotiated
+    /// <see cref="ProtocolCapabilities.FingerTouches"/> (ADR-0026), whatever the configured options say.
+    /// </summary>
+    internal static PenStateTrackerOptions WithNegotiated(PenStateTrackerOptions? options, ProtocolCapabilities negotiated)
+    {
+        options ??= new PenStateTrackerOptions();
+        bool oneFinger = (negotiated & ProtocolCapabilities.FingerTouches) != 0;
+        return options.Gestures.OneFingerCursor == oneFinger
+            ? options
+            : options with { Gestures = options.Gestures with { OneFingerCursor = oneFinger } };
     }
 
     /// <summary>Raised (under the input lock) the first time the forged-datagram budget runs out.</summary>

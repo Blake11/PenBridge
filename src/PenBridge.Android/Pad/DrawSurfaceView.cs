@@ -45,6 +45,7 @@ internal sealed class DrawSurfaceView : View
     private bool _disposed;
     private InputFilter _filter;
     private InputFilterOptions? _pendingFilterOptions;
+    private bool _fingerTouches;
     private int _fingerCount;
     private PenSample _pen;
     private bool _penPresent;
@@ -62,7 +63,7 @@ internal sealed class DrawSurfaceView : View
     {
         _queue = queue;
         _ink = ink;
-        _filter = new InputFilter(filterOptions);
+        _filter = new InputFilter(filterOptions with { FingerTouches = false });
         _penLeaveRunnable = new Java.Lang.Runnable(OnPenLeaveTimeout);
         _armRunnable = new Java.Lang.Runnable(OnArmTimeout);
         Focusable = true;
@@ -88,6 +89,27 @@ internal sealed class DrawSurfaceView : View
     /// <summary>True while a stylus is in range, or left it less than the palm-suppression window ago.</summary>
     public bool IsPenNear =>
         _penPresent || SystemClock.UptimeMillis() - _lastPenMs < (long)_filter.Options.PenSuppression.TotalMilliseconds;
+
+    /// <summary>
+    /// The session negotiated <c>ProtocolCapabilities.FingerTouches</c> (<c>PenBridgeClient.NegotiatedCapabilities</c>):
+    /// in cursor mode a lone finger goes out as a raw touch and the Mac moves the cursor relatively (ADR-0026). Set it
+    /// on every (re)connect; false (the default) keeps ADR-0022's absolute cursor. Applied like
+    /// <see cref="SetFilterOptions"/>, overriding <see cref="InputFilterOptions.FingerTouches"/> of the options given.
+    /// </summary>
+    public bool FingerTouches
+    {
+        get => _fingerTouches;
+        set
+        {
+            if (value == _fingerTouches)
+            {
+                return;
+            }
+
+            _fingerTouches = value;
+            SetFilterOptions(_pendingFilterOptions ?? _filter.Options);
+        }
+    }
 
     /// <summary>Replaces the filter options (e.g. finger pressure); applied now if idle, else when input goes idle.</summary>
     public void SetFilterOptions(InputFilterOptions options)
@@ -600,7 +622,7 @@ internal sealed class DrawSurfaceView : View
         if (_pendingFilterOptions is { } options && !_active && !_penPresent)
         {
             _pendingFilterOptions = null;
-            _filter = new InputFilter(options);
+            _filter = new InputFilter(options.FingerTouches == _fingerTouches ? options : options with { FingerTouches = _fingerTouches });
         }
     }
 

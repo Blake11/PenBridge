@@ -46,7 +46,9 @@ public readonly record struct PenEvent(
 /// <summary>
 /// Gesture kinds produced by <see cref="GestureRecognizer"/> (ADR-0023, trackpad parity). The kind of a moving
 /// gesture is decided by the most fingers seen down before a threshold was crossed: 2 = Scroll or Pinch, 3 = Drag,
-/// 4 = SystemSwipe or SystemPinch, 5 or more = nothing.
+/// 4 = SystemSwipe or SystemPinch, 5 or more = nothing. One finger (PointerMove, Click, PointerDrag; ADR-0026) only
+/// with <see cref="GestureRecognizerOptions.OneFingerCursor"/>, i.e. when the session negotiated
+/// <c>ProtocolCapabilities.FingerTouches</c>.
 /// </summary>
 public enum GestureKind : byte
 {
@@ -105,6 +107,37 @@ public enum GestureKind : byte
     /// cumulative <see cref="GestureEvent.Progress"/>. Began / Changed / Ended / Cancelled.
     /// </summary>
     SystemPinch = 8,
+
+    /// <summary>
+    /// One finger moves the cursor (ADR-0026), no button. Began / Changed with <see cref="GestureEvent.DeltaX"/>/
+    /// <see cref="GestureEvent.DeltaY"/>: the finger's movement since the previous event in display points, through
+    /// <see cref="GestureRecognizerOptions.DragGain"/> and <see cref="GestureRecognizerOptions.DragAcceleration"/>.
+    /// Began comes when the finger first moves beyond <see cref="GestureRecognizerOptions.PointerSlop"/> of where it
+    /// landed and carries only that frame's step (the movement inside the slop is dropped, so the cursor starts
+    /// smoothly). Post a mouse-moved event at the current cursor plus the delta, clamped to the displays, for each
+    /// Began/Changed. Ended (the finger lifted, or a second finger landed) and Cancelled post nothing.
+    /// </summary>
+    PointerMove = 9,
+
+    /// <summary>
+    /// One-finger tap = left click at the current cursor (ADR-0026). One event with <see cref="GesturePhase.Ended"/>,
+    /// emitted on the lift with no delay, and <see cref="GestureEvent.ClickCount"/> = 1, or one more than the previous
+    /// Click when this tap landed within <see cref="GestureRecognizerOptions.DoubleTapWindow"/> after it lifted and
+    /// within <see cref="GestureRecognizerOptions.DoubleTapSlop"/> of where it landed (2 = double click, 3 = triple).
+    /// Post a left mouse-down and mouse-up at the current cursor with that click state.
+    /// </summary>
+    Click = 10,
+
+    /// <summary>
+    /// One-finger "tap and a half" = left drag from the current cursor (ADR-0026): a touch landing within
+    /// <see cref="GestureRecognizerOptions.DoubleTapWindow"/> and <see cref="GestureRecognizerOptions.DoubleTapSlop"/> of
+    /// a Click that then moves beyond <see cref="GestureRecognizerOptions.PointerSlop"/>, or stays down longer than
+    /// <see cref="GestureRecognizerOptions.TapMaxDuration"/>. Began: press the left button at the current cursor
+    /// (click state 1, never counted as a double click), then move by the deltas (0 when it began by holding still);
+    /// Changed: drag by the deltas (same units and gain as PointerMove); Ended (lift, or a second finger landed) or
+    /// Cancelled: release the button at the current cursor. Always released: the head must post the mouse-up for both.
+    /// </summary>
+    PointerDrag = 11,
 }
 
 /// <summary>Direction of a <see cref="GestureKind.SystemSwipe"/> (finger movement, y down) or <see cref="GestureKind.SystemPinch"/>.</summary>
@@ -142,12 +175,13 @@ public enum GesturePhase : byte
 /// down. Gestures act at the current cursor position (ADR-0023); <see cref="Center"/> is informational only.
 /// </summary>
 /// <param name="Kind">See <see cref="GestureKind"/>.</param>
-/// <param name="Phase">Began / Changed / Ended / Cancelled (Tap and SmartZoom: always Ended; TouchDown: always Began).</param>
+/// <param name="Phase">Began / Changed / Ended / Cancelled (Tap, SmartZoom and Click: always Ended; TouchDown: always Began).</param>
 /// <param name="DeltaX">
 /// Scroll and Drag: centroid movement since the previous event (Began: since the gesture's fingers settled),
 /// multiplied by the kind's gain and its acceleration at the current speed
 /// (<see cref="GestureRecognizerOptions.ScrollGain"/>/<see cref="GestureRecognizerOptions.ScrollAcceleration"/>,
 /// <see cref="GestureRecognizerOptions.DragGain"/>/<see cref="GestureRecognizerOptions.DragAcceleration"/>).
+/// PointerMove and PointerDrag: the finger's movement since the previous event, with Drag's gain and acceleration.
 /// 0 for every other kind and for Ended/Cancelled.
 /// </param>
 /// <param name="DeltaY">See <paramref name="DeltaX"/>.</param>
@@ -166,10 +200,11 @@ public enum GesturePhase : byte
 /// </param>
 /// <param name="Center">
 /// Informational: the current centroid of the gesture's fingers (Tap/SmartZoom: the landing midpoint; TouchDown: the
-/// new contact).
+/// new contact; Click: where the finger landed). Never a cursor position: act at the current cursor.
 /// </param>
 /// <param name="Synthetic">True when synthesized by the watchdog or a reset.</param>
 /// <param name="TimestampUs">Monotonic µs since session start, same clock as <see cref="PenEvent.TimestampUs"/>.</param>
+/// <param name="ClickCount">Click: the click state to post (1 single, 2 double, …). 0 for every other kind.</param>
 public readonly record struct GestureEvent(
     GestureKind Kind,
     GesturePhase Phase,
@@ -181,7 +216,8 @@ public readonly record struct GestureEvent(
     double Progress,
     DisplayPoint Center,
     bool Synthetic,
-    long TimestampUs);
+    long TimestampUs,
+    int ClickCount = 0);
 
 /// <summary>
 /// Receives Mac-side input events from <see cref="PenStateTracker"/> and <see cref="GestureRecognizer"/>.

@@ -77,6 +77,20 @@ public sealed record GestureRecognizerOptions
     /// jitter still arrives before the timer gives up on it. Frames themselves are judged on the frame clock, without it.
     /// </summary>
     public TimeSpan TapDeadlineJitterAllowance { get; init; } = TimeSpan.FromMilliseconds(50);
+
+    /// <summary>
+    /// One finger moves the cursor relatively, taps click and tap-and-a-half drags (ADR-0026): PointerMove, Click and
+    /// PointerDrag. Off by default: a lone finger is no gesture. The server sets it per session from the negotiated
+    /// <c>ProtocolCapabilities.FingerTouches</c> (only then does the phone send a lone finger as touches).
+    /// </summary>
+    public bool OneFingerCursor { get; init; }
+
+    /// <summary>
+    /// One finger: how far it may move from where it landed and still be a tap. Movement within it doesn't move the
+    /// cursor, so a second finger landing (a two-finger gesture) never nudges it first. The default equals
+    /// <see cref="TapSlop"/>.
+    /// </summary>
+    public double PointerSlop { get; init; } = 0.035;
 }
 
 /// <summary>
@@ -112,6 +126,19 @@ public sealed record GestureRecognizerOptions
 /// outlasts the tap duration without being that second tap. While fingers are down, tap timing uses only frame times
 /// (frames arrive at least every 50 ms then, and the watchdog covers a lost link), so a delayed lift datagram can't
 /// turn a double tap into two taps. Only <see cref="Cancel"/> drops a held tap.
+/// </para>
+/// <para>
+/// <b>One finger</b> (only with <see cref="GestureRecognizerOptions.OneFingerCursor"/>, ADR-0026): a touch sequence
+/// whose first frame has exactly one contact is a pointer; a finger left over after a multi-finger gesture is never
+/// one. While it stays within <see cref="GestureRecognizerOptions.PointerSlop"/> of where it landed nothing moves.
+/// Lifting within <see cref="GestureRecognizerOptions.TapMaxDuration"/> without leaving the slop emits a Click at once
+/// (after a held two-finger Tap, which happened first). Leaving the slop begins a PointerMove, or a PointerDrag when the
+/// touch landed within <see cref="GestureRecognizerOptions.DoubleTapWindow"/> and
+/// <see cref="GestureRecognizerOptions.DoubleTapSlop"/> of a Click (tap and a half; holding still past the tap duration
+/// begins it too); it Ends on the lift. Such a tap instead counts the Click on (ClickCount 2, 3, …). A second finger
+/// ends the one-finger action (Ended; a PointerDrag releases its button) and the fingers start the multi-finger
+/// decision as if they had just landed, so a staggered two-finger tap or scroll still works. Timing uses frame times
+/// only (no timer: a Click is never held).
 /// </para>
 /// <para>
 /// <b>Touch down.</b> In each frame where a contact appears that was not in the previous frame (gestures not blocked
@@ -193,6 +220,17 @@ public sealed class GestureRecognizer
     private long _pendingLiftUs;
     private DisplayPoint _pendingMid;
 
+    // One finger (ADR-0026): the current lone finger, and the last Click for double-click counting.
+    private byte _pointerId;
+    private DisplayPoint _pointerLand;
+    private long _pointerLandUs;
+    private bool _pointerPress; // landed as the next touch of a Click: a tap counts on, moving or holding drags
+    private bool _pointerMoved; // moved beyond the pointer slop since it landed
+    private bool _clickValid;
+    private long _clickLiftUs;
+    private DisplayPoint _clickLand;
+    private int _clickCount;
+
     public GestureRecognizer(IInputSink sink, GestureRecognizerOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(sink);
@@ -206,6 +244,7 @@ public sealed class GestureRecognizer
         RequireNonNegative(_options.SystemPinchThreshold, nameof(GestureRecognizerOptions.SystemPinchThreshold));
         RequireNonNegative(_options.TapSlop, nameof(GestureRecognizerOptions.TapSlop));
         RequireNonNegative(_options.DoubleTapSlop, nameof(GestureRecognizerOptions.DoubleTapSlop));
+        RequireNonNegative(_options.PointerSlop, nameof(GestureRecognizerOptions.PointerSlop));
         RequirePositive(_options.ScrollGain, nameof(GestureRecognizerOptions.ScrollGain));
         RequirePositive(_options.DragGain, nameof(GestureRecognizerOptions.DragGain));
         ArgumentNullException.ThrowIfNull(_options.ScrollAcceleration, nameof(GestureRecognizerOptions.ScrollAcceleration));
@@ -240,6 +279,12 @@ public sealed class GestureRecognizer
         Finished,
         /// <summary>Pen in range, cancelled, or withdrawn touches: no gesture, tap or touch-down until they lift.</summary>
         Blocked,
+        /// <summary>One finger down, not yet moved beyond the pointer slop: a Click on a quick lift (ADR-0026).</summary>
+        Pointing,
+        /// <summary>One finger moving the cursor (PointerMove).</summary>
+        PointerMoving,
+        /// <summary>One finger dragging with the left button down (PointerDrag).</summary>
+        PointerDragging,
     }
 
     /// <summary>Maps touch positions to display points; thresholds scale with its content size. Unset by default.</summary>
@@ -249,7 +294,8 @@ public sealed class GestureRecognizer
     public int ContactCount { get; private set; }
 
     /// <summary>True when a gesture with phases (not Tap/SmartZoom/TouchDown) has Began and not yet Ended/Cancelled.</summary>
-    public bool IsActive => _state is State.Scrolling or State.Pinching or State.Dragging or State.Swiping or State.SystemPinching;
+    public bool IsActive => _state is State.Scrolling or State.Pinching or State.Dragging or State.Swiping or State.SystemPinching
+        or State.PointerMoving or State.PointerDragging;
 
     /// <summary>
     /// Timer deadline (µs, the <see cref="Process"/> clock) for a held tap while no finger is down: the end of the
@@ -327,7 +373,7 @@ public sealed class GestureRecognizer
         }
 
         TrackTap(touches, previousCount, count, timestampUs);
-        RunStateMachine(touches, count, timestampUs);
+        RunStateMachine(touches, count, previousCount, timestampUs);
 
         if (count == 0 && previousCount > 0)
         {
@@ -380,6 +426,7 @@ public sealed class GestureRecognizer
     /// <summary>Blocks gestures: until a frame without contacts if <paramref name="untilLift"/>, and while withdrawn touches remain.</summary>
     private void Block(bool untilLift)
     {
+        _clickValid = false;
         _blockUntilLift = untilLift;
         _state = untilLift || _withdrawnCount > 0 ? State.Blocked : State.Idle;
     }
@@ -433,6 +480,7 @@ public sealed class GestureRecognizer
         }
 
         _tapCandidate = false;
+        _clickValid = false;
         _state = State.Blocked;
         for (int i = 0; i < touches.Length; i++)
         {
@@ -524,11 +572,18 @@ public sealed class GestureRecognizer
         State.Dragging => GestureKind.Drag,
         State.Swiping => GestureKind.SystemSwipe,
         State.SystemPinching => GestureKind.SystemPinch,
+        State.PointerMoving => GestureKind.PointerMove,
+        State.PointerDragging => GestureKind.PointerDrag,
         _ => GestureKind.Scroll,
     };
 
-    private void RunStateMachine(ReadOnlySpan<TouchSample> touches, int count, long timestampUs)
+    private void RunStateMachine(ReadOnlySpan<TouchSample> touches, int count, int previousCount, long timestampUs)
     {
+        if (_state is State.Pointing or State.PointerMoving or State.PointerDragging && !RunPointer(touches, count, timestampUs))
+        {
+            return;
+        }
+
         switch (_state)
         {
             case State.Blocked:
@@ -549,7 +604,11 @@ public sealed class GestureRecognizer
 
             case State.Idle:
             case State.Possible:
-                if (count > MaxGestureFingers)
+                if (count == 1 && _state == State.Idle && previousCount == 0 && _options.OneFingerCursor)
+                {
+                    StartPointer(touches, timestampUs); // only a touch sequence's first finger: never a leftover one
+                }
+                else if (count > MaxGestureFingers)
                 {
                     _state = State.Ignored;
                 }
@@ -581,6 +640,8 @@ public sealed class GestureRecognizer
         {
             case State.Scrolling:
             case State.Dragging:
+            case State.PointerMoving:
+            case State.PointerDragging:
             {
                 double rx = center.X - _prevCenter.X;
                 double ry = center.Y - _prevCenter.Y;
@@ -628,6 +689,7 @@ public sealed class GestureRecognizer
     /// <summary>Starts (or restarts) an undecided gesture on all current contacts, in landing order.</summary>
     private void Baseline(ReadOnlySpan<TouchSample> touches, int count, long timestampUs)
     {
+        _clickValid = false; // two or more fingers: the next one-finger tap is a new single click
         _n = Math.Min(count, Math.Min(_orderCount, MaxGestureFingers));
         Array.Copy(_order, _ids, _n);
         if (!Measure(touches, out _startCenter, out _startSpread, out _prevAngle))
@@ -725,11 +787,12 @@ public sealed class GestureRecognizer
         FlushPendingTap(timestampUs);
         _state = state;
         _tapCandidate = false;
+        _clickValid = false;
         _direction = GestureDirection.None;
         _progress = 0;
     }
 
-    private double Gain(double speed) => _state == State.Dragging
+    private double Gain(double speed) => _state is State.Dragging or State.PointerMoving or State.PointerDragging
         ? _options.DragGain * _options.DragAcceleration.GainAt(speed)
         : _options.ScrollGain * _options.ScrollAcceleration.GainAt(speed);
 
@@ -752,6 +815,116 @@ public sealed class GestureRecognizer
     /// <summary>Unwrapped angle change since the previous frame; 0 when either spread is too small to have an angle.</summary>
     private double RotationSincePrevious(double spread, double angle) =>
         _n == 2 && spread >= MinSpread && _prevSpread >= MinSpread ? WrapDegrees(angle - _prevAngle) : 0;
+
+    /// <summary>A touch sequence starts with one finger: it may become a Click, a PointerMove or a PointerDrag.</summary>
+    private void StartPointer(ReadOnlySpan<TouchSample> touches, long timestampUs)
+    {
+        TouchSample t = default;
+        for (int i = 0; i < touches.Length; i++)
+        {
+            if (touches[i].Contact)
+            {
+                t = touches[i];
+                break;
+            }
+        }
+
+        DisplayPoint p = Mapper.Map(t.X, t.Y);
+        _pointerPress = _clickValid
+            && timestampUs - _clickLiftUs <= _doubleTapWindowUs
+            && Distance(p, _clickLand) <= _options.DoubleTapSlop * Mapper.ShortSide;
+        _clickValid = _pointerPress; // a Click counts on only into the very next touch
+        _pointerId = t.PointerId;
+        _pointerLand = p;
+        _pointerLandUs = timestampUs;
+        _pointerMoved = false;
+        _n = 1;
+        _ids[0] = t.PointerId;
+        _startCenter = p;
+        _startUs = timestampUs;
+        _prevCenter = p;
+        _prevUs = timestampUs;
+        _state = State.Pointing;
+    }
+
+    /// <summary>
+    /// One-finger states. Returns true when the frame must also run through the multi-finger state machine: a second
+    /// finger landed (the one-finger action ended first, so a drag is released), or the finger is moving or dragging
+    /// (the shared relative-delta path emits Changed, or Ended on the lift).
+    /// </summary>
+    private bool RunPointer(ReadOnlySpan<TouchSample> touches, int count, long timestampUs)
+    {
+        bool found = TryFind(touches, _pointerId, out TouchSample t);
+        if (count >= 2 || (count == 1 && !found))
+        {
+            if (_state == State.Pointing && count == 1)
+            {
+                // The finger lifted and another landed in the same frame: end the first (maybe a Click), start the second.
+                PointerLifted(timestampUs);
+                _state = State.Idle;
+                StartPointer(touches, timestampUs);
+                return false;
+            }
+
+            if (IsActive)
+            {
+                Emit(GesturePhase.Ended, 0, 0, 1, 0, _prevCenter, synthetic: false, timestampUs);
+            }
+
+            _clickValid = false;
+            _state = count >= 2 ? State.Idle : State.Finished; // two or more: the multi-finger decision starts now
+            return count >= 2;
+        }
+
+        if (_state != State.Pointing)
+        {
+            return true;
+        }
+
+        if (!found)
+        {
+            PointerLifted(timestampUs);
+            _state = State.Idle;
+            return false;
+        }
+
+        DisplayPoint p = Mapper.Map(t.X, t.Y);
+        bool moved = Distance(p, _pointerLand) > _options.PointerSlop * Mapper.ShortSide;
+        if (moved || (_pointerPress && timestampUs - _pointerLandUs > _tapMaxUs))
+        {
+            // Beyond the slop it moves (or, as the next touch of a Click, drags); holding still that long drags too.
+            // Only this frame's step moves the cursor: the movement inside the slop is dropped, so it starts smoothly.
+            _pointerMoved = moved;
+            double rx = moved ? p.X - _prevCenter.X : 0;
+            double ry = moved ? p.Y - _prevCenter.Y : 0;
+            Lock(_pointerPress ? State.PointerDragging : State.PointerMoving, timestampUs);
+            long dt = Math.Clamp(timestampUs - _prevUs, MinSpeedIntervalUs, MaxSpeedIntervalUs);
+            _speed = Math.Sqrt((rx * rx) + (ry * ry)) * 1e6 / dt;
+            double gain = Gain(_speed);
+            Emit(GesturePhase.Began, rx * gain, ry * gain, 1, 0, p, synthetic: false, timestampUs);
+        }
+
+        _prevCenter = p;
+        _prevUs = timestampUs;
+        return false;
+    }
+
+    /// <summary>The lone finger lifted while still Pointing: a quick lift is a Click at the current cursor.</summary>
+    private void PointerLifted(long timestampUs)
+    {
+        if (_pointerMoved || timestampUs - _pointerLandUs > _tapMaxUs)
+        {
+            _clickValid = false;
+            return;
+        }
+
+        FlushPendingTap(timestampUs); // a held two-finger tap happened first: its right-click comes before this click
+        _clickCount = _pointerPress ? _clickCount + 1 : 1;
+        _clickValid = true;
+        _clickLiftUs = timestampUs;
+        _clickLand = _pointerLand;
+        _sink.OnGestureEvent(new GestureEvent(GestureKind.Click, GesturePhase.Ended, 0, 0, 1, 0, GestureDirection.None, 0, _pointerLand, false, timestampUs, _clickCount));
+    }
 
     /// <summary>
     /// Measures the gesture's fingers: centroid, spread (2 fingers: their distance; more: twice the mean distance from

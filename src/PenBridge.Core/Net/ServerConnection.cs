@@ -31,6 +31,7 @@ internal sealed class ServerConnection
     private readonly long _epoch;
     private readonly TaskCompletionSource _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private byte[] _deviceIdBytes = [];
+    private ProtocolCapabilities _negotiated; // advertised by both sides (set from Hello)
     private ITimer? _handshake;
     private ITimer? _pingTimer;
     private SessionInfo? _info;
@@ -203,6 +204,7 @@ internal sealed class ServerConnection
         _deviceIdBytes = hello.DeviceId.ToArray();
         DeviceId = new Guid(_deviceIdBytes, bigEndian: true);
         DeviceName = hello.DeviceName;
+        _negotiated = hello.Capabilities & _options.Capabilities;
 
         byte[] challenge = RandomNumberGenerator.GetBytes(WireSizes.Challenge);
         await _channel.WriteAsync(new HelloAckMessage(ProtocolVersion.Current, _server.ServerName, _options.Capabilities, challenge)).ConfigureAwait(false);
@@ -377,7 +379,8 @@ internal sealed class ServerConnection
                 _options.MaxAuthFailuresPerSecond,
                 OnUdpAck,
                 OnInputFault,
-                _options.LatencyRecorder);
+                _options.LatencyRecorder,
+                _negotiated);
             input.ForgedDatagramFlood += OnForgedFlood;
             Input = input;
             if (!_server.PublishInput(this, input) || RequestedReason is not null)
@@ -393,7 +396,7 @@ internal sealed class ServerConnection
             // two frames; a Bye that wins it just fails the client's connect.
             Volatile.Write(ref _sessionStarted, true);
             await _channel.WriteAsync(new SessionStartMessage((ushort)_server.Port, sessionId, serverNonce)).ConfigureAwait(false);
-            _info = new SessionInfo(DeviceId, DeviceName, _remote);
+            _info = new SessionInfo(DeviceId, DeviceName, _remote, _negotiated);
             NetLog.SessionStarted(_log, DeviceId, PeerText.Sanitize(DeviceName));
             _server.RaiseSessionStarted(_info);
             if (_options.PingInterval != Timeout.InfiniteTimeSpan)

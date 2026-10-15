@@ -49,6 +49,16 @@ public enum ProtocolCapabilities : uint
     /// The client resends only when the server advertised this bit.
     /// </summary>
     SampleDedupe = 1,
+
+    /// <summary>
+    /// Since 1.1 (ADR-0026). Server: its gesture recognizer handles a lone finger as a relative trackpad cursor
+    /// (<c>GestureKind.PointerMove</c>, <c>Click</c>, <c>PointerDrag</c>). Client: in cursor finger mode it sends a lone
+    /// finger as raw touches instead of absolute hover samples, and makes a touch lift survive one lost datagram: the
+    /// last touch state is sent once more before a lift unless a keepalive already resent it, and the release
+    /// repeats after a lift resend the lift frame with its own <c>timeUs</c>. Used only when both sides advertise it;
+    /// otherwise the phone keeps ADR-0022's absolute cursor.
+    /// </summary>
+    FingerTouches = 2,
 }
 
 /// <summary><c>u32</c> flags describing the phone surface in SurfaceInfo. Unknown bits are preserved and ignored.</summary>

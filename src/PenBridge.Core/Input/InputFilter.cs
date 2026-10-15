@@ -16,8 +16,10 @@ public readonly record struct RawTouch(byte PointerId, bool Contact, bool Cancel
 public enum FingerFallbackMode : byte
 {
     /// <summary>
-    /// The finger moves the cursor without pressing (hover samples, absolute position). A quick tap clicks;
-    /// double-tap-and-hold starts a left drag until lift (ADR-0022). The default.
+    /// The finger moves the cursor. With <see cref="InputFilterOptions.FingerTouches"/> (negotiated
+    /// <c>ProtocolCapabilities.FingerTouches</c>, ADR-0026) it is sent as a raw touch and the Mac moves the cursor
+    /// relatively, like a trackpad. Otherwise (ADR-0022) it moves it without pressing as hover samples at the absolute
+    /// position: a quick tap clicks, double-tap-and-hold starts a left drag until lift. The default.
     /// </summary>
     Cursor = 0,
 
@@ -36,6 +38,14 @@ public sealed record InputFilterOptions
 
     /// <summary>Whether a lone finger moves the cursor (default) or draws.</summary>
     public FingerFallbackMode FingerMode { get; init; } = FingerFallbackMode.Cursor;
+
+    /// <summary>
+    /// The session negotiated <c>ProtocolCapabilities.FingerTouches</c> (both sides advertised it; the client's
+    /// <c>NegotiatedCapabilities</c>). In <see cref="FingerFallbackMode.Cursor"/> a lone finger is then sent as a raw
+    /// touch, with no arming delay and no phone-side tap decision: the Mac's recognizer moves the cursor, clicks and
+    /// drags (ADR-0026). Palm rejection, pen suppression and withdrawn touches are unchanged. No effect in draw mode.
+    /// </summary>
+    public bool FingerTouches { get; init; }
 
     /// <summary>
     /// Cursor mode: a touch that lifts sooner than this after landing (and within <see cref="TapSlop"/>) is a tap,
@@ -129,6 +139,9 @@ public readonly record struct InputFilterResult(bool HasPen, PenSample Pen, int 
 /// starts a contact stroke from where it landed, a left drag until lift. That press never lands exactly on the tap's
 /// point (nudged by one unit if it would), so the host starts the drag with click state 1
 /// (<see cref="TabletEventMath.ClickSlopFor"/>).</para>
+/// <para>Relative cursor (<see cref="FingerFallbackMode.Cursor"/> with <see cref="InputFilterOptions.FingerTouches"/>,
+/// ADR-0026): a lone finger is reported as raw touches like a gesture's, from its first event and until all fingers
+/// lift; nothing is held, armed or replayed (<see cref="PendingDeadline"/> stays null), and the Mac decides taps.</para>
 /// <para>Draw mode (<see cref="FingerFallbackMode.Draw"/>): the finger's samples are contact samples, a stroke. A held
 /// tap landing within <see cref="InputFilterOptions.DoubleTapWindow"/> and <see cref="InputFilterOptions.DoubleTapSlop"/>
 /// of the previous tap is replayed at exactly that tap's point, so the host counts a double-click.</para>
@@ -154,6 +167,7 @@ public sealed class InputFilter
     private readonly byte[] _previousIds = new byte[256];
     private readonly long _tapSlopSq;
     private readonly long _doubleTapSlopSq;
+    private readonly bool _rawLoneFinger; // relative cursor: a lone finger goes out as a touch
     private PenSample[] _held = new PenSample[MaxHeldSamples];
     private PenSample[] _replay = new PenSample[MaxHeldSamples];
     private int _previousCount;
@@ -188,6 +202,8 @@ public sealed class InputFilter
         _options = options ?? new InputFilterOptions();
         _tapSlopSq = SlopSquared(_options.TapSlop);
         _doubleTapSlopSq = SlopSquared(_options.DoubleTapSlop);
+        _rawLoneFinger = !_options.FingerFallbackEnabled
+            || (_options.FingerTouches && _options.FingerMode == FingerFallbackMode.Cursor);
     }
 
     private enum FingerMode : byte
@@ -362,7 +378,7 @@ public sealed class InputFilter
             return Touches(touchesOut, written);
         }
 
-        if (_mode == FingerMode.Touches || !_options.FingerFallbackEnabled)
+        if (_mode == FingerMode.Touches || _rawLoneFinger)
         {
             _mode = FingerMode.Touches;
             return Touches(touchesOut, written);

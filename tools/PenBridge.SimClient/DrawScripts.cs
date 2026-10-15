@@ -16,7 +16,7 @@ internal static class DrawScripts
         [
             "line", "circle", "pressure-ramp", "tilt-sweep", "hover", "button-click", "two-finger-scroll", "pinch", "rotate",
             "two-finger-tap", "smart-zoom", "three-finger-drag", "swipe-up", "swipe-down", "swipe-left", "swipe-right",
-            "four-finger-pinch-in", "four-finger-pinch-out", "page-swipe-left", "page-swipe-right", PacketLoss,
+            "four-finger-pinch-in", "four-finger-pinch-out", "page-swipe-left", "page-swipe-right", "one-finger", PacketLoss,
         ];
 
     /// <summary>
@@ -56,6 +56,7 @@ internal static class DrawScripts
             "page-swipe-right" => PageSwipe(1),
             "four-finger-pinch-in" => FourFingerPinch(300, 120),
             "four-finger-pinch-out" => FourFingerPinch(120, 300),
+            "one-finger" => OneFinger(),
             PacketLoss => Batched(CirclePoints()),
             _ => [],
         };
@@ -305,6 +306,56 @@ internal static class DrawScripts
         }
 
         yield return Frame(null);
+    }
+
+    /// <summary>
+    /// One finger as a relative cursor (ADR-0026; the server must offer FingerTouches): a move right, a pause, a click,
+    /// a double click, then tap and a half: a left drag down and right, released on the lift.
+    /// </summary>
+    private static IEnumerable<ScriptFrame> OneFinger()
+    {
+        for (int i = 0; i <= 30; i++)
+        {
+            yield return Fingers(Finger(1, 400 + (i * 15), 1500)); // move 450 px right
+        }
+
+        yield return new ScriptFrame(null, NoTouches, NoHistory, TimeSpan.FromMilliseconds(600)); // past the double-tap window
+        foreach (ScriptFrame f in OneFingerTap(TimeSpan.FromMilliseconds(600)))
+        {
+            yield return f; // click
+        }
+
+        foreach (ScriptFrame f in OneFingerTap(TimeSpan.FromMilliseconds(150)))
+        {
+            yield return f;
+        }
+
+        foreach (ScriptFrame f in OneFingerTap(TimeSpan.FromMilliseconds(600)))
+        {
+            yield return f; // double click
+        }
+
+        foreach (ScriptFrame f in OneFingerTap(TimeSpan.FromMilliseconds(150)))
+        {
+            yield return f;
+        }
+
+        for (int i = 0; i <= 40; i++)
+        {
+            yield return Fingers(Finger(1, 720 + (i * 6), 1500 + (i * 6))); // tap and a half: drag
+        }
+
+        yield return Frame(null);
+    }
+
+    private static IEnumerable<ScriptFrame> OneFingerTap(TimeSpan after)
+    {
+        for (int i = 0; i < 6; i++)
+        {
+            yield return Fingers(Finger(1, 720 + (i % 2), 1500));
+        }
+
+        yield return new ScriptFrame(null, NoTouches, NoHistory, after);
     }
 
     private static ScriptFrame FourFingers(double cx, double cy, double r) => Fingers(
