@@ -114,7 +114,8 @@ public enum GestureKind : byte
     /// <see cref="GestureEvent.DeltaY"/>: the finger's movement since the previous event in display points, through
     /// <see cref="GestureRecognizerOptions.DragGain"/> and <see cref="GestureRecognizerOptions.DragAcceleration"/>.
     /// Began comes when the finger first moves beyond <see cref="GestureRecognizerOptions.PointerSlop"/> of where it
-    /// landed and carries the whole movement since the landing (the cursor catches up; nothing is lost to the slop).
+    /// landed (beyond <see cref="GestureRecognizerOptions.TapSlop"/> during the first
+    /// <see cref="GestureRecognizerOptions.PointerSettleTime"/>, while a second finger may still land) and carries the whole movement since the landing (the cursor catches up; nothing is lost to the slop).
     /// Only when the phone's finger fallback is on (<see cref="GestureRecognizer.PhoneFingerFallback"/>). Post a mouse-moved event at the current cursor plus the delta, clamped to the displays, for each
     /// Began/Changed. Ended (the finger lifted, or a second finger landed) and Cancelled post nothing.
     /// </summary>
@@ -124,15 +125,15 @@ public enum GestureKind : byte
     /// One-finger tap = left click at the current cursor (ADR-0026). One event with <see cref="GesturePhase.Ended"/>,
     /// emitted on the lift with no delay, and <see cref="GestureEvent.ClickCount"/> = 1, or one more than the previous
     /// Click when this tap landed within <see cref="GestureRecognizerOptions.DoubleTapWindow"/> after it lifted and
-    /// within <see cref="GestureRecognizerOptions.DoubleTapSlop"/> of where it landed (2 = double click, 3 = triple).
+    /// within <see cref="GestureRecognizerOptions.ClickSlop"/> of where it landed (2 = double click, 3 = triple).
     /// Post a left mouse-down and mouse-up at the current cursor with that click state.
     /// </summary>
     Click = 10,
 
     /// <summary>
     /// One-finger "tap and a half" = left drag from the current cursor (ADR-0026): a touch landing within
-    /// <see cref="GestureRecognizerOptions.DoubleTapWindow"/> and <see cref="GestureRecognizerOptions.DoubleTapSlop"/> of
-    /// a Click that then moves beyond <see cref="GestureRecognizerOptions.PointerSlop"/>, or stays down longer than
+    /// <see cref="GestureRecognizerOptions.DoubleTapWindow"/> and <see cref="GestureRecognizerOptions.ClickSlop"/> of
+    /// a Click that then moves beyond the pointer slop (as for PointerMove), or stays down longer than
     /// <see cref="GestureRecognizerOptions.TapMaxDuration"/>. Began: press the left button at the current cursor
     /// (click state 1, never counted as a double click), then move by the deltas (0 when it began by holding still);
     /// Changed: drag by the deltas (same units and gain as PointerMove; Began catches up the movement since landing); Ended (lift, or a second finger landed) or

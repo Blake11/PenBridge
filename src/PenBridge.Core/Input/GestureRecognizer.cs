@@ -103,6 +103,22 @@ public sealed record GestureRecognizerOptions
     /// small so the cursor starts at once; a tap that drifts farther than this is a move, not a click.
     /// </summary>
     public double PointerSlop { get; init; } = 0.015;
+
+    /// <summary>
+    /// One finger: before this much time has passed since it landed, it starts moving the cursor only beyond
+    /// <see cref="TapSlop"/>, because a second finger can still land and make it a two-finger tap or smart zoom (a
+    /// gesture's slop must be at least that of every gesture it can turn into). After it,
+    /// <see cref="PointerSlop"/> applies. Either way PointerMove Began catches up the whole movement. A relaxed second
+    /// finger lands within ~100 ms (the phone's old finger arming delay).
+    /// </summary>
+    public TimeSpan PointerSettleTime { get; init; } = TimeSpan.FromMilliseconds(100);
+
+    /// <summary>
+    /// One finger: how near a touch must land to the previous Click (within <see cref="DoubleTapWindow"/>) to count it
+    /// on (double click) or, if it moves, to drag (tap and a half). Narrower than <see cref="DoubleTapSlop"/> (widened
+    /// for smart zoom), so moving the cursor soon after a click elsewhere stays a move; 5% like ADR-0022.
+    /// </summary>
+    public double ClickSlop { get; init; } = 0.05;
 }
 
 /// <summary>
@@ -143,11 +159,14 @@ public sealed record GestureRecognizerOptions
 /// <para>
 /// <b>One finger</b> (only with <see cref="GestureRecognizerOptions.OneFingerCursor"/> and <see cref="PhoneFingerFallback"/>, ADR-0026): a touch sequence
 /// whose first frame has exactly one contact is a pointer; a finger left over after a multi-finger gesture is never
-/// one. While it stays within <see cref="GestureRecognizerOptions.PointerSlop"/> of where it landed nothing moves; leaving it, the cursor catches up the whole movement.
+/// one. While it stays within <see cref="GestureRecognizerOptions.PointerSlop"/> of where it landed (of
+/// <see cref="GestureRecognizerOptions.TapSlop"/> during <see cref="GestureRecognizerOptions.PointerSettleTime"/>, so a
+/// staggered two-finger tap stays a tap) nothing moves; leaving it, the cursor catches up the whole movement. When every
+/// contact is replaced by new ones within one frame, the old touch sequence ends first.
 /// Lifting within <see cref="GestureRecognizerOptions.TapMaxDuration"/> without leaving the slop emits a Click at once
 /// (after a held two-finger Tap, which happened first). Leaving the slop begins a PointerMove, or a PointerDrag when the
 /// touch landed within <see cref="GestureRecognizerOptions.DoubleTapWindow"/> and
-/// <see cref="GestureRecognizerOptions.DoubleTapSlop"/> of a Click (tap and a half; holding still past the tap duration
+/// <see cref="GestureRecognizerOptions.ClickSlop"/> of a Click (tap and a half; holding still past the tap duration
 /// begins it too); it Ends on the lift. Such a tap instead counts the Click on (ClickCount 2, 3, …). A second finger
 /// ends the one-finger action (Ended; a PointerDrag releases its button) and the fingers start the multi-finger
 /// decision as if they had just landed, so a staggered two-finger tap or scroll still works. Timing uses frame times
@@ -188,6 +207,7 @@ public sealed class GestureRecognizer
     private readonly long _tapMaxUs;
     private readonly long _doubleTapWindowUs;
     private readonly long _jitterUs;
+    private readonly long _pointerSettleUs;
     private readonly byte[] _order = new byte[MaxTrackedContacts];
     private readonly byte[] _scratch = new byte[MaxTrackedContacts];
     private readonly byte[] _ids = new byte[MaxGestureFingers];
@@ -259,6 +279,13 @@ public sealed class GestureRecognizer
         RequireNonNegative(_options.TapSlop, nameof(GestureRecognizerOptions.TapSlop));
         RequireNonNegative(_options.DoubleTapSlop, nameof(GestureRecognizerOptions.DoubleTapSlop));
         RequireNonNegative(_options.PointerSlop, nameof(GestureRecognizerOptions.PointerSlop));
+        RequireNonNegative(_options.ClickSlop, nameof(GestureRecognizerOptions.ClickSlop));
+        if (_options.PointerSettleTime < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "PointerSettleTime must not be negative.");
+        }
+
+        _pointerSettleUs = _options.PointerSettleTime.Ticks / TimeSpan.TicksPerMicrosecond;
         RequireNonNegative(_options.ScrollAxisLockRatio, nameof(GestureRecognizerOptions.ScrollAxisLockRatio));
         RequirePositive(_options.ScrollGain, nameof(GestureRecognizerOptions.ScrollGain));
         RequirePositive(_options.DragGain, nameof(GestureRecognizerOptions.DragGain));
@@ -372,6 +399,13 @@ public sealed class GestureRecognizer
         if (!Mapper.IsConfigured)
         {
             return;
+        }
+
+        if (ReplacesAllContacts(touches))
+        {
+            // Every contact lifted and new ones landed within one frame (a coalesced snapshot or a lost datagram):
+            // end the old touch sequence first, so the new one starts fresh (a lone finger is a pointer, taps count).
+            Process(ReadOnlySpan<TouchSample>.Empty, penInRange, timestampUs);
         }
 
         CheckFrameDeadline(timestampUs);
@@ -528,6 +562,28 @@ public sealed class GestureRecognizer
                 _withdrawnContact[at] = touches[i].Contact;
             }
         }
+    }
+
+    /// <summary>
+    /// Contacts were down, this frame has contacts, none of them was down before, and no touch is withdrawn (those keep
+    /// their own rules).
+    /// </summary>
+    private bool ReplacesAllContacts(ReadOnlySpan<TouchSample> touches)
+    {
+        if (ContactCount == 0 || touches.IsEmpty)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < touches.Length; i++)
+        {
+            if (!touches[i].Contact || Array.IndexOf(_order, touches[i].PointerId, 0, _orderCount) >= 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static int IndexOf(ReadOnlySpan<TouchSample> touches, byte id)
@@ -893,7 +949,7 @@ public sealed class GestureRecognizer
         DisplayPoint p = Mapper.Map(t.X, t.Y);
         _pointerPress = _clickValid
             && timestampUs - _clickLiftUs <= _doubleTapWindowUs
-            && Distance(p, _clickLand) <= _options.DoubleTapSlop * Mapper.ShortSide;
+            && Distance(p, _clickLand) <= _options.ClickSlop * Mapper.ShortSide;
         _clickValid = _pointerPress; // a Click counts on only into the very next touch
         _pointerId = t.PointerId;
         _pointerLand = p;
@@ -950,7 +1006,12 @@ public sealed class GestureRecognizer
         }
 
         DisplayPoint p = Mapper.Map(t.X, t.Y);
-        bool moved = Distance(p, _pointerLand) > _options.PointerSlop * Mapper.ShortSide;
+        // While a second finger may still land, only movement beyond the two-finger tap slop starts the pointer, so a
+        // staggered two-finger tap's first finger never becomes a move (which would end its tap candidate).
+        double slop = timestampUs - _pointerLandUs < _pointerSettleUs
+            ? Math.Max(_options.PointerSlop, _options.TapSlop)
+            : _options.PointerSlop;
+        bool moved = Distance(p, _pointerLand) > slop * Mapper.ShortSide;
         if (moved || (_pointerPress && timestampUs - _pointerLandUs > _tapMaxUs))
         {
             // Beyond the slop it moves (or, as the next touch of a Click, drags); holding still that long drags too.

@@ -222,6 +222,26 @@ public class FingerTouchesTests
         Assert.Equal([1], ClickCounts(h));
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)] // the frame with both fingers: its echo before the first lift still shows both
+    public async Task A_staggered_two_finger_tap_with_a_lost_datagram_is_a_right_click_not_a_click(int lost)
+    {
+        await using NetHarness h = Harness();
+        var drop = new StrongBoxInt { Value = lost };
+        PenBridgeClient client = await h.PairAsync(filter: Dropping(drop), configure: Phone);
+        client.SendState(null, [new TouchSample(1, true, 30000, 20000), new TouchSample(2, true, 36000, 20000)]);
+        await DeliveredAsync(h, client, drop);
+        client.SendState(null, [new TouchSample(2, true, 36000, 20000)]);
+        await DeliveredAsync(h, client, drop);
+        client.SendState(null, Up);
+        await StepAsync(h, client, drop, 14); // past the held tap's double-tap window
+
+        GestureEvent[] gestures = h.Sink.Gestures();
+        Assert.Single(gestures, g => g.Kind == GestureKind.Tap);
+        Assert.DoesNotContain(gestures, g => g.Kind is GestureKind.Click or GestureKind.PointerMove);
+    }
+
     [Fact]
     public void The_negotiated_value_overrides_the_configured_recognizer_option()
     {

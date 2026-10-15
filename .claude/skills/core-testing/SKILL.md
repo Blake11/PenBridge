@@ -61,6 +61,12 @@ Scripted waits depend on these deadlines too: SimClient `DrawScripts.TapSettle` 
 `DoubleTapWindow + TapDeadlineJitterAllowance`, or the script ends before a held two-finger tap fires. Raise it when
 those defaults change.
 
+## Gesture slops
+A new gesture's slop must be at least the slop of every gesture it can still turn into. The one-finger pointer
+(ADR-0026) once started at 1.5% while a staggered two-finger tap tolerates 3.5%, so a drifting first finger became a
+move and killed the right-click. Use the wider slop until the other gesture can no longer start (`PointerSettleTime`),
+and test the drift *between* the two slops.
+
 ## Soak (flaky timing tests)
 Before calling a timing test fixed, run it under full CPU load, in parallel:
 ```bash

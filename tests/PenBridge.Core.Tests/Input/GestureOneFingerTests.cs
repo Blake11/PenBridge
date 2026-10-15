@@ -418,12 +418,80 @@ public class GestureOneFingerTests
     public void The_default_slop_is_about_a_millimetre_of_phone_travel()
     {
         Assert.Equal(0.015, new GestureRecognizerOptions().PointerSlop);
-        _rec = new GestureRecognizer(_sink, new GestureRecognizerOptions { OneFingerCursor = true }) { Mapper = Square };
+        _rec = new GestureRecognizer(_sink, Default) { Mapper = Square };
         Frame(0, F(1, 500, 500));
-        Frame(10, F(1, 514, 500)); // 14 pt of 1000: inside 15
+        Frame(50, F(1, 530, 500)); // 30 pt: past the pointer slop but inside the tap slop while a finger may still land
+        Frame(99, F(1, 534, 500));
         Assert.Empty(Events);
-        Frame(20, F(1, 516, 500));
-        Assert.Equal(GestureKind.PointerMove, Assert.Single(Events).Kind);
+        Frame(100, F(1, 534, 500)); // settled: the 15 pt pointer slop applies, and the cursor catches up all 34 pt
+        GestureEvent began = Assert.Single(Events);
+        Assert.Equal(GestureKind.PointerMove, began.Kind);
+        Assert.Equal(34, began.DeltaX, 0);
+    }
+
+    private static readonly GestureRecognizerOptions Default = new() { OneFingerCursor = true, DragAcceleration = GestureAcceleration.None };
+
+    [Fact]
+    public void A_move_past_the_tap_slop_starts_at_once()
+    {
+        _rec = new GestureRecognizer(_sink, Default) { Mapper = Square };
+        Frame(0, F(1, 500, 500));
+        Frame(8, F(1, 520, 500));
+        Frame(16, F(1, 540, 500)); // 40 pt > 35 pt tap slop after 16 ms
+        GestureEvent began = Assert.Single(Events);
+        Assert.Equal(GestureKind.PointerMove, began.Kind);
+        Assert.Equal(40, began.DeltaX, 0);
+    }
+
+    [Fact]
+    public void A_staggered_two_finger_tap_whose_first_finger_drifts_between_the_slops_still_right_clicks()
+    {
+        _rec = new GestureRecognizer(_sink, Default with { DoubleTapWindow = TimeSpan.Zero }) { Mapper = Square };
+        Frame(0, F(1, 400, 500));
+        Frame(40, F(1, 425, 500)); // 25 pt: beyond the pointer slop, within the tap slop
+        Frame(70, F(1, 428, 500), F(2, 600, 500));
+        Lift(150);
+        Assert.Equal(["Tap"], Names());
+    }
+
+    [Fact]
+    public void The_second_tap_of_a_smart_zoom_may_drift_between_the_slops()
+    {
+        _rec = new GestureRecognizer(_sink, Default) { Mapper = Square };
+        Frame(0, F(1, 400, 500), F(2, 600, 500));
+        Lift(60);
+        Frame(200, F(1, 410, 500));
+        Frame(240, F(1, 432, 500)); // drifts 22 pt before the second finger lands
+        Frame(270, F(1, 432, 500), F(2, 610, 500));
+        Lift(330);
+        Assert.Equal(["SmartZoom.Ended"], Names());
+    }
+
+    [Fact]
+    public void Moving_soon_after_a_click_but_beyond_the_click_slop_is_a_move_not_a_drag()
+    {
+        Tap(0);
+        Frame(200, F(1, 560, 500)); // 60 pt from the click: beyond the 50 pt click slop (the 200 pt smart-zoom slop would drag)
+        Frame(220, F(1, 620, 500));
+        Lift(240);
+        Assert.Equal(["Click1", "PointerMove.Began", "PointerMove.Ended"], Names());
+    }
+
+    [Fact]
+    public void All_fingers_replaced_in_one_frame_start_a_new_sequence()
+    {
+        _rec = new GestureRecognizer(_sink, Default with { DoubleTapWindow = TimeSpan.Zero }) { Mapper = Square };
+        Frame(0, F(1, 400, 500), F(2, 600, 500));
+        Frame(60, F(3, 500, 300)); // both lifted (a tap) and a new lone finger landed, in one snapshot
+        Frame(80, F(3, 560, 300));
+        Lift(100);
+        Assert.Equal(["Tap", "PointerMove.Began", "PointerMove.Ended"], Names());
+
+        _sink.Clear();
+        Frame(200, F(4, 500, 500));
+        Frame(250, F(5, 500, 500)); // a lone finger replaced by another: a click, then a new pointer
+        Lift(280);
+        Assert.Equal(["Click1", "Click2"], Names()); // the second landed on the first click's spot within the window
     }
 
     [Fact]

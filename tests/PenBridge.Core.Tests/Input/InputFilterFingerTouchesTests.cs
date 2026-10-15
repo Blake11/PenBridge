@@ -91,6 +91,33 @@ public class InputFilterFingerTouchesTests
     }
 
     [Fact]
+    public void All_fingers_replaced_in_one_snapshot_still_reach_the_mac_as_a_new_pointer()
+    {
+        // The filter keeps a lone finger that replaces a gesture's fingers in one snapshot as a touch; the recognizer
+        // sees every earlier contact gone and starts a new touch sequence, so it is a pointer.
+        var f = new InputFilter(Relative);
+        var sink = new RecordingSink();
+        var rec = new GestureRecognizer(sink, new GestureRecognizerOptions { OneFingerCursor = true, DoubleTapWindow = TimeSpan.Zero })
+        {
+            Mapper = new CoordinateMapper(1000, 1000, new DisplayRect(0, 0, 1000, 1000)),
+        };
+
+        void Feed(double ms, params RawTouch[] raw)
+        {
+            InputFilterResult r = f.Process(Ms(ms), null, raw, _out);
+            rec.Process(_out.AsSpan(0, r.TouchCount), false, (long)(ms * 1000));
+        }
+
+        Feed(0, Finger(1, 20000), Finger(2, 30000));
+        Feed(40, Finger(3, 40000));
+        Feed(60, Finger(3, 45000));
+        Feed(80);
+        Assert.Equal(
+            [GestureKind.Tap, GestureKind.PointerMove, GestureKind.PointerMove],
+            sink.Gestures.Where(g => g.Kind != GestureKind.TouchDown).Select(g => g.Kind).ToArray());
+    }
+
+    [Fact]
     public void Draw_mode_ignores_the_option()
     {
         var f = new InputFilter(Relative with { FingerMode = FingerFallbackMode.Draw, FingerFallbackArmDelay = TimeSpan.Zero });
