@@ -28,7 +28,7 @@ internal sealed class OrderedSink : IInputSink
 /// event → phone <see cref="InputFilter"/> (with the head's arm timer: <see cref="InputFilter.PendingDeadline"/> re-run
 /// at the ceiling millisecond) → frames as the head queues them (replays split into 8-sample history batches, nothing
 /// sent while a lone finger is held) → the client's keepalives (40 ms while touching, 200 ms while hovering, two
-/// release repeats) → <see cref="InputPayload"/> write/read round-trip → Mac <see cref="PenStateTracker"/> and its
+/// release repeats; withdrawn touches don't count as contact) → <see cref="InputPayload"/> write/read round-trip → Mac <see cref="PenStateTracker"/> and its
 /// <see cref="GestureRecognizer"/> with the tracker's watchdog/held-tap timer. Zero network latency; the Mac clock
 /// follows the phone clock. Times are whole milliseconds since the session started.
 /// Not modelled: network latency, jitter and loss, and PadSendQueue coalescing (a full queue overwrites its newest
@@ -263,7 +263,7 @@ internal sealed class GesturePipeline
         _lastPen = pen;
         touches.CopyTo(_lastTouches);
         _lastTouchCount = touches.Length;
-        bool contact = touches.Length > 0 || (pen is { } p && (p.State & PenState.Contact) != 0);
+        bool contact = HasContact(touches) || (pen is { } p && (p.State & PenState.Contact) != 0);
         bool active = contact || (pen is { } h && (h.State & PenState.InRange) != 0);
         if (!active && _wasActive)
         {
@@ -275,6 +275,20 @@ internal sealed class GesturePipeline
         ArmKeepalive(t, contact, active);
     }
 
+    /// <summary>Withdrawn touches (Contact=false) don't keep the contact keepalive running, as in PenBridgeClient.</summary>
+    private static bool HasContact(ReadOnlySpan<TouchSample> touches)
+    {
+        foreach (TouchSample t in touches)
+        {
+            if (t.Contact)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private void ArmKeepalive(TimeSpan t, bool contact, bool active) =>
         _keepaliveAt = contact ? t + ContactKeepalive
             : active ? t + HoverKeepalive
@@ -284,7 +298,7 @@ internal sealed class GesturePipeline
     private void OnKeepalive(TimeSpan t)
     {
         _keepaliveAt = null;
-        bool contact = _lastTouchCount > 0 || (_lastPen is { } p && (p.State & PenState.Contact) != 0);
+        bool contact = HasContact(_lastTouches.AsSpan(0, _lastTouchCount)) || (_lastPen is { } p && (p.State & PenState.Contact) != 0);
         bool active = contact || (_lastPen is { } h && (h.State & PenState.InRange) != 0);
         if (!active)
         {

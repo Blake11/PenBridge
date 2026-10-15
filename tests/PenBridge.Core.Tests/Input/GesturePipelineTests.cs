@@ -306,7 +306,7 @@ public class GesturePipelineTests
 
     // ---- Palm ----
 
-    [Fact(Skip = "#114 (needs a wire signal): the filter drops the palm-suppressed touches, which the Mac reads as a quick two-finger lift, a Tap")]
+    [Fact]
     public void Palm_landing_right_after_two_fingers_is_no_right_click()
     {
         TwoFingers(0, 20);
@@ -317,7 +317,7 @@ public class GesturePipelineTests
         Assert.Equal(["TouchDown"], _p.Names());
     }
 
-    [Fact(Skip = "#114 (needs a wire signal): a canceled two-finger touch reaches the Mac as a quick lift, a Tap")]
+    [Fact]
     public void Platform_cancel_right_after_two_fingers_is_no_right_click()
     {
         TwoFingers(0, 20);
@@ -328,16 +328,45 @@ public class GesturePipelineTests
     }
 
     [Fact]
-    public void Platform_cancel_mid_scroll_ends_it_and_cursor_mode_recovers()
+    public void Platform_cancel_mid_scroll_cancels_it_without_momentum()
     {
         TwoFingers(0, 20);
         _p.Glide(50, 200, 0, 120);
         _p.CancelAll(260);
+        _p.Wait(500);
+        int frames = _p.Frames;
         _p.Wait(1000);
 
+        Assert.Equal(frames, _p.Frames); // the withdrawn state is repeated twice, then the phone goes quiet
         Assert.Empty(_p.PenEvents());
-        Assert.Equal(["TouchDown", "Scroll.Began", "Scroll.Changed", "Scroll.Ended"], Collapsed(_p.Events));
+        Assert.Equal(["TouchDown", "Scroll.Began", "Scroll.Changed", "Scroll.Cancelled"], Collapsed(_p.Events));
+        Assert.False(Coasts(_p.GestureEvents()));
         AssertCursorModeStillWorks(2000);
+    }
+
+    [Fact]
+    public void Gesture_right_after_a_platform_cancel_starts_normally()
+    {
+        TwoFingers(0, 20);
+        _p.CancelAll(50); // ACTION_CANCEL: no empty frame follows, the Mac last saw the withdrawn touches
+        int from = _p.Events.Count;
+        TwoFingers(400, 20);
+        _p.Glide(450, 240, 0, 120);
+        _p.Up(700, 0, 1);
+
+        Assert.Equal(["TouchDown"], _p.Names()[..from]);
+        Assert.Equal(["TouchDown", "Scroll.Began", "Scroll.Changed", "Scroll.Ended"], Collapsed(_p.Events.Skip(from)));
+    }
+
+    private static bool Coasts(IEnumerable<GestureEvent> events)
+    {
+        var momentum = new ScrollMomentum();
+        foreach (GestureEvent g in events)
+        {
+            momentum.Observe(g);
+        }
+
+        return momentum.IsCoasting;
     }
 
     [Fact]
@@ -372,7 +401,7 @@ public class GesturePipelineTests
     }
 
     [Fact]
-    public void Palm_landing_mid_scroll_ends_the_scroll()
+    public void Palm_landing_mid_scroll_cancels_it_without_momentum()
     {
         TwoFingers(0, 20);
         _p.Glide(50, 200, 0, 120);
@@ -383,7 +412,8 @@ public class GesturePipelineTests
         _p.Wait(1000);
 
         Assert.Empty(_p.PenEvents());
-        Assert.Equal(["TouchDown", "Scroll.Began", "Scroll.Changed", "Scroll.Ended"], Collapsed(_p.Events));
+        Assert.Equal(["TouchDown", "Scroll.Began", "Scroll.Changed", "Scroll.Cancelled"], Collapsed(_p.Events));
+        Assert.False(Coasts(_p.GestureEvents()));
         AssertCursorModeStillWorks(2000);
     }
 

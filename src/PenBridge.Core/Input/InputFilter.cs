@@ -95,10 +95,15 @@ public readonly record struct InputFilterResult(bool HasPen, PenSample Pen, int 
 /// <remarks>
 /// <para>Pen: while the pen is in range or in contact, and for <see cref="InputFilterOptions.PenSuppression"/>
 /// afterwards, touches are suppressed. A finger that landed during suppression, or was canceled by the platform,
-/// stays suppressed until it lifts (a resting palm never leaks through).</para>
+/// stays suppressed until it lifts (a resting palm never leaks through). When every pointer of a call was canceled
+/// (the platform canceled the whole stream), they all count as lifted next call: ids seen again are new fingers.</para>
 /// <para>Palm: a contact with <see cref="RawTouch.Size"/> at or above <see cref="InputFilterOptions.PalmSizeThreshold"/>
 /// suppresses every touch until all fingers lift, then for <see cref="InputFilterOptions.PalmSuppression"/>; a finger
 /// landing in that window is suppressed until it lifts and restarts the window.</para>
+/// <para>Withdrawn touches (ADR-0024): a touch already sent as a contact that then gets suppressed (palm, platform
+/// cancel, pen suppression after the pen left) stays in every touch result as present with <c>Contact=false</c> until
+/// that pointer lifts, so the Mac cancels the gesture instead of reading a lift (a tap, or a scroll's momentum). Pen
+/// samples carry no touches. A touch never sent (a palm itself, a finger landing while suppressed) is never reported.</para>
 /// <para>Finger fallback: with no pen, a lone finger is held for <see cref="InputFilterOptions.FingerFallbackArmDelay"/>.
 /// If a second finger lands first, it is a gesture: the held samples are dropped and the fingers are reported as raw
 /// touches until all lift. Otherwise the finger arms and the held samples are replayed
@@ -137,7 +142,9 @@ public sealed class InputFilter
 
     private readonly InputFilterOptions _options;
     private readonly bool[] _suppressed = new bool[256];
+    private readonly bool[] _reported = new bool[256]; // sent as a contact touch since it landed (ADR-0024)
     private readonly bool[] _present = new bool[256];
+    private bool _allCanceled; // the previous call's pointers were all canceled (the platform canceled the stream)
     private readonly byte[] _previousIds = new byte[256];
     private readonly long _tapSlopSq;
     private readonly long _doubleTapSlopSq;
@@ -285,7 +292,7 @@ public sealed class InputFilter
         {
             SuppressAll(touches);
             ClearFingerMode();
-            return default;
+            return new InputFilterResult(false, default, WriteWithdrawn(touches, touchesOut));
         }
 
         int active = 0;
@@ -302,6 +309,12 @@ public sealed class InputFilter
 
             if (_suppressed[t.PointerId] || !t.Contact)
             {
+                if (_reported[t.PointerId] && written < limit)
+                {
+                    // Already sent as a touch: stays on the wire as not in contact until it lifts (ADR-0024).
+                    touchesOut[written++] = new TouchSample(t.PointerId, false, t.X, t.Y);
+                }
+
                 continue;
             }
 
@@ -321,27 +334,27 @@ public sealed class InputFilter
                 {
                     // The finger was canceled (or suppressed), not lifted: never a tap.
                     ClearFingerMode();
-                    return default;
+                    return new InputFilterResult(false, default, written);
                 }
 
                 return FinishFinger(timestamp);
             }
 
             _mode = FingerMode.Idle;
-            return default;
+            return new InputFilterResult(false, default, written);
         }
 
         if (active >= 2)
         {
             ClearFingerMode();
             _mode = FingerMode.Touches;
-            return new InputFilterResult(false, default, written);
+            return Touches(touchesOut, written);
         }
 
         if (_mode == FingerMode.Touches || !_options.FingerFallbackEnabled)
         {
             _mode = FingerMode.Touches;
-            return new InputFilterResult(false, default, written);
+            return Touches(touchesOut, written);
         }
 
         if (_mode is FingerMode.Holding or FingerMode.Pointer && single.PointerId != _heldId)
@@ -391,6 +404,8 @@ public sealed class InputFilter
     public void Reset()
     {
         Array.Clear(_suppressed);
+        Array.Clear(_reported);
+        _allCanceled = false;
         _previousCount = 0;
         _penSeen = false;
         _lastPenTime = default;
@@ -619,19 +634,26 @@ public sealed class InputFilter
     /// <summary>Un-suppresses ids that were present in the previous call but are gone now (the finger lifted).</summary>
     private void ForgetLiftedPointers(ReadOnlySpan<RawTouch> touches)
     {
+        bool allCanceled = touches.Length > 0;
         for (int i = 0; i < touches.Length; i++)
         {
             _present[touches[i].PointerId] = true;
+            allCanceled &= touches[i].Canceled;
         }
 
         for (int i = 0; i < _previousCount; i++)
         {
+            // Lifted, or the whole stream was canceled last time (Android ACTION_CANCEL: every pointer is gone after
+            // it and ids restart, so an id seen again is a new finger; one still canceled is suppressed again).
             byte id = _previousIds[i];
-            if (!_present[id])
+            if (!_present[id] || _allCanceled)
             {
                 _suppressed[id] = false;
+                _reported[id] = false;
             }
         }
+
+        _allCanceled = allCanceled;
 
         // Record this call's distinct ids and clear the presence marks again.
         _previousCount = 0;
@@ -644,6 +666,37 @@ public sealed class InputFilter
                 _previousIds[_previousCount++] = id;
             }
         }
+    }
+
+    /// <summary>Raw touches to send: marks the contacts as reported, so a later suppression keeps them on the wire.</summary>
+    private InputFilterResult Touches(ReadOnlySpan<TouchSample> touchesOut, int written)
+    {
+        for (int i = 0; i < written; i++)
+        {
+            if (touchesOut[i].Contact)
+            {
+                _reported[touchesOut[i].PointerId] = true;
+            }
+        }
+
+        return new InputFilterResult(false, default, written);
+    }
+
+    /// <summary>Writes every reported (already-sent) touch as not in contact; returns the count (ADR-0024).</summary>
+    private int WriteWithdrawn(ReadOnlySpan<RawTouch> touches, Span<TouchSample> touchesOut)
+    {
+        int limit = Math.Min(touchesOut.Length, MaxTouches);
+        int written = 0;
+        for (int i = 0; i < touches.Length && written < limit; i++)
+        {
+            RawTouch t = touches[i];
+            if (_reported[t.PointerId])
+            {
+                touchesOut[written++] = new TouchSample(t.PointerId, false, t.X, t.Y);
+            }
+        }
+
+        return written;
     }
 
     private void SuppressAll(ReadOnlySpan<RawTouch> touches)

@@ -290,8 +290,25 @@ public sealed class PenBridgeClient : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// The pen or a touch is in contact. A touch withdrawn by the phone filter (present, <c>Contact=false</c>, ADR-0024)
+    /// is not: after a platform cancel no further input event may come, so its state must not be resent forever.
+    /// </summary>
     private static bool InContact(Connection c) =>
-        c.LastTouchCount > 0 || (c.LastPen is { } p && (p.State & PenState.Contact) != 0);
+        HasContactTouch(c) || (c.LastPen is { } p && (p.State & PenState.Contact) != 0);
+
+    private static bool HasContactTouch(Connection c)
+    {
+        for (int i = 0; i < c.LastTouchCount; i++)
+        {
+            if (c.LastTouches[i].Contact)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static bool IsActive(Connection c) =>
         InContact(c) || (c.LastPen is { } p && (p.State & PenState.InRange) != 0);
