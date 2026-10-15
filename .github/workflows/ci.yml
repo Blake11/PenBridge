@@ -63,9 +63,14 @@ jobs:
               - 'global.json'
               - 'PenBridge.slnx'
               - '.editorconfig'
+            # The macOS job runs gen-icons.sh --check, so it also covers the icon masters and the
+            # Android files the generator writes (a hand edit there would otherwise go unchecked).
             mac:
               - *core
               - 'src/PenBridge.Mac/**'
+              - 'assets/icon/**'
+              - 'src/PenBridge.Android/Resources/drawable/ic_launcher_*.xml'
+              - 'src/PenBridge.Android/Resources/mipmap-anydpi-v26/ic_launcher*.xml'
             android:
               - *core
               - 'src/PenBridge.Android/**'
@@ -138,6 +143,15 @@ jobs:
           path: ${{ env.NUGET_PACKAGES }}
           key: nuget-${{ runner.os }}-mac-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.Build.props', '**/Directory.Packages.props') }}
           restore-keys: nuget-${{ runner.os }}-mac-
+
+      # Generated icons (Android drawables, Mac AppIcon.icon + MenuBar imagesets) must match the
+      # masters in assets/icon (issue #103). Needs actool, not the workload, so it runs first.
+      - name: Check generated icons
+        run: |
+          if ! scripts/gen-icons.sh --check; then
+            echo "::error title=Stale generated icons::Generated icon assets differ from assets/icon: run scripts/gen-icons.sh and commit the result"
+            exit 1
+          fi
 
       - name: Install macOS workload
         run: dotnet workload install macos
