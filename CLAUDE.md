@@ -7,7 +7,7 @@ Turns a phone (primary: Samsung Galaxy S23 Ultra + S Pen) into a pressure-sensit
 | Doc | What |
 |---|---|
 | `docs/architecture.md` | Components, protocol, platform details, roadmap (phases 0–5, each ends with a release) |
-| `docs/decisions.md` | ADRs — append-only; supersede, never rewrite |
+| `docs/decisions.md` | ADRs with a one-line index at the top; amend in place until released, then append-only (supersede) |
 | `docs/development.md` | Toolchain setup, build/run/debug per platform |
 | `docs/releasing.md` | release-please + build-release pipeline |
 | `CONTRIBUTING.md` | Human-facing conventions |
@@ -44,16 +44,22 @@ scripts/mac-run.sh [--release] [--no-build] [--reset-tcc] [--logs]
 scripts/android-emulator.sh [--headless|--stop|--recreate]   # AVD PenBridge_Tablet
 scripts/android-device.sh pair <ip:port> <code> | connect <ip:port>|--auto | list   # wireless adb to the S23
 scripts/android-run.sh [--emulator|--device <ip:port>] [--apk] [--app-id <id>] [--logs|--logs-only]   # AVD_NAME=… per agent
+scripts/device-preflight.sh     # screen unlocked, adb device, Accessibility, server listening, gh scopes; non-zero + hint (run before device/injection work)
+scripts/device-test-setup.sh    # preflight + Release Mac app + Android install + reconnect check + latency/log captures; prints PIDs and stop command
+scripts/ship-pr.sh <worktree> <title> <body-file> [--merge]   # rebase, attribution check, test, push, PR, wait for checks, (merge), copy ws-*.md, remove worktree
 ```
 
 ## How we work: the main session is the architect
 
 - **Do not implement in the main session.** Clarify every ambiguity with the user *before* delegating — this is a hard gate. Ask, don't assume.
-- Record decisions as ADRs (`docs/decisions.md`, skill `adr`); update `docs/architecture.md` when the design changes.
+- **One architect session per phase**: start each phase fresh; `progress.md` + the epic issue are the handoff.
+- Record decisions as ADRs (`docs/decisions.md`, skill `adr`): amend in place (`Amended YYYY-MM-DD (#n): …`) until the release containing the ADR ships, append-only (supersede) afterwards; keep the index current. Cite ADR numbers/sections in prompts. Update `docs/architecture.md` when the design changes.
 - **Issues drive the work** (ADR-0014, skill `issues`): each phase is an epic issue + milestone; each workstream gets an issue *before* delegation, and its number goes in the subagent prompt. Bugs found by agents/reviewers and not fixed in the same PR become `type: bug` issues.
 - Keep `.claude/progress/<feature>/` for every feature/part being developed (skill `progress-tracking`). `progress.md` is the **architect's only**: goal, decisions, workstream table with issue numbers, open questions, next steps. Each workstream agent writes only its own `ws-<id>.md` (status, notes, follow-ups, learnings) and never edits `progress.md`.
-- Split work into workstreams with **disjoint file ownership**, then delegate to subagents (`.claude/agents/`: core-dev, mac-dev, android-dev, ci-dev, reviewer) to save context. Review the results; run `reviewer` before a PR.
-- Multi-agent sessions: one branch + worktree per workstream (Agent `isolation: "worktree"` or `git worktree add .claude/worktrees/<branch> -b <branch> origin/main`), merged back via PRs (skill `parallel-worktrees`).
+- Split work into workstreams with **disjoint file ownership** (cross-layer: fix the contract in the issues first, then Core and heads start together; small features < ~150 lines: one cross-head agent), then delegate to subagents (`.claude/agents/`: core-dev, mac-dev, android-dev, ci-dev, reviewer, reviewer-quick) to save context. Stable rules live in the agent definitions; prompts carry only the task. Pick the model per task (skill `feature-workflow` step 5). Review before every PR: `reviewer-quick` for < ~50-line diffs outside protocol/security/pairing/injection, `reviewer` otherwise.
+- Fix rounds use a fresh agent briefed from its `ws-*.md`; resume an agent only for small (< ~50 lines) changes.
+- Agents may fix comment- or doc-reference-only lines in files they don't own, and must report each one.
+- Multi-agent sessions: one branch + worktree per workstream, **pre-created by the architect** (`git fetch origin && git worktree add .claude/worktrees/<b> -b <b> origin/main`, path passed in the prompt; not `isolation: "worktree"`), merged back via PRs and cleaned up after merge — copy `ws-*.md` out, `git worktree remove`, `git branch -D` — or `scripts/ship-pr.sh` (skill `parallel-worktrees`). Never `cd` into a worktree in the shared shell (a hook warns); use absolute paths / `git -C`.
 - End-to-end flow: skill `feature-workflow`.
 - Anything learned with long-term value becomes or updates a project skill (skill `capture-skill`). When a skill is wrong, fix it.
 
@@ -83,7 +89,7 @@ scripts/android-run.sh [--emulator|--device <ip:port>] [--apk] [--app-id <id>] [
 
 - **Core**: `scripts/test.sh` — always run before handing back Core changes.
 - **Setup**: sudo workload installs, Xcode 27 setup, `mac-dev-cert.sh` and adb pairing are user steps (skill `toolchain`).
-- **Mac**: needs the Accessibility permission (TCC). Sign with the dev cert so rebuilds keep the grant; `--reset-tcc` if it gets stuck. Verify pressure/tilt in a pressure-aware app (Krita). Skill `mac-build-run`.
+- **Mac**: needs the Accessibility permission (TCC). Sign with the dev cert so rebuilds keep the grant; `--reset-tcc` if it gets stuck. The Bash sandbox blocks keychain signing: `.claude/settings.json` `sandbox.excludedCommands` runs `scripts/mac-run.sh`, `mac-sign.sh`, `device-test-setup.sh`, Mac builds and `codesign` unsandboxed (only those exact command forms, not chained or `cd`-prefixed). Verify pressure/tilt in a pressure-aware app (Krita). Skill `mac-build-run`.
 - **Android**: emulator (`PenBridge_Tablet`) for UI/flow — no stylus, no mDNS (Mac = `10.0.2.2`, manual host entry is dev-only). **Real S23 Ultra over wireless adb** for stylus and discovery. Skill `android-build-run`.
 - Without a phone: `tools/PenBridge.SimClient` drives the Mac server.
 - Only one agent uses a physical device at a time (the architect grants turns); parallel emulator agents use their own AVD and ApplicationId.

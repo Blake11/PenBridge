@@ -23,7 +23,7 @@ scripts/test.sh && dotnet build PenBridge.slnx
 git log --oneline origin/main..HEAD
 git diff origin/main...HEAD --stat
 ```
-Run the `reviewer` agent before every PR.
+Review before every PR: `reviewer-quick` (sonnet) for diffs under ~50 lines that touch no protocol, security, pairing/crypto or input injection; the full `reviewer` (opus) otherwise or when the quick one escalates.
 
 **Stale remote branch:** check `git ls-remote --heads origin <branch>` first. If one is left from an earlier attempt, the push is rejected while `gh pr create` still opens a PR against the old remote commit. Force-push is denied, so reconcile without rewriting:
 ```bash
@@ -31,6 +31,12 @@ git fetch origin <branch>
 git merge -s ours origin/<branch> -m "chore: reconcile with stale remote branch"   # keeps our tree
 git diff <reviewed-sha> HEAD          # must be empty: the pushed tree is the reviewed one
 ```
+
+## Ship with `scripts/ship-pr.sh` (worktree workstreams)
+```bash
+scripts/ship-pr.sh <worktree> "<type>(scope): subject" <body-file>   # after the user approves pushing
+```
+Rebases onto origin/main, refuses AI-attribution lines, runs `scripts/test.sh`, pushes (refusing a stale remote branch, see above), `gh pr create`, waits for every check, squash-merges only with `--merge` (only when the user approved merging), copies `.claude/progress/**/ws-*.md` into the main tree and removes the worktree and its local branches. The manual steps below are the fallback.
 
 ## Create
 ```bash
