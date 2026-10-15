@@ -54,7 +54,8 @@ public enum GestureKind : byte
 {
     /// <summary>
     /// Two-finger pan (exclusive of Pinch): Began / Changed with relative, accelerated deltas, then Ended (momentum may
-    /// follow) or Cancelled. Act at the current cursor.
+    /// follow) or Cancelled. Act at the current cursor. A scroll that starts straight enough is locked to that axis
+    /// (<see cref="GestureRecognizerOptions.ScrollAxisLockRatio"/>): the other delta is 0 in all its events.
     /// </summary>
     Scroll = 1,
 

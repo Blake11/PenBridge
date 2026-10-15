@@ -24,6 +24,16 @@ public sealed record GestureRecognizerOptions
     /// <summary>Speed-dependent gain on scroll deltas (momentum then coasts on the accelerated deltas).</summary>
     public GestureAcceleration ScrollAcceleration { get; init; } = new();
 
+    /// <summary>
+    /// Axis lock for a two-finger scroll, decided by the movement that starts it (the one crossing
+    /// <see cref="ScrollThreshold"/>): if the cross-axis movement is at most this ratio of the main-axis movement, the
+    /// scroll carries only the main axis until it ends (the other delta is 0 in every event, so momentum coasts along
+    /// it only); otherwise (diagonal) both axes stay free. 0.5 is about 27° off the axis. Fingers drift a little across
+    /// a straight swipe, and a horizontal scroll with vertical drift scrolls a vertical-only view (Finder icon view,
+    /// #123). 0 locks only an exactly straight start. Must be finite and not negative.
+    /// </summary>
+    public double ScrollAxisLockRatio { get; init; } = 0.5;
+
     /// <summary>Three fingers: centroid travel that starts a drag.</summary>
     public double DragThreshold { get; init; } = 0.02;
 
@@ -110,7 +120,8 @@ public sealed record GestureRecognizerOptions
 /// <b>Two fingers.</b> Pinch is a pinch/rotate transform: it wins when the spread change crosses
 /// <see cref="GestureRecognizerOptions.PinchThreshold"/> or the rotation arc crosses
 /// <see cref="GestureRecognizerOptions.RotationThreshold"/>, and that quantity is at least the centroid travel.
-/// Otherwise centroid travel beyond <see cref="GestureRecognizerOptions.ScrollThreshold"/> is a scroll (exclusive).
+/// Otherwise centroid travel beyond <see cref="GestureRecognizerOptions.ScrollThreshold"/> is a scroll (exclusive),
+/// locked to one axis when it starts straight enough (<see cref="GestureRecognizerOptions.ScrollAxisLockRatio"/>).
 /// <b>Four fingers</b> use the same rule: spread change ≥ travel and past its threshold is a SystemPinch, otherwise
 /// travel past its threshold is a SystemSwipe along the dominant axis.
 /// </para>
@@ -201,6 +212,7 @@ public sealed class GestureRecognizer
     private long _prevUs;
     private double _rotationSinceStart;
     private double _speed;
+    private ScrollAxis _scrollAxis;
     private GestureDirection _direction;
     private double _progress;
 
@@ -245,6 +257,7 @@ public sealed class GestureRecognizer
         RequireNonNegative(_options.TapSlop, nameof(GestureRecognizerOptions.TapSlop));
         RequireNonNegative(_options.DoubleTapSlop, nameof(GestureRecognizerOptions.DoubleTapSlop));
         RequireNonNegative(_options.PointerSlop, nameof(GestureRecognizerOptions.PointerSlop));
+        RequireNonNegative(_options.ScrollAxisLockRatio, nameof(GestureRecognizerOptions.ScrollAxisLockRatio));
         RequirePositive(_options.ScrollGain, nameof(GestureRecognizerOptions.ScrollGain));
         RequirePositive(_options.DragGain, nameof(GestureRecognizerOptions.DragGain));
         ArgumentNullException.ThrowIfNull(_options.ScrollAcceleration, nameof(GestureRecognizerOptions.ScrollAcceleration));
@@ -260,6 +273,14 @@ public sealed class GestureRecognizer
 
         _tapMaxUs = _options.TapMaxDuration.Ticks / TimeSpan.TicksPerMicrosecond;
         _doubleTapWindowUs = _options.DoubleTapWindow.Ticks / TimeSpan.TicksPerMicrosecond;
+    }
+
+    /// <summary>The axis a scroll is locked to (<see cref="GestureRecognizerOptions.ScrollAxisLockRatio"/>).</summary>
+    private enum ScrollAxis : byte
+    {
+        Free,
+        Horizontal,
+        Vertical,
     }
 
     private enum State : byte
@@ -645,6 +666,7 @@ public sealed class GestureRecognizer
             {
                 double rx = center.X - _prevCenter.X;
                 double ry = center.Y - _prevCenter.Y;
+                LockAxis(ref rx, ref ry);
                 if (rx != 0 || ry != 0)
                 {
                     long dt = Math.Clamp(timestampUs - _prevUs, MinSpeedIntervalUs, MaxSpeedIntervalUs);
@@ -776,9 +798,38 @@ public sealed class GestureRecognizer
     private void BeginRelative(State state, double dx, double dy, double travel, DisplayPoint center, long timestampUs)
     {
         Lock(state, timestampUs);
+        _scrollAxis = ScrollAxis.Free;
+        if (state == State.Scrolling)
+        {
+            double ratio = _options.ScrollAxisLockRatio;
+            _scrollAxis = Math.Abs(dy) <= ratio * Math.Abs(dx) ? ScrollAxis.Horizontal
+                : Math.Abs(dx) <= ratio * Math.Abs(dy) ? ScrollAxis.Vertical
+                : ScrollAxis.Free;
+            LockAxis(ref dx, ref dy);
+            travel = Math.Sqrt((dx * dx) + (dy * dy));
+        }
+
         _speed = travel * 1e6 / Math.Max(timestampUs - _startUs, MinSpeedIntervalUs);
         double gain = Gain(_speed);
         Emit(GesturePhase.Began, dx * gain, dy * gain, 1, 0, center, synthetic: false, timestampUs);
+    }
+
+    /// <summary>Zeroes the cross-axis delta of an axis-locked scroll (only a Scrolling gesture is ever locked).</summary>
+    private void LockAxis(ref double dx, ref double dy)
+    {
+        if (_state != State.Scrolling)
+        {
+            return;
+        }
+
+        if (_scrollAxis == ScrollAxis.Horizontal)
+        {
+            dy = 0;
+        }
+        else if (_scrollAxis == ScrollAxis.Vertical)
+        {
+            dx = 0;
+        }
     }
 
     /// <summary>Locks the gesture kind: a gesture began, so this touch sequence is no tap and a held tap is emitted first.</summary>
