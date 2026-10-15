@@ -85,12 +85,12 @@ Everything marked ✅ works end to end, checked on a Galaxy S23 Ultra with a Mac
 - ✅ 🫧 **Hover**: the cursor follows the pen before it touches the screen
 - ✅ 🔘 **S Pen side button**: right-click while hovering, a right-button drag while the tip touches
 - ✅ 🖐️ **Palm rejection**: pen first, so fingers and palms are ignored while the pen is near
-- ✅ 👆 **Finger cursor mode**: one finger moves the cursor, tap to click, double-tap to double-click, double-tap and hold to drag. Switch it to **Draw** to paint with a finger instead
+- ✅ 👆 **Finger cursor mode**: one finger moves the cursor like a trackpad, relative to where it is ([ADR-0026](docs/decisions.md#adr-0026--one-finger-moves-the-cursor-relatively-like-a-trackpad-fingertouches-protocol-11)): tap to click, double-tap to double-click, tap-and-a-half to drag. Switch it to **Draw** to paint with a finger instead
 - ✅ ⚡ **Low latency** over UDP, keeping the S Pen's historical samples: about **3 ms** median and **8 ms** p95 from the phone sending a sample to the Mac injecting it, over Wi-Fi ([numbers](#how-fast-is-it))
 
 **Gestures**, like a Mac trackpad ([ADR-0023](docs/decisions.md#adr-0023--trackpad-parity-gestures-on-the-mac), [table](#4-gestures))
 
-- ✅ ✌️ **Two fingers**: scroll with momentum, swipe between pages, pinch to zoom and rotate, tap to right-click, double-tap for smart zoom
+- ✅ ✌️ **Two fingers**: scroll with momentum, swipe between pages, pinch to zoom and rotate, tap to right-click, double-tap for smart zoom (following the macOS Smart Zoom setting; with it off, right-click is instant)
 - ✅ 🤟 **Three-finger drag**: move windows and select text
 - ✅ 🖐️ **Four fingers**: Mission Control, App Exposé, switch Spaces, show desktop and the Apps launcher
 - ✅ 🎯 **Acts at the cursor**, which stays put; scroll direction follows the macOS natural-scrolling setting
@@ -122,7 +122,7 @@ Everything marked ✅ works end to end, checked on a Galaxy S23 Ultra with a Mac
 
 ## Status
 
-**Beta, 1.1.0.** Phase 4 is done: two to four fingers now work like a Mac trackpad, and both apps have their own icon. The gestures were checked on the Mac in Safari and Preview (scroll and momentum, swipe between pages, zoom, rotate, smart zoom, right-click, three-finger drag and the four-finger gestures), with the on-device check on the S23 Ultra in [#110](https://github.com/Blake11/PenBridge/issues/110). Phase 3 (1.0.0) was verified on a Galaxy S23 Ultra against the release build of the Mac app ([#66](https://github.com/Blake11/PenBridge/issues/66)). 1.1.0 also recovers a finger tap whose datagram is lost ([#92](https://github.com/Blake11/PenBridge/issues/92)) and cancels a gesture when a palm touches down ([#114](https://github.com/Blake11/PenBridge/issues/114)). The wire protocol is now 1.1; 1.0.0 phones and Macs still work with 1.1.0 ones.
+**Beta, 1.1.0.** Phase 4 is done: two to four fingers now work like a Mac trackpad, and both apps have their own icon. The gestures were checked on the Mac in Safari and Preview (scroll and momentum, swipe between pages, zoom, rotate, smart zoom, right-click, three-finger drag and the four-finger gestures), and on the S23 Ultra against the release build of the Mac app ([#110](https://github.com/Blake11/PenBridge/issues/110)). One finger now moves the cursor relatively, like a trackpad. Known issue: in Preview, a second smart-zoom double tap zooms into the next block instead of zooming back out ([#144](https://github.com/Blake11/PenBridge/issues/144)). Phase 3 (1.0.0) was verified on a Galaxy S23 Ultra against the release build of the Mac app ([#66](https://github.com/Blake11/PenBridge/issues/66)). 1.1.0 also recovers a finger tap whose datagram is lost ([#92](https://github.com/Blake11/PenBridge/issues/92)) and cancels a gesture when a palm touches down ([#114](https://github.com/Blake11/PenBridge/issues/114)). The wire protocol is now 1.1; 1.0.0 phones and Macs still work with 1.1.0 ones (with a 1.0.0 peer, one finger keeps the absolute cursor).
 
 | Phase | Scope | Status | Release |
 |---|---|---|---|
@@ -193,10 +193,10 @@ With the pen away from the screen, use fingers like a trackpad. Gestures act whe
 | Fingers | Motion | Action |
 |---|---|---|
 | 2 | Move | Scroll, with momentum after a flick |
-| 2 | Swipe left or right | Back and forward between pages (Safari, Finder …) |
+| 2 | Swipe left or right | Back and forward between pages (Safari and other apps that support it) |
 | 2 | Pinch or twist | Zoom and rotate |
 | 2 | Tap | Right-click |
-| 2 | Double-tap | Smart zoom |
+| 2 | Double-tap | Smart zoom (if on in System Settings → Trackpad) |
 | 3 | Move | Drag (move a window, select text) |
 | 4 | Swipe up / down | Mission Control / App Exposé |
 | 4 | Swipe left / right | Switch Space or full-screen app |
