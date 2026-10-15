@@ -186,7 +186,12 @@ public readonly record struct PenBridgeServerStats(
 /// <param name="DeviceId">The paired device.</param>
 /// <param name="DeviceName">Name from Hello (untrusted peer text, shown as plain data).</param>
 /// <param name="RemoteEndPoint">The phone's control-channel endpoint.</param>
-public sealed record SessionInfo(Guid DeviceId, string DeviceName, EndPoint? RemoteEndPoint);
+/// <summary>An authenticated session.</summary>
+/// <param name="DeviceId">The paired phone's id.</param>
+/// <param name="DeviceName">Its name (untrusted peer text).</param>
+/// <param name="RemoteEndPoint">Its control-channel endpoint.</param>
+/// <param name="Capabilities">Capabilities both sides advertised (e.g. <see cref="ProtocolCapabilities.FingerTouches"/>: one finger is a relative cursor).</param>
+public sealed record SessionInfo(Guid DeviceId, string DeviceName, EndPoint? RemoteEndPoint, ProtocolCapabilities Capabilities = ProtocolCapabilities.None);
 
 public sealed class SessionStartedEventArgs(SessionInfo session) : EventArgs
 {

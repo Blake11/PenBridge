@@ -1,4 +1,5 @@
 using Android.Content;
+using PenBridge.Android.Pad;
 using PenBridge.Android.Services;
 
 namespace PenBridge.Android.Connect;
@@ -16,6 +17,6 @@ internal static class AppServices
     {
         ArgumentNullException.ThrowIfNull(context);
         Context app = context.ApplicationContext ?? context;
-        return host ??= new ClientHost(app, ClientHost.CreateSurface(app));
+        return host ??= new ClientHost(app, ClientHost.CreateSurface(app, PadOptions.DefaultFingerFallbackEnabled));
     }
 }

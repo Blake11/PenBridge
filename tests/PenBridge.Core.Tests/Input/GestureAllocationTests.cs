@@ -93,6 +93,67 @@ public class GestureAllocationTests
             () => sink.Count(GestureKind.TouchDown));
     }
 
+    [Fact]
+    public void One_finger_cursor_is_allocation_free_per_frame()
+    {
+        var sink = new CountingSink();
+        var rec = new GestureRecognizer(sink, new GestureRecognizerOptions { OneFingerCursor = true }) { Mapper = Square };
+        var one = new TouchSample[1];
+        var two = new TouchSample[2];
+        var none = Array.Empty<TouchSample>();
+        long t = 0;
+
+        void One(double x, double y)
+        {
+            one[0] = new TouchSample(1, true, N(x), N(y));
+            rec.Process(one, false, t);
+        }
+
+        Alloc.AssertZero(3_000, i =>
+        {
+            int phase = i % 40;
+            t += 8_000;
+            if (phase < 10)
+            {
+                One(300 + (phase * 20), 500); // move
+            }
+            else if (phase is 10 or 12 or 14 or 25 or 31 or 39)
+            {
+                rec.Process(none, false, t);
+            }
+            else if (phase is 11 or 13)
+            {
+                One(500, 500); // tap, tap: click, double click
+            }
+            else if (phase < 20)
+            {
+                One(500 + ((phase - 15) * 20), 500); // tap and a half: drag
+            }
+            else if (phase < 25)
+            {
+                two[0] = new TouchSample(1, true, N(500), N(500));
+                two[1] = new TouchSample(2, true, N(700), N(500)); // a second finger ends the drag
+                rec.Process(two, false, t);
+            }
+            else if (phase < 30)
+            {
+                One(300 + (phase * 20), 600); // move, then the pen cancels it
+            }
+            else if (phase == 30)
+            {
+                rec.Process(one, true, t);
+            }
+            else
+            {
+                One(500, 300 + (phase * 20));
+                if (phase == 35)
+                {
+                    rec.Cancel(t);
+                }
+            }
+        }, () => sink.Count(GestureKind.PointerMove), () => sink.Count(GestureKind.Click), () => sink.Count(GestureKind.PointerDrag));
+    }
+
     private sealed class CountingSink : IInputSink
     {
         private readonly long[] _counts = new long[16];

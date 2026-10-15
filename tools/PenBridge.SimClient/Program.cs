@@ -31,6 +31,8 @@ internal static class Program
 
         Options:
           --in-process-server   pair/draw against a server started in this process (no Mac app needed)
+          --finger-touches      the in-process/serve server offers FingerTouches (ADR-0026: one finger is a
+                                relative cursor; try the one-finger script)
           --verbose             debug logging
 
         PENBRIDGE_LATENCY_LOG=1 turns on the in-process/serve server's latency capture (dumped as
@@ -41,10 +43,11 @@ internal static class Program
                  flick), pinch, rotate, two-finger-tap (right-click), smart-zoom (two-finger double tap),
                  three-finger-drag, swipe-up, swipe-down, swipe-left, swipe-right, four-finger-pinch-in,
                  four-finger-pinch-out, page-swipe-left, page-swipe-right (two-finger horizontal flick:
-                 back/forward), packet-loss (a circle with 20% of datagrams dropped)
+                 back/forward), one-finger (relative cursor: move, click, double click, tap-and-a-half drag;
+                 needs a server offering FingerTouches), packet-loss (a circle with 20% of datagrams dropped)
         """;
 
-    private static readonly SurfaceInfoMessage Surface = new(1440, 3088, 500f, 500f, SurfaceOrientation.Portrait, SurfaceCapabilities.None);
+    private static readonly SurfaceInfoMessage Surface = new(1440, 3088, 500f, 500f, SurfaceOrientation.Portrait, SurfaceCapabilities.FingerFallback);
 
     public static async Task<int> Main(string[] args)
     {
@@ -123,7 +126,7 @@ internal static class Program
     {
         if (args.Has("--in-process-server"))
         {
-            await using InProcessServer local = InProcessServer.Start(loggers, args.Port);
+            await using InProcessServer local = InProcessServer.Start(loggers, args.Port, fingerTouches: args.Has("--finger-touches"));
             await using PenBridgeClient demo = CreateClient(new InMemorySecretStore(), loggers);
             string pin = local.Server.CurrentPin!;
             Console.WriteLine($"In-process server on port {local.Server.Port}, PIN {pin}");
@@ -183,7 +186,7 @@ internal static class Program
         {
             if (args.Has("--in-process-server"))
             {
-                local = InProcessServer.Start(loggers, args.Port);
+                local = InProcessServer.Start(loggers, args.Port, fingerTouches: args.Has("--finger-touches"));
                 client = CreateClient(new InMemorySecretStore(), loggers, filter);
                 await client.PairWithPinAsync("127.0.0.1", local.Server.Port, local.Server.CurrentPin!, ct);
             }
@@ -210,7 +213,7 @@ internal static class Program
 
             await using (client)
             {
-                Console.WriteLine($"Drawing '{script}' to '{PeerText.Sanitize(client.ServerName)}'...");
+                Console.WriteLine($"Drawing '{script}' to '{PeerText.Sanitize(client.ServerName)}' (negotiated: {client.NegotiatedCapabilities})...");
                 int sent = 0;
                 for (int pass = 0; pass < repeat; pass++)
                 {
@@ -250,7 +253,7 @@ internal static class Program
 
     private static async Task<int> ServeAsync(Args args, ILoggerFactory loggers, CancellationToken ct)
     {
-        await using InProcessServer local = InProcessServer.Start(loggers, args.Port, persistent: true);
+        await using InProcessServer local = InProcessServer.Start(loggers, args.Port, persistent: true, fingerTouches: args.Has("--finger-touches"));
         PenBridgeServer server = local.Server;
         Console.WriteLine($"Serving on port {server.Port} (fp {server.FingerprintBase64Url}). Ctrl+C to stop.");
         server.PairingWindowChanged += (_, _) =>
@@ -295,7 +298,7 @@ internal static class Program
 
         public LoggingInputSink Sink { get; }
 
-        public static InProcessServer Start(ILoggerFactory loggers, int? port, bool persistent = false)
+        public static InProcessServer Start(ILoggerFactory loggers, int? port, bool persistent = false, bool fingerTouches = false)
         {
             ISecretStore store = persistent
                 ? new FileSecretStore(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".penbridge", "simserver"))
@@ -313,6 +316,7 @@ internal static class Program
                 TargetDisplay = new DisplayRect(0, 0, 1512, 982),
                 LoggerFactory = loggers,
                 LatencyRecorder = latency?.Recorder,
+                FingerTouches = fingerTouches,
             });
             server.Start();
             if (!persistent)
@@ -343,7 +347,7 @@ internal static class Program
                 string a = args[i];
                 if (a.StartsWith("--", StringComparison.Ordinal) && a.Length > 2)
                 {
-                    bool isFlag = a is "--in-process-server" or "--verbose" or "--help";
+                    bool isFlag = a is "--in-process-server" or "--verbose" or "--help" or "--finger-touches";
                     _options[a] = !isFlag && i + 1 < args.Length ? args[++i] : null;
                 }
                 else if (Command is null)

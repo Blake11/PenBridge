@@ -82,7 +82,7 @@ public class GestureRecognizerTests
     {
         Two(400, 500, 600, 500);
         Two(400, 560, 600, 560); // scroll chosen
-        Two(300, 560, 700, 560); // pure spread afterwards
+        Two(300, 570, 700, 570); // a big spread afterwards (and a little more scroll)
         Assert.All(Gestures, g => Assert.Equal(GestureKind.Scroll, g.Kind));
         Assert.Equal(GesturePhase.Changed, Gestures[^1].Phase);
     }

@@ -7,8 +7,17 @@ public sealed record PadOptions
 {
     public PadOrientationMode Orientation { get; init; } = PadOrientationMode.Landscape;
 
-    /// <summary>When true and no stylus is present, a single finger draws like a pen with <see cref="FingerFallbackPressure"/>.</summary>
-    public bool FingerFallbackEnabled { get; init; } = true;
+    /// <summary>
+    /// The pad's finger fallback default. There is no user setting for it, so the initial SurfaceInfo (sent before the
+    /// pad's first layout) uses this too; the pad's own SurfaceInfo then carries <see cref="FingerFallbackEnabled"/>.
+    /// </summary>
+    public const bool DefaultFingerFallbackEnabled = true;
+
+    /// <summary>
+    /// When true and no stylus is present, a single finger acts per <see cref="FingerMode"/>. Reported to the Mac as
+    /// <c>SurfaceCapabilities.FingerFallback</c> in every SurfaceInfo; when false a lone finger does nothing.
+    /// </summary>
+    public bool FingerFallbackEnabled { get; init; } = DefaultFingerFallbackEnabled;
 
     /// <summary>What one finger does: move the cursor with tap to click (default) or draw (<see cref="InputFilterOptions.FingerMode"/>).</summary>
     public FingerFallbackMode FingerMode { get; init; } = new InputFilterOptions().FingerMode;

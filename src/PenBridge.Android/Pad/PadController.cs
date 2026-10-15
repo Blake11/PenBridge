@@ -232,6 +232,9 @@ public sealed class PadController : IDisposable
         PadConnectionState state = _output.ConnectionState;
         _dot.SetState(state);
         _surface.KeepScreenOn = state.Kind != PadConnectionKind.Disconnected;
+        // ADR-0026: relative one-finger cursor only while a session negotiated it. The surface defers the filter swap
+        // until input is idle, so a flip never splits a touch between the two modes.
+        _surface.FingerTouches = state.Kind == PadConnectionKind.Connected && _output.FingerTouches;
     }
 
     private void OnActiveChanged(bool active)

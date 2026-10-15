@@ -66,11 +66,19 @@ internal sealed class GesturePipeline
     private int _repeatsLeft;
     private TimeSpan? _keepaliveAt;
 
-    public GesturePipeline(InputFilterOptions? filterOptions = null)
+    public GesturePipeline(InputFilterOptions? filterOptions = null, PenStateTrackerOptions? trackerOptions = null)
     {
         Filter = new InputFilter(filterOptions);
-        Tracker = new PenStateTracker(Sink, _macClock) { Mapper = Mapper };
+        Tracker = new PenStateTracker(Sink, _macClock, trackerOptions) { Mapper = Mapper };
     }
+
+    /// <summary>
+    /// Both sides negotiated <c>ProtocolCapabilities.FingerTouches</c> (ADR-0026): the filter sends a lone finger as a
+    /// touch and the recognizer's one-finger cursor is on, as the client and server configure them.
+    /// </summary>
+    public static GesturePipeline FingerTouches() => new(
+        new InputFilterOptions { FingerTouches = true },
+        new PenStateTrackerOptions { Gestures = new GestureRecognizerOptions { OneFingerCursor = true } });
 
     public InputFilter Filter { get; }
 

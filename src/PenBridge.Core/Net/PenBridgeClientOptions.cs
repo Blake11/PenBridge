@@ -60,6 +60,13 @@ public sealed class PenBridgeClientOptions
     /// </summary>
     public int ReleaseRepeats { get; init; } = 2;
 
+    /// <summary>
+    /// Capabilities sent in Hello: everything this engine supports. Tests override it to act as an older phone.
+    /// <see cref="ProtocolCapabilities.FingerTouches"/> only changes what the head sends once it configures its
+    /// <see cref="Input.InputFilter"/> from <see cref="PenBridgeClient.NegotiatedCapabilities"/>.
+    /// </summary>
+    internal ProtocolCapabilities Capabilities { get; init; } = ProtocolCapabilities.SampleDedupe | ProtocolCapabilities.FingerTouches;
+
     /// <summary>Optional fault injection: return false to drop a sealed datagram instead of sending it.</summary>
     public DatagramFilter? DatagramFilter { get; init; }
 
