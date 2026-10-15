@@ -212,7 +212,8 @@ public class PenStateTrackerTests
     {
         Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 20000, 10000));
         Frame(null, new TouchSample(1, true, 10000, 20000), new TouchSample(2, true, 20000, 20000));
-        Assert.Equal(GesturePhase.Began, Assert.Single(_sink.Gestures).Phase);
+        Assert.Equal([GestureKind.TouchDown, GestureKind.Scroll], _sink.Gestures.Select(g => g.Kind));
+        Assert.Equal(GesturePhase.Began, _sink.Gestures[1].Phase);
         Assert.Equal(TimeSpan.FromMilliseconds(150), _tracker.WatchdogDueIn);
 
         _time.Advance(TimeSpan.FromMilliseconds(150));
@@ -229,8 +230,9 @@ public class PenStateTrackerTests
         Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 20000, 10000));
         Frame(null, new TouchSample(1, true, 10000, 20000), new TouchSample(2, true, 20000, 20000));
         Frame(Samples.Hover(5, 5), new TouchSample(1, true, 10000, 25000), new TouchSample(2, true, 20000, 25000));
-        Assert.Equal([GesturePhase.Began, GesturePhase.Cancelled], _sink.Gestures.Select(g => g.Phase));
-        Assert.False(_sink.Gestures[1].Synthetic);
+        Assert.Equal([GestureKind.TouchDown, GestureKind.Scroll, GestureKind.Scroll], _sink.Gestures.Select(g => g.Kind));
+        Assert.Equal([GesturePhase.Began, GesturePhase.Began, GesturePhase.Cancelled], _sink.Gestures.Select(g => g.Phase));
+        Assert.False(_sink.Gestures[2].Synthetic);
         Assert.Equal([ProximityEnter], _sink.PenKinds());
     }
 
@@ -336,11 +338,69 @@ public class PenStateTrackerTests
     }
 
     [Fact]
+    public void Held_tap_deadline_drives_the_timer_and_fires_without_frames()
+    {
+        // Square maps 1 normalized unit to 1 point; fingers 200 pt apart.
+        Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000)); // t = 10 ms
+        Frame(null); // lift at 15 ms: the tap is held for the 300 ms window + 50 ms jitter allowance
+        Assert.DoesNotContain(_sink.Gestures, g => g.Kind == GestureKind.Tap);
+        Assert.Equal(TimeSpan.FromMilliseconds(350), _tracker.WatchdogDueIn);
+
+        _time.Advance(TimeSpan.FromMilliseconds(349));
+        Assert.False(_tracker.CheckWatchdog());
+        Assert.DoesNotContain(_sink.Gestures, g => g.Kind == GestureKind.Tap);
+        Assert.Equal(TimeSpan.FromMilliseconds(1), _tracker.WatchdogDueIn);
+
+        _time.Advance(TimeSpan.FromMilliseconds(1));
+        Assert.False(_tracker.CheckWatchdog()); // the watchdog itself didn't fire
+        GestureEvent tap = Assert.Single(_sink.Gestures, g => g.Kind == GestureKind.Tap);
+        Assert.Equal(365_000, tap.TimestampUs);
+        Assert.Null(_tracker.WatchdogDueIn); // idle again: no timer
+    }
+
+    [Fact]
+    public void Watchdog_comes_first_when_it_is_sooner_than_the_tap_deadline()
+    {
+        Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000));
+        Frame(null); // held tap: deadline in 300 ms
+        Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000)); // second touch: 200 ms + 1 µs
+        Assert.Equal(TimeSpan.FromMilliseconds(150), _tracker.WatchdogDueIn); // contact watchdog
+    }
+
+    [Fact]
+    public void Delayed_lift_datagram_still_completes_a_smart_zoom()
+    {
+        TouchSample[] pair = [new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000)];
+        _tracker.ProcessFrame(10_000, null, [], pair);
+        _tracker.ProcessFrame(60_000, null, [], []); // first tap lifts
+        _tracker.ProcessFrame(160_000, null, [], pair); // second tap lands
+        Assert.Equal(TimeSpan.FromMilliseconds(150), _tracker.WatchdogDueIn); // only the contact watchdog
+
+        _time.Advance(TimeSpan.FromMilliseconds(140)); // the lift datagram is held up by Wi-Fi jitter
+        Assert.False(_tracker.CheckWatchdog());
+        _tracker.ProcessFrame(210_000, null, [], []); // the lift: 50 ms after landing on the phone's clock
+
+        Assert.Equal([GestureKind.SmartZoom], _sink.Gestures.Where(g => g.Kind is GestureKind.Tap or GestureKind.SmartZoom).Select(g => g.Kind));
+    }
+
+    [Fact]
+    public void Reset_drops_a_held_tap()
+    {
+        Frame(null, new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 10200, 10000));
+        Frame(null);
+        _tracker.Reset();
+        Assert.Null(_tracker.WatchdogDueIn);
+        _time.Advance(TimeSpan.FromSeconds(1));
+        _tracker.CheckWatchdog();
+        Assert.DoesNotContain(_sink.Gestures, g => g.Kind == GestureKind.Tap);
+    }
+
+    [Fact]
     public void Gesture_events_share_the_frame_clock()
     {
         _tracker.ProcessFrame(7_000, null, [], [new TouchSample(1, true, 10000, 10000), new TouchSample(2, true, 20000, 10000)]);
         _tracker.ProcessFrame(9_000, null, [], [new TouchSample(1, true, 10000, 20000), new TouchSample(2, true, 20000, 20000)]);
-        Assert.Equal(9_000, Assert.Single(_sink.Gestures).TimestampUs);
+        Assert.Equal([7_000L, 9_000L], _sink.Gestures.Select(g => g.TimestampUs)); // TouchDown, then scroll Began
     }
 
     [Fact]

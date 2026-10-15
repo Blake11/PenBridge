@@ -208,8 +208,9 @@ public class InputChannelTests
         client.SendState(null, []);
         await Wait.Until(() => h.Sink.Gestures().Any(g => g.Phase == GesturePhase.Ended), "scroll ended");
         GestureEvent[] gestures = h.Sink.Gestures();
-        Assert.All(gestures, g => Assert.Equal(GestureKind.Scroll, g.Kind));
-        Assert.Equal(GesturePhase.Began, gestures[0].Phase);
+        Assert.Equal(GestureKind.TouchDown, gestures[0].Kind);
+        Assert.All(gestures[1..], g => Assert.Equal(GestureKind.Scroll, g.Kind));
+        Assert.Equal(GesturePhase.Began, gestures[1].Phase);
         Assert.Empty(h.Sink.Pen());
     }
 

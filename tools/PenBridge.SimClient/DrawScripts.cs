@@ -13,7 +13,18 @@ internal static class DrawScripts
     public static readonly TimeSpan FrameInterval = TimeSpan.FromMilliseconds(8);
 
     public static readonly string[] Names =
-        ["line", "circle", "pressure-ramp", "tilt-sweep", "hover", "button-click", "two-finger-scroll", "pinch", PacketLoss];
+        [
+            "line", "circle", "pressure-ramp", "tilt-sweep", "hover", "button-click", "two-finger-scroll", "pinch", "rotate",
+            "two-finger-tap", "smart-zoom", "three-finger-drag", "swipe-up", "swipe-down", "swipe-left", "swipe-right",
+            "four-finger-pinch-in", "four-finger-pinch-out", "page-swipe-left", "page-swipe-right", PacketLoss,
+        ];
+
+    /// <summary>Long enough after a tap for the server's double-tap window (300 ms) to pass before the script ends.</summary>
+    private static readonly TimeSpan TapSettle = TimeSpan.FromMilliseconds(500);
+
+    // The SimClient's surface (Program.Surface), for scripts laid out in phone pixels.
+    private const double SurfaceWidth = 1440;
+    private const double SurfaceHeight = 3088;
 
     private static readonly TouchSample[] NoTouches = [];
     private static readonly PenSample[] NoHistory = [];
@@ -30,6 +41,18 @@ internal static class DrawScripts
             "button-click" => ButtonClick(),
             "two-finger-scroll" => TwoFingerScroll(),
             "pinch" => Pinch(),
+            "rotate" => Rotate(),
+            "two-finger-tap" => TwoFingerTap(),
+            "smart-zoom" => SmartZoom(),
+            "three-finger-drag" => ThreeFingerDrag(),
+            "swipe-up" => FourFingerSwipe(0, -1),
+            "swipe-down" => FourFingerSwipe(0, 1),
+            "swipe-left" => FourFingerSwipe(-1, 0),
+            "swipe-right" => FourFingerSwipe(1, 0),
+            "page-swipe-left" => PageSwipe(-1),
+            "page-swipe-right" => PageSwipe(1),
+            "four-finger-pinch-in" => FourFingerPinch(300, 120),
+            "four-finger-pinch-out" => FourFingerPinch(120, 300),
             PacketLoss => Batched(CirclePoints()),
             _ => [],
         };
@@ -137,15 +160,29 @@ internal static class DrawScripts
         yield return Frame(null);
     }
 
+    /// <summary>A touch at phone pixel (x, y) on the SimClient surface.</summary>
+    private static TouchSample Finger(byte id, double x, double y) =>
+        new(id, true, Clamp(x / SurfaceWidth * 65535), Clamp(y / SurfaceHeight * 65535));
+
+    private static ScriptFrame Fingers(params TouchSample[] touches) => new(null, touches, NoHistory, FrameInterval);
+
+    /// <summary>A slow two-finger pan down, then a flick that lifts while moving fast (momentum follows).</summary>
     private static IEnumerable<ScriptFrame> TwoFingerScroll()
     {
-        for (int i = 0; i <= 60; i++)
+        double y = 900;
+        for (int i = 0; i < 30; i++)
         {
-            ushort y = (ushort)(20000 + (i * 400));
-            yield return new ScriptFrame(null, [new TouchSample(1, true, 25000, y), new TouchSample(2, true, 40000, y)], NoHistory, FrameInterval);
+            yield return Fingers(Finger(1, 500, y), Finger(2, 940, y));
+            y += 10;
         }
 
-        yield return Frame(null);
+        for (int i = 1; i <= 8; i++)
+        {
+            y += 10 + (i * 7); // accelerate to about 66 px per frame
+            yield return Fingers(Finger(1, 500, y), Finger(2, 940, y));
+        }
+
+        yield return Frame(null); // lift at speed: no pause before it
     }
 
     private static IEnumerable<ScriptFrame> Pinch()
@@ -162,4 +199,114 @@ internal static class DrawScripts
 
         yield return Frame(null);
     }
+
+    /// <summary>Two fingers turning 90 degrees clockwise around the surface centre at a constant spread.</summary>
+    private static IEnumerable<ScriptFrame> Rotate()
+    {
+        const double Radius = 300;
+        for (int i = 0; i <= 45; i++)
+        {
+            double a = i * 2 * Math.PI / 180;
+            double ox = Radius * Math.Cos(a);
+            double oy = Radius * Math.Sin(a);
+            yield return Fingers(
+                Finger(1, (SurfaceWidth / 2) - ox, (SurfaceHeight / 2) - oy),
+                Finger(2, (SurfaceWidth / 2) + ox, (SurfaceHeight / 2) + oy));
+        }
+
+        yield return Frame(null);
+    }
+
+    /// <summary>
+    /// Two fingers landing together and lifting after about 50 ms with a little jitter: a right-click once the
+    /// double-tap window passed.
+    /// </summary>
+    private static IEnumerable<ScriptFrame> TwoFingerTap() => TapFrames(TapSettle);
+
+    /// <summary>Two two-finger taps 150 ms apart at nearly the same place: a smart zoom (no right-click).</summary>
+    private static IEnumerable<ScriptFrame> SmartZoom()
+    {
+        foreach (ScriptFrame f in TapFrames(TimeSpan.FromMilliseconds(150)))
+        {
+            yield return f;
+        }
+
+        foreach (ScriptFrame f in TapFrames(TapSettle, dx: 10))
+        {
+            yield return f;
+        }
+    }
+
+    private static IEnumerable<ScriptFrame> TapFrames(TimeSpan after, double dx = 0)
+    {
+        for (int i = 0; i < 6; i++)
+        {
+            double jitter = i % 2;
+            yield return Fingers(Finger(1, 520 + dx + jitter, 1500), Finger(2, 920 + dx, 1520 - jitter));
+        }
+
+        yield return new ScriptFrame(null, NoTouches, NoHistory, after);
+    }
+
+    /// <summary>Three fingers landing a frame apart, then moving right and down together: a left drag.</summary>
+    private static IEnumerable<ScriptFrame> ThreeFingerDrag()
+    {
+        yield return Fingers(Finger(1, 420, 1400), Finger(2, 720, 1350));
+        yield return Fingers(Finger(1, 420, 1400), Finger(2, 720, 1350), Finger(3, 1020, 1400));
+        for (int i = 1; i <= 40; i++)
+        {
+            double dx = i * 8;
+            double dy = i * 4;
+            yield return Fingers(Finger(1, 420 + dx, 1400 + dy), Finger(2, 720 + dx, 1350 + dy), Finger(3, 1020 + dx, 1400 + dy));
+        }
+
+        yield return Frame(null);
+    }
+
+    /// <summary>
+    /// A two-finger horizontal flick (trackpad "swipe between pages"): fingers accelerate sideways over 12 frames
+    /// (about 100 ms, ~650 px) and lift while still moving, so the scroll ends at speed and momentum follows.
+    /// <paramref name="direction"/> −1 moves the fingers left, +1 right.
+    /// </summary>
+    private static IEnumerable<ScriptFrame> PageSwipe(int direction)
+    {
+        double x = direction < 0 ? 900 : 300;
+        for (int i = 0; i <= 12; i++)
+        {
+            yield return Fingers(Finger(1, x, 1300), Finger(2, x + 240, 1700));
+            x += direction * (10 + (i * 8)); // accelerate to about 100 px per frame
+        }
+
+        yield return Frame(null); // lift at speed: no pause before it
+    }
+
+    /// <summary>Four fingers on a square, moving 600 px in (sx, sy) over 30 frames.</summary>
+    private static IEnumerable<ScriptFrame> FourFingerSwipe(int sx, int sy)
+    {
+        for (int i = 0; i <= 30; i++)
+        {
+            double cx = (SurfaceWidth / 2) + (sx * i * 20);
+            double cy = (SurfaceHeight / 2) + (sy * i * 20);
+            yield return FourFingers(cx, cy, 200);
+        }
+
+        yield return Frame(null);
+    }
+
+    /// <summary>Four fingers on a square around the centre whose half-size goes from r0 to r1 px.</summary>
+    private static IEnumerable<ScriptFrame> FourFingerPinch(double r0, double r1)
+    {
+        for (int i = 0; i <= 30; i++)
+        {
+            yield return FourFingers(SurfaceWidth / 2, SurfaceHeight / 2, r0 + ((r1 - r0) * i / 30));
+        }
+
+        yield return Frame(null);
+    }
+
+    private static ScriptFrame FourFingers(double cx, double cy, double r) => Fingers(
+        Finger(1, cx - r, cy - r),
+        Finger(2, cx + r, cy - r),
+        Finger(3, cx + r, cy + r),
+        Finger(4, cx - r, cy + r));
 }

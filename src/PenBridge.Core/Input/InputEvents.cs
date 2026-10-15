@@ -43,11 +43,86 @@ public readonly record struct PenEvent(
     bool Synthetic,
     long TimestampUs);
 
-/// <summary>Gesture kinds produced by <see cref="GestureRecognizer"/>.</summary>
+/// <summary>
+/// Gesture kinds produced by <see cref="GestureRecognizer"/> (ADR-0023, trackpad parity). The kind of a moving
+/// gesture is decided by the most fingers seen down before a threshold was crossed: 2 = Scroll or Pinch, 3 = Drag,
+/// 4 = SystemSwipe or SystemPinch, 5 or more = nothing.
+/// </summary>
 public enum GestureKind : byte
 {
+    /// <summary>
+    /// Two-finger pan (exclusive of Pinch): Began / Changed with relative, accelerated deltas, then Ended (momentum may
+    /// follow) or Cancelled. Act at the current cursor.
+    /// </summary>
     Scroll = 1,
+
+    /// <summary>
+    /// Two-finger pinch/rotate transform: Began / Changed with <see cref="GestureEvent.ScaleDelta"/> and
+    /// <see cref="GestureEvent.RotationDelta"/> together, then Ended or Cancelled. Starts from a spread change, a
+    /// rotation, or both.
+    /// </summary>
     Pinch = 2,
+
+    /// <summary>
+    /// Two-finger tap, a secondary click at the current cursor. One event with <see cref="GesturePhase.Ended"/>,
+    /// emitted once it can no longer become a double tap: the double-tap window passed (up to
+    /// <see cref="GestureRecognizerOptions.DoubleTapWindow"/> after the lift), or other input interrupts it (pen or
+    /// cursor hover, a gesture, a third finger), in which case it comes just before that input's events. Only a cancel
+    /// (watchdog, pause, session end) drops it.
+    /// </summary>
+    Tap = 3,
+
+    /// <summary>
+    /// A finger landed: a contact appeared that was not in the previous frame, while no gesture was active and gestures
+    /// were not blocked (pen, cancel). One informational event per such frame with <see cref="GesturePhase.Began"/>, no deltas, at the first
+    /// new contact's position. The Mac uses it to stop a scroll coast at once (a finger landing stops momentum).
+    /// Never active; nothing ends it.
+    /// </summary>
+    TouchDown = 4,
+
+    /// <summary>
+    /// Two-finger double tap (smart zoom at the current cursor). One event with <see cref="GesturePhase.Ended"/>, on the
+    /// second tap's lift; no Tap is emitted for either tap.
+    /// </summary>
+    SmartZoom = 5,
+
+    /// <summary>
+    /// Three-finger drag: a left-button drag that moves the cursor by <see cref="GestureEvent.DeltaX"/>/
+    /// <see cref="GestureEvent.DeltaY"/> (relative, accelerated). Began / Changed, then Ended when a finger lifts
+    /// (release the button) or Cancelled.
+    /// </summary>
+    Drag = 6,
+
+    /// <summary>
+    /// Four-finger swipe: <see cref="GestureEvent.Direction"/> (Up/Down/Left/Right, locked at Began) and cumulative
+    /// <see cref="GestureEvent.Progress"/>. Began / Changed / Ended / Cancelled. Up = Mission Control, Down = App Exposé,
+    /// Left/Right = switch Space.
+    /// </summary>
+    SystemSwipe = 7,
+
+    /// <summary>
+    /// Four-finger pinch: <see cref="GestureEvent.Direction"/> (In = Launchpad, Out = show desktop, locked at Began) and
+    /// cumulative <see cref="GestureEvent.Progress"/>. Began / Changed / Ended / Cancelled.
+    /// </summary>
+    SystemPinch = 8,
+}
+
+/// <summary>Direction of a <see cref="GestureKind.SystemSwipe"/> (finger movement, y down) or <see cref="GestureKind.SystemPinch"/>.</summary>
+public enum GestureDirection : byte
+{
+    None = 0,
+    /// <summary>Fingers moved up the screen.</summary>
+    Up = 1,
+    /// <summary>Fingers moved down the screen.</summary>
+    Down = 2,
+    /// <summary>Fingers moved left.</summary>
+    Left = 3,
+    /// <summary>Fingers moved right.</summary>
+    Right = 4,
+    /// <summary>Fingers pinched together.</summary>
+    In = 5,
+    /// <summary>Fingers spread apart.</summary>
+    Out = 6,
 }
 
 /// <summary>Gesture phase.</summary>
@@ -55,22 +130,44 @@ public enum GesturePhase : byte
 {
     Began = 1,
     Changed = 2,
-    /// <summary>The fingers lifted normally.</summary>
+    /// <summary>The fingers lifted normally (Scroll: momentum may follow). Also the phase of the one-shot Tap and SmartZoom events.</summary>
     Ended = 3,
-    /// <summary>The gesture was aborted (pen came into range, or the watchdog fired). No momentum should follow.</summary>
+    /// <summary>The gesture was aborted (pen came into range, the watchdog fired, session end). No momentum should follow.</summary>
     Cancelled = 4,
 }
 
 /// <summary>
 /// One gesture event. Deltas and the center are in global display points (via the recognizer's
-/// <see cref="CoordinateMapper"/>); a positive <see cref="DeltaY"/> means the fingers moved down.
+/// <see cref="CoordinateMapper"/>, top-left origin, y down); a positive <see cref="DeltaY"/> means the fingers moved
+/// down. Gestures act at the current cursor position (ADR-0023); <see cref="Center"/> is informational only.
 /// </summary>
-/// <param name="Kind">Scroll or Pinch.</param>
-/// <param name="Phase">Began / Changed / Ended / Cancelled.</param>
-/// <param name="DeltaX">Scroll: centroid movement since the previous event (Began: since the fingers landed). 0 for Pinch and Ended/Cancelled.</param>
-/// <param name="DeltaY">Scroll: see <paramref name="DeltaX"/>.</param>
+/// <param name="Kind">See <see cref="GestureKind"/>.</param>
+/// <param name="Phase">Began / Changed / Ended / Cancelled (Tap and SmartZoom: always Ended; TouchDown: always Began).</param>
+/// <param name="DeltaX">
+/// Scroll and Drag: centroid movement since the previous event (Began: since the gesture's fingers settled),
+/// multiplied by the kind's gain and its acceleration at the current speed
+/// (<see cref="GestureRecognizerOptions.ScrollGain"/>/<see cref="GestureRecognizerOptions.ScrollAcceleration"/>,
+/// <see cref="GestureRecognizerOptions.DragGain"/>/<see cref="GestureRecognizerOptions.DragAcceleration"/>).
+/// 0 for every other kind and for Ended/Cancelled.
+/// </param>
+/// <param name="DeltaY">See <paramref name="DeltaX"/>.</param>
 /// <param name="ScaleDelta">Pinch: multiplicative finger-spread change since the previous event (Began: since landing). 1 otherwise.</param>
-/// <param name="Center">Current centroid of the two tracked fingers in display points.</param>
+/// <param name="RotationDelta">
+/// Pinch: change in the angle of the line between the two fingers since the previous event (Began: since landing), in
+/// degrees, unwrapped (never jumps at ±180°). Measured in display coordinates (y down), so a positive value is a
+/// <b>clockwise</b> turn as seen on the screen (AppKit's rotation is counterclockwise-positive: negate it). 0 otherwise.
+/// </param>
+/// <param name="Direction">SystemSwipe/SystemPinch: the locked direction (also on Ended/Cancelled). None otherwise.</param>
+/// <param name="Progress">
+/// SystemSwipe: cumulative centroid travel along the locked axis toward <paramref name="Direction"/> since the fingers
+/// settled; SystemPinch: cumulative change of the finger spread (twice the mean distance from the centroid) toward
+/// <paramref name="Direction"/>. Both as a fraction of the mapped short side, so about 0..1, negative when the
+/// fingers went back past the start. Ended/Cancelled carry the last value. 0 for other kinds.
+/// </param>
+/// <param name="Center">
+/// Informational: the current centroid of the gesture's fingers (Tap/SmartZoom: the landing midpoint; TouchDown: the
+/// new contact).
+/// </param>
 /// <param name="Synthetic">True when synthesized by the watchdog or a reset.</param>
 /// <param name="TimestampUs">Monotonic µs since session start, same clock as <see cref="PenEvent.TimestampUs"/>.</param>
 public readonly record struct GestureEvent(
@@ -79,6 +176,9 @@ public readonly record struct GestureEvent(
     double DeltaX,
     double DeltaY,
     double ScaleDelta,
+    double RotationDelta,
+    GestureDirection Direction,
+    double Progress,
     DisplayPoint Center,
     bool Synthetic,
     long TimestampUs);

@@ -1,58 +1,217 @@
 namespace PenBridge.Core.Input;
 
-/// <summary>Options for <see cref="GestureRecognizer"/>.</summary>
+/// <summary>Options for <see cref="GestureRecognizer"/>. Distances are fractions of the mapped content's shorter side.</summary>
 public sealed record GestureRecognizerOptions
 {
-    /// <summary>Centroid travel, as a fraction of the mapped surface's shorter side, that starts a scroll.</summary>
+    /// <summary>Two fingers: centroid travel that starts a scroll.</summary>
     public double ScrollThreshold { get; init; } = 0.04;
 
-    /// <summary>Finger-spread change, as a fraction of the mapped surface's shorter side, that starts a pinch.</summary>
+    /// <summary>Two fingers: finger-spread change that starts a pinch/rotate transform.</summary>
     public double PinchThreshold { get; init; } = 0.04;
+
+    /// <summary>
+    /// Two fingers: rotation arc (the turned angle in radians × half the finger spread, i.e. how far each finger
+    /// travelled around the centroid) that starts a pinch/rotate transform.
+    /// </summary>
+    public double RotationThreshold { get; init; } = 0.04;
+
+    /// <summary>
+    /// Multiplier applied to scroll deltas before acceleration. 1 means content moves 1:1 with the fingers in mapped
+    /// display points at slow speeds. Must be positive and finite.
+    /// </summary>
+    public double ScrollGain { get; init; } = 1.0;
+
+    /// <summary>Speed-dependent gain on scroll deltas (momentum then coasts on the accelerated deltas).</summary>
+    public GestureAcceleration ScrollAcceleration { get; init; } = new();
+
+    /// <summary>Three fingers: centroid travel that starts a drag.</summary>
+    public double DragThreshold { get; init; } = 0.02;
+
+    /// <summary>Multiplier applied to three-finger drag deltas before acceleration. Must be positive and finite.</summary>
+    public double DragGain { get; init; } = 1.0;
+
+    /// <summary>Speed-dependent gain on three-finger drag deltas.</summary>
+    public GestureAcceleration DragAcceleration { get; init; } = new();
+
+    /// <summary>Four fingers: centroid travel that starts a system swipe.</summary>
+    public double SwipeThreshold { get; init; } = 0.05;
+
+    /// <summary>Four fingers: finger-spread change that starts a system pinch.</summary>
+    public double SystemPinchThreshold { get; init; } = 0.05;
+
+    /// <summary>A two-finger tap lasts at most this long, from the first finger landing to the last lifting.</summary>
+    public TimeSpan TapMaxDuration { get; init; } = TimeSpan.FromMilliseconds(200);
+
+    /// <summary>How far each finger of a two-finger tap may move from where it landed.</summary>
+    public double TapSlop { get; init; } = 0.02;
+
+    /// <summary>
+    /// A two-finger tap is held this long after its lift: a second two-finger tap landing within it (and within
+    /// <see cref="DoubleTapSlop"/>) makes a SmartZoom instead. Zero emits taps at once (no smart zoom).
+    /// </summary>
+    public TimeSpan DoubleTapWindow { get; init; } = TimeSpan.FromMilliseconds(300);
+
+    /// <summary>How near the second tap's landing midpoint must be to the first's for a SmartZoom.</summary>
+    public double DoubleTapSlop { get; init; } = 0.05;
+
+    /// <summary>
+    /// Added to the double-tap window for the timer-driven deadline (<see cref="GestureRecognizer.PendingDeadlineUs"/>),
+    /// which runs on host time estimated from the last frame: a second tap's landing datagram delayed by network
+    /// jitter still arrives before the timer gives up on it. Frames themselves are judged on the frame clock, without it.
+    /// </summary>
+    public TimeSpan TapDeadlineJitterAllowance { get; init; } = TimeSpan.FromMilliseconds(50);
 }
 
 /// <summary>
-/// Mac-side two-finger gesture recognizer over raw touch state (one call per received datagram).
+/// Mac-side multi-finger gesture recognizer over raw touch state (one call per received datagram), with trackpad
+/// semantics (ADR-0023).
 /// </summary>
 /// <remarks>
-/// The first two contacts by landing order are tracked (later fingers are ignored). Until a threshold is crossed
-/// nothing is emitted; then the gesture locks to Scroll or Pinch (pinch wins when the spread change is at least the
-/// centroid travel) and stays that kind until a tracked finger lifts (Ended). When the pen comes into range an
-/// active gesture is Cancelled and no new gesture starts until all fingers have lifted. Frames are ignored until a
-/// configured <see cref="Mapper"/> is set (apply SurfaceInfo first). Not thread-safe; allocation-free per call.
+/// <para>
+/// <b>Finger count.</b> While undecided, the gesture's fingers are all current contacts; whenever one lands or lifts
+/// the measurement restarts from the new set, so staggered landings (2 → 3 → 4) settle on the final count and
+/// fingers that lifted before a threshold was crossed don't count. When a threshold is crossed the kind locks: 2
+/// fingers = Scroll or Pinch, 3 = Drag, 4 = SystemSwipe or SystemPinch; 5 or more = no gesture until all lift. Once
+/// locked, extra fingers are ignored; when one of the gesture's fingers lifts it Ends, and nothing new starts until
+/// all fingers have lifted.
+/// </para>
+/// <para>
+/// <b>Two fingers.</b> Pinch is a pinch/rotate transform: it wins when the spread change crosses
+/// <see cref="GestureRecognizerOptions.PinchThreshold"/> or the rotation arc crosses
+/// <see cref="GestureRecognizerOptions.RotationThreshold"/>, and that quantity is at least the centroid travel.
+/// Otherwise centroid travel beyond <see cref="GestureRecognizerOptions.ScrollThreshold"/> is a scroll (exclusive).
+/// <b>Four fingers</b> use the same rule: spread change ≥ travel and past its threshold is a SystemPinch, otherwise
+/// travel past its threshold is a SystemSwipe along the dominant axis.
+/// </para>
+/// <para>
+/// <b>Taps.</b> A two-finger tap: exactly two landings in the touch sequence (a third finger, or a finger re-landing
+/// with a reused pointer id, is no tap), the last lift within <see cref="GestureRecognizerOptions.TapMaxDuration"/>
+/// of the first landing, each finger within <see cref="GestureRecognizerOptions.TapSlop"/> of where it landed, and no
+/// gesture began. It is held for <see cref="GestureRecognizerOptions.DoubleTapWindow"/>: a second tap landing in that
+/// window within <see cref="GestureRecognizerOptions.DoubleTapSlop"/> emits SmartZoom on its lift. Otherwise Tap is
+/// emitted when the window passes with no touch down (judged on the frame clock by the next frame, or by the timer
+/// deadline <see cref="PendingDeadlineUs"/>/<see cref="CheckDeadline"/> with a jitter allowance), or as soon as it can no longer become a double tap, before the event that interrupts it: the pen (or a one-finger
+/// cursor hover) comes into range, a gesture begins, a third finger lands, or the next touch sequence ends or
+/// outlasts the tap duration without being that second tap. While fingers are down, tap timing uses only frame times
+/// (frames arrive at least every 50 ms then, and the watchdog covers a lost link), so a delayed lift datagram can't
+/// turn a double tap into two taps. Only <see cref="Cancel"/> drops a held tap.
+/// </para>
+/// <para>
+/// <b>Touch down.</b> In each frame where a contact appears that was not in the previous frame (gestures not blocked
+/// and no gesture active), one TouchDown event is emitted first, so the head can stop a scroll coast. A finger
+/// brushing during an active gesture emits none, so it can't reset the gesture's momentum samples.
+/// </para>
+/// <para>
+/// When the pen comes into range an active gesture is Cancelled, and fingers already down are blocked until all have
+/// lifted (fingers landing in a later pen-free frame are new).
+/// <see cref="Cancel"/> (watchdog, session end) cancels likewise: fingers still down in later frames are blocked until
+/// all lift. Frames are ignored until a configured <see cref="Mapper"/> is set (apply SurfaceInfo first). Not
+/// thread-safe; allocation-free per call.
+/// </para>
 /// </remarks>
 public sealed class GestureRecognizer
 {
     /// <summary>Maximum contacts whose landing order is tracked.</summary>
     public const int MaxTrackedContacts = 10;
 
+    /// <summary>Most fingers a gesture uses; more is no gesture.</summary>
+    public const int MaxGestureFingers = 4;
+
     private const double MinSpread = 1e-6;
+    private const double DegreesPerRadian = 180.0 / Math.PI;
+    private const long MinSpeedIntervalUs = 1_000;
+    private const long MaxSpeedIntervalUs = 100_000;
 
     private readonly IInputSink _sink;
     private readonly GestureRecognizerOptions _options;
+    private readonly long _tapMaxUs;
+    private readonly long _doubleTapWindowUs;
+    private readonly long _jitterUs;
     private readonly byte[] _order = new byte[MaxTrackedContacts];
     private readonly byte[] _scratch = new byte[MaxTrackedContacts];
+    private readonly byte[] _ids = new byte[MaxGestureFingers];
+    private readonly DisplayPoint[] _points = new DisplayPoint[MaxGestureFingers];
     private int _orderCount;
+    private int _landed;
+    private byte _firstLandedId;
     private State _state;
-    private byte _idA;
-    private byte _idB;
+
+    // The gesture's fingers and measurements.
+    private int _n;
     private DisplayPoint _startCenter;
     private double _startSpread;
+    private long _startUs;
     private DisplayPoint _prevCenter;
     private double _prevSpread;
+    private double _prevAngle;
+    private long _prevUs;
+    private double _rotationSinceStart;
+    private double _speed;
+    private GestureDirection _direction;
+    private double _progress;
+
+    // Two-finger tap candidate for the current touch sequence (first landing until all fingers lifted).
+    private bool _tapCandidate;
+    private bool _tapPaired;
+    private long _tapStartUs;
+    private int _tapLandings;
+    private int _tapSlots;
+    private byte _tapId0;
+    private byte _tapId1;
+    private DisplayPoint _tapLand0;
+    private DisplayPoint _tapLand1;
+
+    // A completed tap held for the double-tap window.
+    private bool _pendingTap;
+    private long _pendingLiftUs;
+    private DisplayPoint _pendingMid;
 
     public GestureRecognizer(IInputSink sink, GestureRecognizerOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(sink);
         _sink = sink;
         _options = options ?? new GestureRecognizerOptions();
+        RequireNonNegative(_options.ScrollThreshold, nameof(GestureRecognizerOptions.ScrollThreshold));
+        RequireNonNegative(_options.PinchThreshold, nameof(GestureRecognizerOptions.PinchThreshold));
+        RequireNonNegative(_options.RotationThreshold, nameof(GestureRecognizerOptions.RotationThreshold));
+        RequireNonNegative(_options.DragThreshold, nameof(GestureRecognizerOptions.DragThreshold));
+        RequireNonNegative(_options.SwipeThreshold, nameof(GestureRecognizerOptions.SwipeThreshold));
+        RequireNonNegative(_options.SystemPinchThreshold, nameof(GestureRecognizerOptions.SystemPinchThreshold));
+        RequireNonNegative(_options.TapSlop, nameof(GestureRecognizerOptions.TapSlop));
+        RequireNonNegative(_options.DoubleTapSlop, nameof(GestureRecognizerOptions.DoubleTapSlop));
+        RequirePositive(_options.ScrollGain, nameof(GestureRecognizerOptions.ScrollGain));
+        RequirePositive(_options.DragGain, nameof(GestureRecognizerOptions.DragGain));
+        ArgumentNullException.ThrowIfNull(_options.ScrollAcceleration, nameof(GestureRecognizerOptions.ScrollAcceleration));
+        ArgumentNullException.ThrowIfNull(_options.DragAcceleration, nameof(GestureRecognizerOptions.DragAcceleration));
+        _options.ScrollAcceleration.Validate(nameof(GestureRecognizerOptions.ScrollAcceleration));
+        _options.DragAcceleration.Validate(nameof(GestureRecognizerOptions.DragAcceleration));
+        if (_options.TapMaxDuration < TimeSpan.Zero || _options.DoubleTapWindow < TimeSpan.Zero || _options.TapDeadlineJitterAllowance < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "TapMaxDuration, DoubleTapWindow and TapDeadlineJitterAllowance must not be negative.");
+        }
+
+        _jitterUs = _options.TapDeadlineJitterAllowance.Ticks / TimeSpan.TicksPerMicrosecond;
+
+        _tapMaxUs = _options.TapMaxDuration.Ticks / TimeSpan.TicksPerMicrosecond;
+        _doubleTapWindowUs = _options.DoubleTapWindow.Ticks / TimeSpan.TicksPerMicrosecond;
     }
 
     private enum State : byte
     {
+        /// <summary>Fewer than two contacts, nothing active.</summary>
         Idle,
+        /// <summary>2-4 contacts, no threshold crossed yet.</summary>
         Possible,
         Scrolling,
         Pinching,
+        Dragging,
+        Swiping,
+        SystemPinching,
+        /// <summary>Five or more fingers: no gesture until all lift.</summary>
+        Ignored,
+        /// <summary>A gesture ended while fingers remain: nothing new until all lift.</summary>
+        Finished,
+        /// <summary>Pen in range or cancelled: no gesture, tap or touch-down until all lift.</summary>
         Blocked,
     }
 
@@ -62,8 +221,43 @@ public sealed class GestureRecognizer
     /// <summary>Number of contacts in the last processed frame.</summary>
     public int ContactCount { get; private set; }
 
-    /// <summary>True when a gesture has Began and not yet Ended/Cancelled.</summary>
-    public bool IsActive => _state is State.Scrolling or State.Pinching;
+    /// <summary>True when a gesture with phases (not Tap/SmartZoom/TouchDown) has Began and not yet Ended/Cancelled.</summary>
+    public bool IsActive => _state is State.Scrolling or State.Pinching or State.Dragging or State.Swiping or State.SystemPinching;
+
+    /// <summary>
+    /// Timer deadline (µs, the <see cref="Process"/> clock) for a held tap while no finger is down: the end of the
+    /// double-tap window plus <see cref="GestureRecognizerOptions.TapDeadlineJitterAllowance"/>. Null when no tap is
+    /// held or fingers are down (then frames decide). Call <see cref="CheckDeadline"/> then
+    /// (<see cref="PenStateTracker"/> does it from its watchdog timer).
+    /// </summary>
+    public long? PendingDeadlineUs => _pendingTap && ContactCount == 0 ? _pendingLiftUs + _doubleTapWindowUs + _jitterUs : null;
+
+    /// <summary>
+    /// Timer path: emits a held Tap once <see cref="PendingDeadlineUs"/> has passed (no second tap landed in time).
+    /// Does nothing while fingers are down. Safe to call at any time.
+    /// </summary>
+    public void CheckDeadline(long timestampUs)
+    {
+        if (PendingDeadlineUs is { } due && timestampUs >= due)
+        {
+            FlushPendingTap(timestampUs);
+        }
+    }
+
+    /// <summary>Frame path: flushes a held tap whose window (no finger down) or tap duration (finger down) passed.</summary>
+    private void CheckFrameDeadline(long timestampUs)
+    {
+        if (!_pendingTap)
+        {
+            return;
+        }
+
+        long due = ContactCount == 0 ? _pendingLiftUs + _doubleTapWindowUs : _tapStartUs + _tapMaxUs + 1;
+        if (timestampUs >= due)
+        {
+            FlushPendingTap(timestampUs);
+        }
+    }
 
     /// <summary>Processes the complete current touch state.</summary>
     /// <param name="touches">All active touches from the datagram.</param>
@@ -76,93 +270,98 @@ public sealed class GestureRecognizer
             return;
         }
 
+        CheckFrameDeadline(timestampUs);
+        int previousCount = ContactCount;
         int count = UpdateLandingOrder(touches);
         ContactCount = count;
 
         if (penInRange)
         {
+            FlushPendingTap(timestampUs); // the tap happened; the pen only rules out a double tap
             if (IsActive)
             {
-                Emit(GesturePhase.Cancelled, 0, 0, 1, _prevCenter, synthetic: false, timestampUs);
+                Emit(GesturePhase.Cancelled, 0, 0, 1, 0, _prevCenter, synthetic: false, timestampUs);
             }
 
-            _state = State.Blocked;
+            _tapCandidate = false;
+            _state = count > 0 ? State.Blocked : State.Idle; // only fingers already down are blocked
             return;
         }
 
-        switch (_state)
+        if (_pendingTap && (count > 2 || (_tapCandidate && _tapLandings + _landed > 2)))
         {
-            case State.Blocked:
-                if (count == 0)
-                {
-                    _state = State.Idle;
-                }
-
-                return;
-
-            case State.Idle:
-                TryStart(touches);
-                return;
+            FlushPendingTap(timestampUs); // a third finger: no double tap, emit before its TouchDown
         }
 
-        if (!TryFind(touches, _idA, out TouchSample a) || !TryFind(touches, _idB, out TouchSample b))
+        if (_landed > 0 && _state != State.Blocked && !IsActive)
         {
-            if (IsActive)
-            {
-                Emit(GesturePhase.Ended, 0, 0, 1, _prevCenter, synthetic: false, timestampUs);
-            }
-
-            _state = State.Idle;
-            TryStart(touches);
-            return;
+            EmitTouchDown(touches, timestampUs); // not during a gesture: a brushing finger must not reset its momentum samples
         }
 
-        Measure(a, b, out DisplayPoint center, out double spread);
-        switch (_state)
+        TrackTap(touches, previousCount, count, timestampUs);
+        RunStateMachine(touches, count, timestampUs);
+
+        if (count == 0 && previousCount > 0)
         {
-            case State.Possible:
-                Decide(center, spread, timestampUs);
-                break;
-
-            case State.Scrolling:
-            {
-                double dx = center.X - _prevCenter.X;
-                double dy = center.Y - _prevCenter.Y;
-                if (dx != 0 || dy != 0)
-                {
-                    Emit(GesturePhase.Changed, dx, dy, 1, center, synthetic: false, timestampUs);
-                }
-
-                break;
-            }
-
-            case State.Pinching:
-            {
-                double scale = spread / Math.Max(_prevSpread, MinSpread);
-                if (scale != 1 || center != _prevCenter)
-                {
-                    Emit(GesturePhase.Changed, 0, 0, scale, center, synthetic: false, timestampUs);
-                }
-
-                break;
-            }
+            OnSequenceEnded(timestampUs);
         }
-
-        _prevCenter = center;
-        _prevSpread = spread;
     }
 
-    /// <summary>Aborts any gesture as if all fingers lifted (watchdog / session end). Emits Cancelled if active.</summary>
+    /// <summary>
+    /// Aborts any gesture as if all fingers lifted (watchdog / session end). Emits Cancelled if active. A held tap is
+    /// dropped; if fingers were down, gestures (and taps, touch-downs) stay blocked until a frame without contacts.
+    /// </summary>
     public void Cancel(long timestampUs, bool synthetic = true)
     {
         if (IsActive)
         {
-            Emit(GesturePhase.Cancelled, 0, 0, 1, _prevCenter, synthetic, timestampUs);
+            Emit(GesturePhase.Cancelled, 0, 0, 1, 0, _prevCenter, synthetic, timestampUs);
         }
 
-        _state = State.Idle;
+        _state = ContactCount > 0 ? State.Blocked : State.Idle;
+        _tapCandidate = false;
+        _pendingTap = false;
         _orderCount = 0;
         ContactCount = 0;
+    }
+
+    private static void RequireNonNegative(double value, string name)
+    {
+        if (!(value >= 0) || !double.IsFinite(value))
+        {
+            throw new ArgumentOutOfRangeException(name, "Must be finite and not negative.");
+        }
+    }
+
+    private static void RequirePositive(double value, string name)
+    {
+        if (!(value > 0) || !double.IsFinite(value))
+        {
+            throw new ArgumentOutOfRangeException(name, "Must be positive and finite.");
+        }
+    }
+
+    /// <summary>Normalizes an angle difference to (-180, 180] degrees.</summary>
+    private static double WrapDegrees(double degrees)
+    {
+        degrees %= 360;
+        if (degrees > 180)
+        {
+            degrees -= 360;
+        }
+        else if (degrees <= -180)
+        {
+            degrees += 360;
+        }
+
+        return degrees;
+    }
+
+    private static double Distance(DisplayPoint a, DisplayPoint b)
+    {
+        double dx = a.X - b.X;
+        double dy = a.Y - b.Y;
+        return Math.Sqrt((dx * dx) + (dy * dy));
     }
 
     private static bool TryFind(ReadOnlySpan<TouchSample> touches, byte id, out TouchSample found)
@@ -180,7 +379,386 @@ public sealed class GestureRecognizer
         return false;
     }
 
-    /// <summary>Keeps still-present contacts in landing order and appends new ones; returns the contact count.</summary>
+    private static GestureKind KindOf(State state) => state switch
+    {
+        State.Pinching => GestureKind.Pinch,
+        State.Dragging => GestureKind.Drag,
+        State.Swiping => GestureKind.SystemSwipe,
+        State.SystemPinching => GestureKind.SystemPinch,
+        _ => GestureKind.Scroll,
+    };
+
+    private void RunStateMachine(ReadOnlySpan<TouchSample> touches, int count, long timestampUs)
+    {
+        switch (_state)
+        {
+            case State.Blocked:
+            case State.Ignored:
+            case State.Finished:
+                if (count == 0)
+                {
+                    _state = State.Idle;
+                }
+
+                return;
+
+            case State.Idle:
+            case State.Possible:
+                if (count > MaxGestureFingers)
+                {
+                    _state = State.Ignored;
+                }
+                else if (count < 2)
+                {
+                    _state = State.Idle;
+                }
+                else if (_state == State.Idle || _landed > 0 || count != _n)
+                {
+                    Baseline(touches, count, timestampUs);
+                }
+                else if (Measure(touches, out DisplayPoint c, out double s, out double a))
+                {
+                    Decide(c, s, a, timestampUs);
+                    Remember(c, s, a, timestampUs);
+                }
+
+                return;
+        }
+
+        if (!Measure(touches, out DisplayPoint center, out double spread, out double angle))
+        {
+            Emit(GesturePhase.Ended, 0, 0, 1, 0, _prevCenter, synthetic: false, timestampUs);
+            _state = count > 0 ? State.Finished : State.Idle;
+            return;
+        }
+
+        switch (_state)
+        {
+            case State.Scrolling:
+            case State.Dragging:
+            {
+                double rx = center.X - _prevCenter.X;
+                double ry = center.Y - _prevCenter.Y;
+                if (rx != 0 || ry != 0)
+                {
+                    long dt = Math.Clamp(timestampUs - _prevUs, MinSpeedIntervalUs, MaxSpeedIntervalUs);
+                    double speed = Math.Sqrt((rx * rx) + (ry * ry)) * 1e6 / dt;
+                    _speed = (_speed + speed) / 2;
+                    double gain = Gain(_speed);
+                    Emit(GesturePhase.Changed, rx * gain, ry * gain, 1, 0, center, synthetic: false, timestampUs);
+                }
+
+                break;
+            }
+
+            case State.Pinching:
+            {
+                double scale = spread / Math.Max(_prevSpread, MinSpread);
+                double rotation = RotationSincePrevious(spread, angle);
+                if (scale != 1 || rotation != 0 || center != _prevCenter)
+                {
+                    Emit(GesturePhase.Changed, 0, 0, scale, rotation, center, synthetic: false, timestampUs);
+                }
+
+                break;
+            }
+
+            case State.Swiping:
+            case State.SystemPinching:
+            {
+                double progress = SystemProgress(center, spread);
+                if (progress != _progress || center != _prevCenter)
+                {
+                    _progress = progress;
+                    Emit(GesturePhase.Changed, 0, 0, 1, 0, center, synthetic: false, timestampUs);
+                }
+
+                break;
+            }
+        }
+
+        Remember(center, spread, angle, timestampUs);
+    }
+
+    /// <summary>Starts (or restarts) an undecided gesture on all current contacts, in landing order.</summary>
+    private void Baseline(ReadOnlySpan<TouchSample> touches, int count, long timestampUs)
+    {
+        _n = Math.Min(count, Math.Min(_orderCount, MaxGestureFingers));
+        Array.Copy(_order, _ids, _n);
+        if (!Measure(touches, out _startCenter, out _startSpread, out _prevAngle))
+        {
+            _state = State.Idle;
+            return;
+        }
+
+        _prevCenter = _startCenter;
+        _prevSpread = _startSpread;
+        _startUs = timestampUs;
+        _prevUs = timestampUs;
+        _rotationSinceStart = 0;
+        _state = State.Possible;
+    }
+
+    private void Remember(DisplayPoint center, double spread, double angle, long timestampUs)
+    {
+        if (_state == State.Possible)
+        {
+            _rotationSinceStart += RotationSincePrevious(spread, angle);
+        }
+
+        _prevCenter = center;
+        _prevSpread = spread;
+        if (spread >= MinSpread)
+        {
+            _prevAngle = angle;
+        }
+
+        _prevUs = timestampUs;
+    }
+
+    private void Decide(DisplayPoint center, double spread, double angle, long timestampUs)
+    {
+        double reference = Mapper.ShortSide;
+        double dx = center.X - _startCenter.X;
+        double dy = center.Y - _startCenter.Y;
+        double travel = Math.Sqrt((dx * dx) + (dy * dy));
+        double spreadChange = Math.Abs(spread - _startSpread);
+
+        if (_n == 2)
+        {
+            double rotation = _rotationSinceStart + RotationSincePrevious(spread, angle);
+            double arc = Math.Abs(rotation) / DegreesPerRadian * (spread / 2);
+            bool pinch = spreadChange >= _options.PinchThreshold * reference && spreadChange >= travel;
+            bool rotate = arc >= _options.RotationThreshold * reference && arc >= travel;
+            if (pinch || rotate)
+            {
+                Lock(State.Pinching, timestampUs);
+                double scale = spread / Math.Max(_startSpread, MinSpread);
+                Emit(GesturePhase.Began, 0, 0, scale, rotation, center, synthetic: false, timestampUs);
+            }
+            else if (travel >= _options.ScrollThreshold * reference)
+            {
+                BeginRelative(State.Scrolling, dx, dy, travel, center, timestampUs);
+            }
+        }
+        else if (_n == 3)
+        {
+            if (travel >= _options.DragThreshold * reference)
+            {
+                BeginRelative(State.Dragging, dx, dy, travel, center, timestampUs);
+            }
+        }
+        else if (spreadChange >= _options.SystemPinchThreshold * reference && spreadChange >= travel)
+        {
+            Lock(State.SystemPinching, timestampUs);
+            _direction = spread < _startSpread ? GestureDirection.In : GestureDirection.Out;
+            _progress = SystemProgress(center, spread);
+            Emit(GesturePhase.Began, 0, 0, 1, 0, center, synthetic: false, timestampUs);
+        }
+        else if (travel >= _options.SwipeThreshold * reference)
+        {
+            Lock(State.Swiping, timestampUs);
+            _direction = Math.Abs(dx) >= Math.Abs(dy)
+                ? (dx < 0 ? GestureDirection.Left : GestureDirection.Right)
+                : (dy < 0 ? GestureDirection.Up : GestureDirection.Down);
+            _progress = SystemProgress(center, spread);
+            Emit(GesturePhase.Began, 0, 0, 1, 0, center, synthetic: false, timestampUs);
+        }
+    }
+
+    private void BeginRelative(State state, double dx, double dy, double travel, DisplayPoint center, long timestampUs)
+    {
+        Lock(state, timestampUs);
+        _speed = travel * 1e6 / Math.Max(timestampUs - _startUs, MinSpeedIntervalUs);
+        double gain = Gain(_speed);
+        Emit(GesturePhase.Began, dx * gain, dy * gain, 1, 0, center, synthetic: false, timestampUs);
+    }
+
+    /// <summary>Locks the gesture kind: a gesture began, so this touch sequence is no tap and a held tap is emitted first.</summary>
+    private void Lock(State state, long timestampUs)
+    {
+        FlushPendingTap(timestampUs);
+        _state = state;
+        _tapCandidate = false;
+        _direction = GestureDirection.None;
+        _progress = 0;
+    }
+
+    private double Gain(double speed) => _state == State.Dragging
+        ? _options.DragGain * _options.DragAcceleration.GainAt(speed)
+        : _options.ScrollGain * _options.ScrollAcceleration.GainAt(speed);
+
+    /// <summary>Cumulative progress toward the locked direction, as a fraction of the short side.</summary>
+    private double SystemProgress(DisplayPoint center, double spread)
+    {
+        double reference = Mapper.ShortSide;
+        return _direction switch
+        {
+            GestureDirection.Up => (_startCenter.Y - center.Y) / reference,
+            GestureDirection.Down => (center.Y - _startCenter.Y) / reference,
+            GestureDirection.Left => (_startCenter.X - center.X) / reference,
+            GestureDirection.Right => (center.X - _startCenter.X) / reference,
+            GestureDirection.In => (_startSpread - spread) / reference,
+            GestureDirection.Out => (spread - _startSpread) / reference,
+            _ => 0,
+        };
+    }
+
+    /// <summary>Unwrapped angle change since the previous frame; 0 when either spread is too small to have an angle.</summary>
+    private double RotationSincePrevious(double spread, double angle) =>
+        _n == 2 && spread >= MinSpread && _prevSpread >= MinSpread ? WrapDegrees(angle - _prevAngle) : 0;
+
+    /// <summary>
+    /// Measures the gesture's fingers: centroid, spread (2 fingers: their distance; more: twice the mean distance from
+    /// the centroid) and, for 2 fingers, the angle from the first to the second (degrees, y down: increasing turns
+    /// clockwise on screen). False when one of them is no longer down.
+    /// </summary>
+    private bool Measure(ReadOnlySpan<TouchSample> touches, out DisplayPoint center, out double spread, out double angle)
+    {
+        center = default;
+        spread = 0;
+        angle = 0;
+        double sumX = 0;
+        double sumY = 0;
+        for (int i = 0; i < _n; i++)
+        {
+            if (!TryFind(touches, _ids[i], out TouchSample t))
+            {
+                return false;
+            }
+
+            DisplayPoint p = Mapper.Map(t.X, t.Y);
+            _points[i] = p;
+            sumX += p.X;
+            sumY += p.Y;
+        }
+
+        center = new DisplayPoint(sumX / _n, sumY / _n);
+        if (_n == 2)
+        {
+            double sx = _points[1].X - _points[0].X;
+            double sy = _points[1].Y - _points[0].Y;
+            spread = Math.Sqrt((sx * sx) + (sy * sy));
+            angle = Math.Atan2(sy, sx) * DegreesPerRadian;
+            return true;
+        }
+
+        double sum = 0;
+        for (int i = 0; i < _n; i++)
+        {
+            sum += Distance(_points[i], center);
+        }
+
+        spread = 2 * sum / _n;
+        return true;
+    }
+
+    /// <summary>Follows one touch sequence (first landing until all lift) and drops the tap candidate when a rule breaks.</summary>
+    private void TrackTap(ReadOnlySpan<TouchSample> touches, int previousCount, int count, long timestampUs)
+    {
+        if (previousCount == 0 && count > 0 && _state != State.Blocked)
+        {
+            _tapCandidate = true;
+            _tapPaired = false;
+            _tapLandings = 0;
+            _tapSlots = 0;
+            _tapStartUs = timestampUs;
+        }
+
+        if (!_tapCandidate || count == 0)
+        {
+            return;
+        }
+
+        _tapLandings += _landed;
+        if (count > 2 || _tapLandings > 2 || timestampUs - _tapStartUs > _tapMaxUs)
+        {
+            _tapCandidate = false;
+            return;
+        }
+
+        double slop = _options.TapSlop * Mapper.ShortSide;
+        for (int i = 0; i < touches.Length; i++)
+        {
+            TouchSample t = touches[i];
+            if (!t.Contact)
+            {
+                continue;
+            }
+
+            DisplayPoint p = Mapper.Map(t.X, t.Y);
+            if (_tapSlots > 0 && t.PointerId == _tapId0)
+            {
+                _tapCandidate &= Distance(p, _tapLand0) <= slop;
+            }
+            else if (_tapSlots > 1 && t.PointerId == _tapId1)
+            {
+                _tapCandidate &= Distance(p, _tapLand1) <= slop;
+            }
+            else if (_tapSlots == 0)
+            {
+                _tapId0 = t.PointerId;
+                _tapLand0 = p;
+                _tapSlots = 1;
+            }
+            else
+            {
+                _tapId1 = t.PointerId;
+                _tapLand1 = p;
+                _tapSlots = 2;
+            }
+        }
+
+        if (count == 2)
+        {
+            _tapPaired = true;
+        }
+    }
+
+    /// <summary>All fingers lifted: a tap is held (or completes a SmartZoom); anything else resolves a held tap.</summary>
+    private void OnSequenceEnded(long timestampUs)
+    {
+        bool isTap = _tapCandidate && _tapPaired && timestampUs - _tapStartUs <= _tapMaxUs;
+        _tapCandidate = false;
+        if (!isTap)
+        {
+            FlushPendingTap(timestampUs);
+            return;
+        }
+
+        var mid = new DisplayPoint((_tapLand0.X + _tapLand1.X) / 2, (_tapLand0.Y + _tapLand1.Y) / 2);
+        if (_pendingTap && Distance(mid, _pendingMid) <= _options.DoubleTapSlop * Mapper.ShortSide)
+        {
+            _pendingTap = false;
+            _sink.OnGestureEvent(new GestureEvent(GestureKind.SmartZoom, GesturePhase.Ended, 0, 0, 1, 0, GestureDirection.None, 0, mid, false, timestampUs));
+            return;
+        }
+
+        FlushPendingTap(timestampUs);
+        _pendingTap = true;
+        _pendingLiftUs = timestampUs;
+        _pendingMid = mid;
+        if (_doubleTapWindowUs == 0)
+        {
+            FlushPendingTap(timestampUs);
+        }
+    }
+
+    private void FlushPendingTap(long timestampUs)
+    {
+        if (!_pendingTap)
+        {
+            return;
+        }
+
+        _pendingTap = false;
+        _sink.OnGestureEvent(new GestureEvent(GestureKind.Tap, GesturePhase.Ended, 0, 0, 1, 0, GestureDirection.None, 0, _pendingMid, false, timestampUs));
+    }
+
+    /// <summary>
+    /// Keeps still-present contacts in landing order and appends new ones; returns the contact count. Sets
+    /// <c>_landed</c> to the number of contacts that were not in the previous frame.
+    /// </summary>
     private int UpdateLandingOrder(ReadOnlySpan<TouchSample> touches)
     {
         int kept = 0;
@@ -193,6 +771,7 @@ public sealed class GestureRecognizer
         }
 
         int count = 0;
+        int keptBefore = kept;
         for (int i = 0; i < touches.Length; i++)
         {
             TouchSample t = touches[i];
@@ -208,61 +787,39 @@ public sealed class GestureRecognizer
             }
         }
 
+        _landed = kept - keptBefore;
+        if (_landed > 0)
+        {
+            _firstLandedId = _scratch[keptBefore];
+        }
+
         Array.Copy(_scratch, _order, kept);
         _orderCount = kept;
         return count;
     }
 
-    private void TryStart(ReadOnlySpan<TouchSample> touches)
+    private void EmitTouchDown(ReadOnlySpan<TouchSample> touches, long timestampUs)
     {
-        if (_orderCount < 2
-            || !TryFind(touches, _order[0], out TouchSample first)
-            || !TryFind(touches, _order[1], out TouchSample second))
-        {
-            return;
-        }
-
-        _idA = first.PointerId;
-        _idB = second.PointerId;
-        Measure(first, second, out _startCenter, out _startSpread);
-        _prevCenter = _startCenter;
-        _prevSpread = _startSpread;
-        _state = State.Possible;
+        TryFind(touches, _firstLandedId, out TouchSample first);
+        DisplayPoint at = Mapper.Map(first.X, first.Y);
+        _sink.OnGestureEvent(new GestureEvent(GestureKind.TouchDown, GesturePhase.Began, 0, 0, 1, 0, GestureDirection.None, 0, at, false, timestampUs));
     }
 
-    private void Decide(DisplayPoint center, double spread, long timestampUs)
+    private void Emit(GesturePhase phase, double dx, double dy, double scale, double rotation, DisplayPoint center, bool synthetic, long timestampUs)
     {
-        double reference = Mapper.ShortSide;
-        double dx = center.X - _startCenter.X;
-        double dy = center.Y - _startCenter.Y;
-        double travel = Math.Sqrt((dx * dx) + (dy * dy));
-        double spreadChange = Math.Abs(spread - _startSpread);
-
-        if (spreadChange >= _options.PinchThreshold * reference && spreadChange >= travel)
-        {
-            _state = State.Pinching;
-            Emit(GesturePhase.Began, 0, 0, spread / Math.Max(_startSpread, MinSpread), center, synthetic: false, timestampUs);
-        }
-        else if (travel >= _options.ScrollThreshold * reference)
-        {
-            _state = State.Scrolling;
-            Emit(GesturePhase.Began, dx, dy, 1, center, synthetic: false, timestampUs);
-        }
-    }
-
-    private void Measure(TouchSample a, TouchSample b, out DisplayPoint center, out double spread)
-    {
-        DisplayPoint pa = Mapper.Map(a.X, a.Y);
-        DisplayPoint pb = Mapper.Map(b.X, b.Y);
-        center = new DisplayPoint((pa.X + pb.X) / 2, (pa.Y + pb.Y) / 2);
-        double sx = pa.X - pb.X;
-        double sy = pa.Y - pb.Y;
-        spread = Math.Sqrt((sx * sx) + (sy * sy));
-    }
-
-    private void Emit(GesturePhase phase, double dx, double dy, double scale, DisplayPoint center, bool synthetic, long timestampUs)
-    {
-        GestureKind kind = _state == State.Pinching ? GestureKind.Pinch : GestureKind.Scroll;
-        _sink.OnGestureEvent(new GestureEvent(kind, phase, dx, dy, scale, center, synthetic, timestampUs));
+        GestureKind kind = KindOf(_state);
+        bool system = kind is GestureKind.SystemSwipe or GestureKind.SystemPinch;
+        _sink.OnGestureEvent(new GestureEvent(
+            kind,
+            phase,
+            dx,
+            dy,
+            scale,
+            rotation,
+            system ? _direction : GestureDirection.None,
+            system ? _progress : 0,
+            center,
+            synthetic,
+            timestampUs));
     }
 }
