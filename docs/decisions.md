@@ -246,7 +246,7 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
 - **Consequences / deferred:** in this mode a tap is decided from touch frames, so losing one frame must neither lose nor double a click (tests cover it); ADR-0025 still covers the fallback mode. Pointer speed becomes configurable in Phase 5.
 
 ## ADR-0027 — One-finger pointer slop and settle time
-**Status:** accepted (2026-10-15). Refines ADR-0026's "movement within `TapSlop` is held back".
+**Status:** accepted (2026-10-15). Refines ADR-0026's "movement within `TapSlop` is held back"; its click window is set by ADR-0028 (2026-10-15).
 - **Context:** holding a lone finger until `TapSlop` (3.5%, about 2.5 mm) would make every cursor move start late and feel sticky. A smaller slop alone lets the first finger of a staggered two-finger tap drift into a cursor move, which loses the right-click or the smart zoom (review of #124).
 - **Decision:**
   - **Pointer slop:** a lone finger starts moving the cursor beyond `PointerSlop` (1.5%, about 1 mm).
@@ -254,3 +254,12 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
   - **Click slop:** a one-finger double click or tap-and-a-half must land within `ClickSlop` (5%, as in ADR-0022) of the previous click, not within the wider smart-zoom `DoubleTapSlop`.
   - **Finger fallback gate:** the one-finger cursor needs the phone's finger fallback to be on (SurfaceInfo `FingerFallback`), so a lone finger does nothing when fallback is off.
 - **Why:** a gesture that can turn into another must not decide before that other gesture's slop does.
+
+## ADR-0028 — Separate tap windows for one and two fingers
+**Status:** accepted (2026-10-15). Refines ADR-0026 and ADR-0027, which used "the double-tap window" for one-finger double clicks as well.
+- **Context:** a held two-finger tap fires its right-click only when the double-tap window ends, plus `TapDeadlineJitterAllowance` (50 ms). At 400 ms (#128) the user found the right-click too slow in the S23 test (#110, round 3). One-finger clicks are posted at once, so their window adds no delay.
+- **Decision:**
+  - `DoubleTapWindow` is **300 ms** and applies to two fingers only (held tap, smart zoom), so the right-click comes about 350 ms after lift.
+  - The new `ClickWindow`, **400 ms**, applies to one-finger double clicks and tap-and-a-half.
+  - The relaxed two-finger slops and tap duration from #128 stay as they are.
+- **Why:** the window is the only part of the smart-zoom fix that costs latency; the slops gave most of the reliability. Phase 5 may make both windows configurable.

@@ -124,7 +124,7 @@ public enum GestureKind : byte
     /// <summary>
     /// One-finger tap = left click at the current cursor (ADR-0026). One event with <see cref="GesturePhase.Ended"/>,
     /// emitted on the lift with no delay, and <see cref="GestureEvent.ClickCount"/> = 1, or one more than the previous
-    /// Click when this tap landed within <see cref="GestureRecognizerOptions.DoubleTapWindow"/> after it lifted and
+    /// Click when this tap landed within <see cref="GestureRecognizerOptions.ClickWindow"/> after it lifted and
     /// within <see cref="GestureRecognizerOptions.ClickSlop"/> of where it landed (2 = double click, 3 = triple).
     /// Post a left mouse-down and mouse-up at the current cursor with that click state.
     /// </summary>
@@ -132,7 +132,7 @@ public enum GestureKind : byte
 
     /// <summary>
     /// One-finger "tap and a half" = left drag from the current cursor (ADR-0026): a touch landing within
-    /// <see cref="GestureRecognizerOptions.DoubleTapWindow"/> and <see cref="GestureRecognizerOptions.ClickSlop"/> of
+    /// <see cref="GestureRecognizerOptions.ClickWindow"/> and <see cref="GestureRecognizerOptions.ClickSlop"/> of
     /// a Click that then moves beyond the pointer slop (as for PointerMove), or stays down longer than
     /// <see cref="GestureRecognizerOptions.TapMaxDuration"/>. Began: press the left button at the current cursor
     /// (click state 1, never counted as a double click), then move by the deltas (0 when it began by holding still);

@@ -69,10 +69,12 @@ public sealed record GestureRecognizerOptions
     /// A two-finger tap is held this long after its lift: a second two-finger tap landing within it (and within
     /// <see cref="DoubleTapSlop"/>) makes a SmartZoom instead. Zero emits taps at once (no smart zoom). It delays every
     /// secondary click by this much (plus <see cref="TapDeadlineJitterAllowance"/>), so it trades a relaxed double
-    /// tap's lift-to-landing gap (often 200-350 ms) against right-click latency, short of the macOS double-click
-    /// interval (500 ms by default).
+    /// tap's lift-to-landing gap (usually 200-280 ms) against right-click latency: 300 ms keeps the right-click near
+    /// a third of a second after the lift while still catching a relaxed double tap, short of the macOS double-click
+    /// interval (500 ms by default). The tap and double-tap slops, not a long window, are what make relaxed double
+    /// taps register.
     /// </summary>
-    public TimeSpan DoubleTapWindow { get; init; } = TimeSpan.FromMilliseconds(400);
+    public TimeSpan DoubleTapWindow { get; init; } = TimeSpan.FromMilliseconds(300);
 
     /// <summary>
     /// How near the second tap's landing midpoint must be to the first's for a SmartZoom. Two fingers re-landing
@@ -114,7 +116,15 @@ public sealed record GestureRecognizerOptions
     public TimeSpan PointerSettleTime { get; init; } = TimeSpan.FromMilliseconds(100);
 
     /// <summary>
-    /// One finger: how near a touch must land to the previous Click (within <see cref="DoubleTapWindow"/>) to count it
+    /// One finger: how soon after the previous Click's lift a touch must land to count it on (double click) or, if it
+    /// moves, to drag (tap and a half). Separate from <see cref="DoubleTapWindow"/>: a Click is never held, so a longer
+    /// window costs no latency, and 400 ms catches a relaxed double click within the macOS double-click interval
+    /// (500 ms by default).
+    /// </summary>
+    public TimeSpan ClickWindow { get; init; } = TimeSpan.FromMilliseconds(400);
+
+    /// <summary>
+    /// One finger: how near a touch must land to the previous Click (within <see cref="ClickWindow"/>) to count it
     /// on (double click) or, if it moves, to drag (tap and a half). Narrower than <see cref="DoubleTapSlop"/> (widened
     /// for smart zoom), so moving the cursor soon after a click elsewhere stays a move; 5% like ADR-0022.
     /// </summary>
@@ -165,7 +175,7 @@ public sealed record GestureRecognizerOptions
 /// contact is replaced by new ones within one frame, the old touch sequence ends first.
 /// Lifting within <see cref="GestureRecognizerOptions.TapMaxDuration"/> without leaving the slop emits a Click at once
 /// (after a held two-finger Tap, which happened first). Leaving the slop begins a PointerMove, or a PointerDrag when the
-/// touch landed within <see cref="GestureRecognizerOptions.DoubleTapWindow"/> and
+/// touch landed within <see cref="GestureRecognizerOptions.ClickWindow"/> and
 /// <see cref="GestureRecognizerOptions.ClickSlop"/> of a Click (tap and a half; holding still past the tap duration
 /// begins it too); it Ends on the lift. Such a tap instead counts the Click on (ClickCount 2, 3, …). A second finger
 /// ends the one-finger action (Ended; a PointerDrag releases its button) and the fingers start the multi-finger
@@ -206,6 +216,7 @@ public sealed class GestureRecognizer
     private readonly GestureRecognizerOptions _options;
     private readonly long _tapMaxUs;
     private readonly long _doubleTapWindowUs;
+    private readonly long _clickWindowUs;
     private readonly long _jitterUs;
     private readonly long _pointerSettleUs;
     private readonly byte[] _order = new byte[MaxTrackedContacts];
@@ -293,15 +304,17 @@ public sealed class GestureRecognizer
         ArgumentNullException.ThrowIfNull(_options.DragAcceleration, nameof(GestureRecognizerOptions.DragAcceleration));
         _options.ScrollAcceleration.Validate(nameof(GestureRecognizerOptions.ScrollAcceleration));
         _options.DragAcceleration.Validate(nameof(GestureRecognizerOptions.DragAcceleration));
-        if (_options.TapMaxDuration < TimeSpan.Zero || _options.DoubleTapWindow < TimeSpan.Zero || _options.TapDeadlineJitterAllowance < TimeSpan.Zero)
+        if (_options.TapMaxDuration < TimeSpan.Zero || _options.DoubleTapWindow < TimeSpan.Zero || _options.ClickWindow < TimeSpan.Zero
+            || _options.TapDeadlineJitterAllowance < TimeSpan.Zero)
         {
-            throw new ArgumentOutOfRangeException(nameof(options), "TapMaxDuration, DoubleTapWindow and TapDeadlineJitterAllowance must not be negative.");
+            throw new ArgumentOutOfRangeException(nameof(options), "TapMaxDuration, DoubleTapWindow, ClickWindow and TapDeadlineJitterAllowance must not be negative.");
         }
 
         _jitterUs = _options.TapDeadlineJitterAllowance.Ticks / TimeSpan.TicksPerMicrosecond;
 
         _tapMaxUs = _options.TapMaxDuration.Ticks / TimeSpan.TicksPerMicrosecond;
         _doubleTapWindowUs = _options.DoubleTapWindow.Ticks / TimeSpan.TicksPerMicrosecond;
+        _clickWindowUs = _options.ClickWindow.Ticks / TimeSpan.TicksPerMicrosecond;
     }
 
     /// <summary>The axis a scroll is locked to (<see cref="GestureRecognizerOptions.ScrollAxisLockRatio"/>).</summary>
@@ -948,7 +961,7 @@ public sealed class GestureRecognizer
 
         DisplayPoint p = Mapper.Map(t.X, t.Y);
         _pointerPress = _clickValid
-            && timestampUs - _clickLiftUs <= _doubleTapWindowUs
+            && timestampUs - _clickLiftUs <= _clickWindowUs
             && Distance(p, _clickLand) <= _options.ClickSlop * Mapper.ShortSide;
         _clickValid = _pointerPress; // a Click counts on only into the very next touch
         _pointerId = t.PointerId;

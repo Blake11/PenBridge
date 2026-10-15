@@ -4,8 +4,8 @@ namespace PenBridge.Core.Tests.Input;
 
 /// <summary>
 /// Relaxed two-finger taps and double taps on an S23 Ultra-sized surface with the default options (#121): each
-/// offset or timing here was rejected by the earlier defaults (2% tap slop, 5% double-tap slop, 200 ms tap, 300 ms
-/// window). The guards check that single taps still right-click and slow scrolls stay no tap.
+/// offset or timing here was rejected by the earlier defaults (2% tap slop, 5% double-tap slop, 200 ms tap). The
+/// guards check that single taps still right-click and slow scrolls stay no tap.
 /// </summary>
 public class GestureRelaxedDoubleTapTests
 {
@@ -91,10 +91,10 @@ public class GestureRelaxedDoubleTapTests
     }
 
     [Fact]
-    public void A_350_ms_gap_between_the_taps_smart_zooms()
+    public void A_280_ms_gap_between_the_taps_smart_zooms()
     {
         RelaxedTap(0, 70, 34); // lifts at 190 ms
-        RelaxedTap(540, 70, 34); // lands 350 ms later (the old window was 300 ms)
+        RelaxedTap(470, 70, 34); // lands 280 ms later, near the end of the 300 ms window
         Assert.Equal([GestureKind.SmartZoom], Kinds());
     }
 
@@ -102,7 +102,7 @@ public class GestureRelaxedDoubleTapTests
     public void A_relaxed_double_tap_with_every_offset_at_once_smart_zooms()
     {
         RelaxedTap(0, 70, 34, downMs: 180, staggerMs: 60, driftMm: 1.8);
-        RelaxedTap(570, 64, 30, downMs: 170, staggerMs: 50, driftMm: -1.8); // 330 ms gap, ~7 mm off
+        RelaxedTap(520, 64, 30, downMs: 170, staggerMs: 50, driftMm: -1.8); // 280 ms gap, ~7 mm off
         GestureEvent zoom = Assert.Single(Gestures);
         Assert.Equal(GestureKind.SmartZoom, zoom.Kind);
     }
@@ -112,8 +112,8 @@ public class GestureRelaxedDoubleTapTests
     {
         RelaxedTap(0, 70, 34, downMs: 200, staggerMs: 60, driftMm: 2); // lifts at 260 ms
         Assert.Empty(Gestures);
-        Assert.Equal(Ms(260 + 400 + 50), _rec.PendingDeadlineUs);
-        _rec.CheckDeadline(Ms(710));
+        Assert.Equal(Ms(260 + 300 + 50), _rec.PendingDeadlineUs);
+        _rec.CheckDeadline(Ms(610));
         Assert.Equal([GestureKind.Tap], Kinds());
     }
 
