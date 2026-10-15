@@ -357,6 +357,8 @@ internal sealed class ServerConnection
 
             if (previous is not null)
             {
+                // Completes after the old connection released its input and raised SessionEnded, so both precede this
+                // session's input and SessionStarted. PublishInput enforces the input half on its own as well.
                 await previous.CloseAsync(ByeReason.TakenOver, SessionEndReason.TakenOver).ConfigureAwait(false);
             }
 

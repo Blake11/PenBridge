@@ -559,8 +559,9 @@ public sealed partial class ServerHost : IAsyncDisposable
     // Server events: thread pool → main queue; events from a server that was replaced meanwhile are ignored.
     private void OnSessionStarted(object? sender, SessionStartedEventArgs e) => OnMain(sender, () =>
     {
-        // A coast belongs to the previous session's fingers. On a takeover this can run before the old session's
-        // SessionEnded (which then sees the new session as current and skips its own stop), so stop it here too.
+        // A coast belongs to the previous session's fingers. On a takeover Core releases the old session's input and
+        // raises its SessionEnded before this SessionStarted (OnMain keeps that order), so the old session's stop has
+        // already run; stopping here too is a harmless belt-and-braces measure.
         _sink.StopMomentum();
         _session = e.Session;
         _status = ServerHostStatus.Connected;

@@ -24,6 +24,10 @@ namespace PenBridge.Core.Net;
 /// <see cref="ITimer"/>s from the injected <see cref="TimeProvider"/>; nothing polls, so an idle server uses no CPU.</para>
 /// <para>All tracker, recognizer and sink calls are serialized by one input lock. Events are raised on thread-pool
 /// threads; handlers must be quick and marshal to the UI themselves.</para>
+/// <para>Takeover ordering (ADR-0010, #107): the displaced session's input release (synthetic pen Up/ButtonUps/Leave,
+/// gesture Cancelled) reaches the sink, under the input lock, before the new session's input is published; after that
+/// no sink call comes from the old session (late frames, datagrams and timers are dropped). The old session's
+/// <see cref="SessionEnded"/> is raised before the new one's <see cref="SessionStarted"/>.</para>
 /// </remarks>
 public sealed class PenBridgeServer : IAsyncDisposable
 {
@@ -43,6 +47,7 @@ public sealed class PenBridgeServer : IAsyncDisposable
     private Task? _udpLoop;
     private ServerConnection? _active;
     private SessionInput? _activeInput;
+    private SessionInput? _inputOwner; // the last published input; guarded by _inputLock
     private readonly Dictionary<IPAddress, int> _pendingByAddress = [];
     private int _pending;
     private volatile bool _allowTakeover;
@@ -395,23 +400,72 @@ public sealed class PenBridgeServer : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Makes <paramref name="input"/> the one that receives input, if <paramref name="connection"/> is still active.
+    /// False when it was taken over (or closed) meanwhile; the caller then shuts the input down unused.
+    /// </summary>
+    /// <remarks>
+    /// <para>Input handoff (#107): under the input lock, the previously published input is shut down (its release —
+    /// synthetic pen Up/ButtonUps/ProximityLeave and a gesture Cancelled — reaches the sink) <i>before</i> the new
+    /// input becomes reachable by the UDP loop or the session loop. Normally the old connection's close already did
+    /// this (the taking-over connection awaits it), and the shutdown here is a no-op; this makes the order a local
+    /// invariant instead of a consequence of that await. After the handoff the old input is closed, so a late frame,
+    /// datagram or timer of the old session is dropped and never reaches the sink.</para>
+    /// <para>Lock order: input lock, then <c>_gate</c>. Nothing takes them the other way round.</para>
+    /// </remarks>
     internal bool PublishInput(ServerConnection connection, SessionInput input)
     {
-        lock (_gate)
+        SessionInput? previous;
+        Exception? fault = null;
+        bool published;
+        lock (_inputLock)
         {
-            if (!ReferenceEquals(_active, connection))
+            lock (_gate)
             {
-                return false;
+                // Checked before releasing: a connection that is no longer active must not release the input of the
+                // one that took over from it.
+                if (!ReferenceEquals(_active, connection))
+                {
+                    return false;
+                }
+
+                previous = ReferenceEquals(_inputOwner, input) ? null : _inputOwner;
             }
 
-            input.SetTarget(_display, _region);
-            Volatile.Write(ref _activeInput, input);
-            return true;
+            if (previous is not null)
+            {
+                fault = previous.ShutdownCore();
+            }
+
+            lock (_gate)
+            {
+                // Taken over while releasing: the newer connection publishes (and releases nothing more of ours).
+                published = ReferenceEquals(_active, connection);
+                if (published)
+                {
+                    _inputOwner = input;
+                    input.SetTarget(_display, _region);
+                    Volatile.Write(ref _activeInput, input);
+                }
+            }
         }
+
+        // Outside the locks: the fault callback closes the old connection.
+        previous?.ReportFault(fault);
+        return published;
     }
 
     internal void OnConnectionEnded(ServerConnection connection)
     {
+        lock (_inputLock)
+        {
+            // The ending connection already shut its input down; don't retain it until the next session publishes.
+            if (connection.Input is { } input && ReferenceEquals(_inputOwner, input))
+            {
+                _inputOwner = null;
+            }
+        }
+
         lock (_gate)
         {
             _connections.Remove(connection);

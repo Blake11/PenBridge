@@ -14,7 +14,9 @@ namespace PenBridge.Core.Net;
 /// <remarks>
 /// <para>Every tracker/recognizer call (datagrams, TLS InputFrames, the watchdog, surface changes, shutdown) runs under
 /// one lock shared by all sessions of a server, so the <see cref="IInputSink"/> is never called concurrently, even while
-/// an old session is releasing and a new one starts. The watchdog is a one-shot timer re-armed from
+/// an old session is releasing and a new one starts. The server publishes a new session's input only after the
+/// previous one's <see cref="Shutdown"/> completed under that lock (<see cref="PenBridgeServer.PublishInput"/>), so on a
+/// takeover the old release precedes every new-session event and nothing of the old session follows it. The watchdog is a one-shot timer re-armed from
 /// <see cref="PenStateTracker.WatchdogDueIn"/> after each frame; with nothing active it stays disarmed (no polling).</para>
 /// <para>Endpoint: the session's UDP source is pinned by the first authenticated datagram and re-pinned only by a
 /// datagram from a new source that authenticates (AEAD) <i>and</i> carries a sequence above the highest seen, so
@@ -290,14 +292,25 @@ internal sealed class SessionInput : IDisposable
     }
 
     /// <summary>Ends the session input: synthesizes the full release (unless faulted), stops the watchdog, drops the key.</summary>
-    public void Shutdown()
+    /// <remarks>
+    /// The release reaches the sink before this returns, and from then on nothing of this session (a late datagram or
+    /// InputFrame, a watchdog or ack timer already queued) calls the sink again: every path checks the closed flag
+    /// under the input lock. Idempotent.
+    /// </remarks>
+    public void Shutdown() => ReportFault(ShutdownCore());
+
+    /// <summary>
+    /// <see cref="Shutdown"/> without reporting a sink fault: the caller may hold the input lock (it is re-entrant) and
+    /// passes the result to <see cref="ReportFault"/> after leaving it, so the fault callback never runs under the lock.
+    /// </summary>
+    internal Exception? ShutdownCore()
     {
         Exception? fault = null;
         lock (_lock)
         {
             if (_disposed)
             {
-                return;
+                return null;
             }
 
             _disposed = true;
@@ -324,8 +337,11 @@ internal sealed class SessionInput : IDisposable
 
         _watchdog.Dispose();
         _ackTimer.Dispose();
-        Report(fault);
+        return fault;
     }
+
+    /// <summary>Reports a fault returned by <see cref="ShutdownCore"/> (no-op for null). Call without the input lock.</summary>
+    internal void ReportFault(Exception? fault) => Report(fault);
 
     public void Dispose() => Shutdown();
 
