@@ -306,7 +306,7 @@ public class GesturePipelineTests
 
     // ---- Palm ----
 
-    [Fact(Skip = "Open question (needs a wire signal): the filter drops the palm-suppressed touches, which the Mac reads as a quick two-finger lift, a Tap")]
+    [Fact(Skip = "#114 (needs a wire signal): the filter drops the palm-suppressed touches, which the Mac reads as a quick two-finger lift, a Tap")]
     public void Palm_landing_right_after_two_fingers_is_no_right_click()
     {
         TwoFingers(0, 20);
@@ -317,7 +317,7 @@ public class GesturePipelineTests
         Assert.Equal(["TouchDown"], _p.Names());
     }
 
-    [Fact(Skip = "Open question (needs a wire signal): a canceled two-finger touch reaches the Mac as a quick lift, a Tap")]
+    [Fact(Skip = "#114 (needs a wire signal): a canceled two-finger touch reaches the Mac as a quick lift, a Tap")]
     public void Platform_cancel_right_after_two_fingers_is_no_right_click()
     {
         TwoFingers(0, 20);

@@ -31,6 +31,8 @@ internal sealed class OrderedSink : IInputSink
 /// release repeats) → <see cref="InputPayload"/> write/read round-trip → Mac <see cref="PenStateTracker"/> and its
 /// <see cref="GestureRecognizer"/> with the tracker's watchdog/held-tap timer. Zero network latency; the Mac clock
 /// follows the phone clock. Times are whole milliseconds since the session started.
+/// Not modelled: network latency, jitter and loss, and PadSendQueue coalescing (a full queue overwrites its newest
+/// frame) or drops; every frame arrives at once, in order.
 /// </summary>
 internal sealed class GesturePipeline
 {
