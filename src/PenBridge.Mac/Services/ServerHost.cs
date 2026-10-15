@@ -559,6 +559,9 @@ public sealed partial class ServerHost : IAsyncDisposable
     // Server events: thread pool → main queue; events from a server that was replaced meanwhile are ignored.
     private void OnSessionStarted(object? sender, SessionStartedEventArgs e) => OnMain(sender, () =>
     {
+        // A coast belongs to the previous session's fingers. On a takeover this can run before the old session's
+        // SessionEnded (which then sees the new session as current and skips its own stop), so stop it here too.
+        _sink.StopMomentum();
         _session = e.Session;
         _status = ServerHostStatus.Connected;
         _accessibilityMissing = !AccessibilityStatus.IsTrusted();
@@ -577,6 +580,7 @@ public sealed partial class ServerHost : IAsyncDisposable
         {
             _session = null;
             _status = ServerHostStatus.Listening;
+            _sink.StopMomentum(); // a coast outlives the fingers; not after a takeover (a newer session is current)
         }
 
         Log.SessionEnded(_log, PeerText.Sanitize(e.Session.DeviceName), e.Reason.ToString());

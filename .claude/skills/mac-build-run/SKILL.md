@@ -64,6 +64,28 @@ scripts/mac-run.sh -- <dotnet build args>   # e.g. -- -p:ValidateXcodeVersion=fa
 - **Latency (P3-D):** `scripts/latency-report.sh --enable`, then restart the app (`open` drops env vars, so `PENBRIDGE_LATENCY_LOG=1` only works when launching the binary directly or with `open --env`). Draw, end the session (or `--dump-now`, which sends SIGUSR1), then `scripts/latency-report.sh`. Dumps are in `~/Library/Logs/PenBridge`; SimClient `draw --in-process-server --repeat 6` with the env var checks the pipeline without a phone (`--sim`). The capture setting persists as a user default: turn it off after measuring with `scripts/latency-report.sh --disable`.
 - Headless injection check (no Screen Recording needed): another process polling `CGEventGetLocation(CGEventCreate(NULL))` sees the cursor follow a SimClient `draw circle`.
 
+## Gesture events (mac-gesture-events; ADR-0023, measured on macOS 27)
+Code: `src/PenBridge.Mac/Input/CGEventGestureInjector.cs` (two-finger) and `CGEventSystemGestureInjector.cs` (three/four-finger).
+
+| What | How |
+|---|---|
+| Gesture event | `CGEventCreate(src)` + `CGEventSetType(29)` (undocumented kCGSEventGesture) |
+| Field 110 = HID type | 8 zoom (NSEventTypeMagnify), 5 rotate, 22 smart zoom (no phase), 6 scroll (swipe companion); 61/62 begin/end wrappers not needed |
+| Value fields | shared storage: 113/114/118 one slot, 119/139 the next — set only the one the type uses. 113 magnification (per-event delta, apps scale by 1+m), 114 rotation (degrees, + = counterclockwise), 118/119 companion scroll x/y |
+| Phase | field 132 (gesture) / 99 (scroll): 1 Began, 2 Changed, 4 Ended, 8 Cancelled, 128 MayBegin (NSEvent 1/4/8/16/32). Cancelled behaves like Ended (Safari keeps the zoom) |
+| Momentum | scroll field 123: 1 begin, 2 continue, 3 end; no companion (fingers are up) |
+| Scroll | `CGEventCreateScrollWheelEvent2(src, pixel, 2, wheelY, wheelX, 0)`, integer points only → carry the remainder. Positive wheel = content moves down/right |
+| Natural scrolling | posted events are not inverted by the system: natural on → wheel = +finger delta, off → negate. Pref `com.apple.swipescrolldirection` (kCFPreferencesAnyApplication, absent = on); cache it, refresh on the distributed notification `SwipeScrollDirectionDidChangeNotification` (no polling). Field 137 = isDirectionInvertedFromDevice (sign unchanged; set it like a real device) |
+
+- **Swipe between pages** needs, before each phased scroll event, a type-29 companion (110 = 6, 132 = the same phase, 118/119 = the unrounded deltas). The Began delta must be nonzero, otherwise AppKit's `trackSwipeEvent` starts and stays at the first amount, then cancels. Safari goes back for +dx (content moves right).
+- **Frontmost only:** magnify, rotate and smart zoom reach only the active app (dropped over an inactive window; target pid, `CGEventPostToPid`, the 61/62 wrapper don't help). Scroll reaches the window under the cursor.
+- Open the magnify/rotate streams only once their value passes a small threshold (0.02 / 2°): Preview follows whichever stream began first.
+- Any posted mouse/scroll/gesture event **with a location** moves the cursor there; leave the location at the `CGEventCreate` default (current cursor) to keep it still. Posted click state is used as is (no automatic counting); mouse-up defaults to 0, so set it to the down's value.
+- Track which phases were actually posted open: after an Accessibility revoke the ends were skipped, so close them when the grant returns.
+- **Four-finger fallbacks** (Dock events type 30 / HID 23 did nothing on a Mac without a trackpad): ⌃↑ keycode 126 / ⌃↓ 125 (flags ctrl+fn) toggle Mission Control / App Exposé; F11 keycode 103 (fn) toggles show desktop; ⌃←/→ 123/124 switch Spaces; the launcher is `/System/Applications/Apps.app` (opening it again toggles it). Three-finger drag = LeftDown at the cursor, LeftDragged at previous + delta, LeftUp.
+- **Posted keystrokes leave their modifiers in the HID state:** after a key event with ⌃+fn flags, `CGEventSourceFlagsState(HID)` stays ⌃+fn and every later event created from a HID-state source inherits them (a pen click becomes a ⌃-click). Post a FlagsChanged (type 12) with the previous flags after the key-up. Check with `CGEventSource.flagsState(.hidSystemState)`.
+- **Headless verification:** a listen-only CGEventTap (fields), an NSView logging NSEvents (must be the active app for gestures), a local page reporting scroll/visualViewport/gesture*/contextmenu to a local HTTP server, AX sizes (Preview AXImage). Mission Control / App Exposé open = the Dock process's AX children gain an `AXGroup` with AXIdentifier `mc` / `appexpose` (needs Accessibility for the probe's host). Pair SimClient via the menu's "Pair new device…" and read the PIN through AX (PenBridge's AXExtrasMenuBar, then its window); a private `HOME` gives SimClient its own pairing store.
+
 ## Menu-bar shell notes (`src/PenBridge.Mac/Shell`)
 - **Carbon P/Invoke types:** `ItemCount` and `ByteCount` are `unsigned long` → `nuint`; `UInt32`/`OSType`/`OptionBits` → `uint`; `OSStatus` → `int`. A `uint` passed for an `ItemCount` leaves the upper 32 bits of the 64-bit argument register undefined, so the callee may read a huge count.
 - **Global hotkey:** `RegisterEventHotKey` without `kEventHotKeyExclusive` can silently share a combination with another app (both fire). Register exclusively so a conflict fails with an error, and show the menu item as unavailable.

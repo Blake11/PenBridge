@@ -20,4 +20,16 @@ internal static partial class InputLog
 
     [LoggerMessage(104, LogLevel.Warning, "No active display: pen input is dropped until a display is available")]
     public static partial void NoDisplays(ILogger logger);
+
+    [LoggerMessage(105, LogLevel.Information, "Natural scrolling: {Natural}")]
+    public static partial void NaturalScrolling(ILogger logger, bool natural);
+
+    [LoggerMessage(106, LogLevel.Information, "Four-finger gestures: {Mode}")]
+    public static partial void SystemGestureMode(ILogger logger, string mode);
+
+    [LoggerMessage(107, LogLevel.Warning, "No app launcher found ({BundleIds}): four-finger pinch-in does nothing")]
+    public static partial void LauncherMissing(ILogger logger, string bundleIds);
+
+    [LoggerMessage(108, LogLevel.Warning, "Opening the app launcher failed: {Error}")]
+    public static partial void LauncherFailed(ILogger logger, string error);
 }
