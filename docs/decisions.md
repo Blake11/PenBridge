@@ -218,3 +218,12 @@ Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with 
 - **Why not a new "canceled" bit:** the touch decoder (1.0.0 included) rejects datagrams with unknown state bits, so a new bit would need a capability negotiation. **Why not freezing the contact as still down:** it breaks ADR-0022's palm rule (a quick palm-and-lift would still tap) and would hold a three-finger drag's button.
 - **Compatibility:** a 1.0.0 phone with a 1.1.0 Mac behaves as before. A 1.1.0 phone with a 1.0.0 Mac: the datagrams are valid, and 1.0.0 ignores gestures.
 - **Consequences:** `docs/specs/phase-1-core.md` documents the `Contact=false` semantics. The end-to-end pipeline tests cover it.
+
+## ADR-0025 — Recover a lost finger tap by resending its frame (protocol 1.1, `SampleDedupe`)
+**Status:** accepted (2026-10-15). A minor protocol change: protocol 1.1 adds a capability bit.
+- **Context:** in one-finger cursor mode (ADR-0022) a tap travels as hover → contact → none inside **one** datagram. If that datagram is lost, the click is lost silently: the release repeats resend only the final empty state (#92). The input wire carries no per-sample timestamps, and the Mac re-applies every history sample, so a naive resend would double-click.
+- **Decision:**
+  - The Mac skips a frame's history samples unless its `timeUs` is later than the last applied frame's. The current sample is always applied (it's full state, so re-applying is harmless). The watermark resets per session.
+  - Capability bit `SampleDedupe` (protocol **1.1**): the Mac advertises it. Only then do the phone's release repeats resend a click frame (contact in history, ending empty; up to 8 samples) **unchanged**. Each new frame gets a strictly later `timeUs`, and any new frame cancels the resend.
+- **Compatibility:** a 1.0.0 Mac doesn't advertise the bit, so a 1.1 phone behaves as before (no double-click). A 1.0.0 phone with a 1.1 Mac: the dedupe is harmless, because 1.0.0 never reuses a frame time. Minor-version mismatches are accepted (major only is refused).
+- **Why not sending clicks over the TLS channel:** it needs new message types and a second input path, and the head would have to order them against UDP samples.
