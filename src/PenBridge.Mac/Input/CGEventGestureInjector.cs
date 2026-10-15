@@ -197,7 +197,7 @@ internal sealed class CGEventGestureInjector : IDisposable
         if (_scrollOpen)
         {
             _scrollOpen = false;
-            PostScroll(0, 0, 0, 0, PhaseCancelled, 0);
+            CancelScroll();
         }
 
         ClosePinch(PhaseCancelled);
@@ -226,7 +226,7 @@ internal sealed class CGEventGestureInjector : IDisposable
         _heldDegrees = 0;
         if (_postedScrollOpen)
         {
-            PostScroll(0, 0, 0, 0, PhaseCancelled, 0);
+            CancelScroll();
         }
 
         if (_postedMomentumOpen)
@@ -261,7 +261,7 @@ internal sealed class CGEventGestureInjector : IDisposable
             case GesturePhase.Began:
                 if (_scrollOpen)
                 {
-                    PostScroll(0, 0, 0, 0, PhaseCancelled, 0); // never leave a phase open
+                    CancelScroll(); // never leave a phase open
                 }
 
                 _natural = _naturalScrolling.Value;
@@ -299,7 +299,7 @@ internal sealed class CGEventGestureInjector : IDisposable
                 if (_scrollOpen)
                 {
                     _scrollOpen = false;
-                    PostScroll(0, 0, 0, 0, PhaseCancelled, 0);
+                    CancelScroll();
                 }
 
                 break;
@@ -468,6 +468,18 @@ internal sealed class CGEventGestureInjector : IDisposable
                 PostScroll(0, 0, 0, 0, 0, MomentumEnd); // only after a Begin that was actually posted
             }
         }
+    }
+
+    /// <summary>
+    /// Cancels the open scroll phase: Cancelled, then an Ended without deltas. AppKit delivers a posted Cancelled
+    /// scroll but keeps the gesture open, and on the next phased scroll event synthesizes an Ended that carries that
+    /// event's deltas (the first delta of the next scroll lands twice). The trailing Ended closes it at once; a page
+    /// swipe (<c>trackSwipeEvent</c>) cut by the Cancelled still aborts.
+    /// </summary>
+    private void CancelScroll()
+    {
+        PostScroll(0, 0, 0, 0, PhaseCancelled, 0);
+        PostScroll(0, 0, 0, 0, PhaseEnded, 0);
     }
 
     /// <summary>
