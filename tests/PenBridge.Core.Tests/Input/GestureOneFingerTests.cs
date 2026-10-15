@@ -9,7 +9,7 @@ namespace PenBridge.Core.Tests.Input;
 public class GestureOneFingerTests
 {
     // Square 1000x1000 surface onto a 1000x1000 display. These tests use a 35 pt pointer slop (3.5%) for round numbers;
-    // tap 300 ms, double tap 300 ms / 200 pt.
+    // tap 300 ms, two-finger double tap 300 ms / 200 pt, one-finger click window 400 ms.
     private static readonly CoordinateMapper Square = new(1000, 1000, new DisplayRect(0, 0, 1000, 1000));
 
     private static readonly GestureRecognizerOptions Linear = new()
@@ -151,13 +151,13 @@ public class GestureOneFingerTests
     public void Two_taps_in_the_window_double_click_and_a_third_triple_clicks()
     {
         Tap(0);
-        Tap(80 + 250, 520, 480); // 250 ms after the first lift, 28 pt away
-        Tap(410 + 250, 500, 500);
+        Tap(80 + 350, 520, 480); // 350 ms after the first lift (past the two-finger window), 28 pt away
+        Tap(510 + 350, 500, 500);
         Assert.Equal(["Click1", "Click2", "Click3"], Names());
     }
 
     [Theory]
-    [InlineData(301, 0)]   // landed after the double-tap window
+    [InlineData(401, 0)]   // landed after the click window
     [InlineData(100, 201)] // landed beyond the double-tap slop
     public void Taps_apart_in_time_or_place_are_single_clicks(double gapMs, double dx)
     {
@@ -165,6 +165,37 @@ public class GestureOneFingerTests
         Tap(80 + gapMs, 500 + dx, 500);
         Assert.Equal(["Click1", "Click1"], Names());
     }
+
+    [Fact]
+    public void The_click_window_is_separate_from_the_two_finger_double_tap_window()
+    {
+        _rec = new GestureRecognizer(_sink, Linear with { ClickWindow = TimeSpan.FromMilliseconds(400), DoubleTapWindow = TimeSpan.FromMilliseconds(300) })
+        {
+            Mapper = Square,
+        };
+        Tap(0);
+        Tap(80 + 350); // one finger 350 ms later: double click
+        Frame(1000, F(1, 400, 500), F(2, 600, 500)); // two-finger tap
+        Lift(1050);
+        Frame(1400, F(1, 400, 500), F(2, 600, 500)); // 350 ms later: past the 300 ms window, so a new tap
+        Lift(1450);
+        _rec.CheckDeadline(Ms(3000));
+        Assert.Equal(["Click1", "Click2", "Tap", "Tap"], Names());
+    }
+
+    [Fact]
+    public void Tap_and_a_half_350_ms_after_the_click_still_drags()
+    {
+        Tap(0);
+        Frame(80 + 350, F(1, 500, 500));
+        Frame(80 + 390, F(1, 550, 500)); // past the slop: drag, not a move
+        Lift(80 + 420);
+        Assert.Equal(["Click1", "PointerDrag.Began", "PointerDrag.Ended"], Names());
+    }
+
+    [Fact]
+    public void A_negative_click_window_is_rejected() =>
+        Assert.Throws<ArgumentOutOfRangeException>(() => new GestureRecognizer(_sink, Linear with { ClickWindow = TimeSpan.FromMilliseconds(-1) }));
 
     [Fact]
     public void Tap_and_a_half_drags_from_the_cursor_and_releases_on_lift()
