@@ -9,7 +9,7 @@ namespace PenBridge.Core.Tests.Input;
 public class GestureOneFingerTests
 {
     // Square 1000x1000 surface onto a 1000x1000 display. These tests use a 35 pt pointer slop (3.5%) for round numbers;
-    // tap 300 ms, double tap 400 ms / 200 pt.
+    // tap 300 ms, double tap 300 ms / 200 pt.
     private static readonly CoordinateMapper Square = new(1000, 1000, new DisplayRect(0, 0, 1000, 1000));
 
     private static readonly GestureRecognizerOptions Linear = new()
@@ -151,13 +151,13 @@ public class GestureOneFingerTests
     public void Two_taps_in_the_window_double_click_and_a_third_triple_clicks()
     {
         Tap(0);
-        Tap(80 + 350, 520, 480); // 350 ms after the first lift, 28 pt away
-        Tap(510 + 350, 500, 500);
+        Tap(80 + 250, 520, 480); // 250 ms after the first lift, 28 pt away
+        Tap(410 + 250, 500, 500);
         Assert.Equal(["Click1", "Click2", "Click3"], Names());
     }
 
     [Theory]
-    [InlineData(401, 0)]   // landed after the double-tap window
+    [InlineData(301, 0)]   // landed after the double-tap window
     [InlineData(100, 201)] // landed beyond the double-tap slop
     public void Taps_apart_in_time_or_place_are_single_clicks(double gapMs, double dx)
     {

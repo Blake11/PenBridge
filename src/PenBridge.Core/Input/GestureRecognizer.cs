@@ -69,10 +69,12 @@ public sealed record GestureRecognizerOptions
     /// A two-finger tap is held this long after its lift: a second two-finger tap landing within it (and within
     /// <see cref="DoubleTapSlop"/>) makes a SmartZoom instead. Zero emits taps at once (no smart zoom). It delays every
     /// secondary click by this much (plus <see cref="TapDeadlineJitterAllowance"/>), so it trades a relaxed double
-    /// tap's lift-to-landing gap (often 200-350 ms) against right-click latency, short of the macOS double-click
-    /// interval (500 ms by default).
+    /// tap's lift-to-landing gap (usually 200-280 ms) against right-click latency: 300 ms keeps the right-click near
+    /// a third of a second after the lift while still catching a relaxed double tap, short of the macOS double-click
+    /// interval (500 ms by default). The tap and double-tap slops, not a long window, are what make relaxed double
+    /// taps register.
     /// </summary>
-    public TimeSpan DoubleTapWindow { get; init; } = TimeSpan.FromMilliseconds(400);
+    public TimeSpan DoubleTapWindow { get; init; } = TimeSpan.FromMilliseconds(300);
 
     /// <summary>
     /// How near the second tap's landing midpoint must be to the first's for a SmartZoom. Two fingers re-landing

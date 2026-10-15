@@ -20,7 +20,7 @@ internal static class DrawScripts
         ];
 
     /// <summary>
-    /// Long enough after a tap for the server's held-tap deadline (GestureRecognizerOptions.DoubleTapWindow 400 ms +
+    /// Long enough after a tap for the server's held-tap deadline (GestureRecognizerOptions.DoubleTapWindow 300 ms +
     /// TapDeadlineJitterAllowance 50 ms) to pass before the script ends, so the right-click is posted.
     /// </summary>
     private static readonly TimeSpan TapSettle = TimeSpan.FromMilliseconds(600);
