@@ -57,6 +57,9 @@ A filter that holds input back until a deadline (`InputFilter` holds a lone fing
 rely on the next event: a still finger sends none. Give it a deadline API (`PendingDeadline`) and have the head arm a
 timer that calls `Process` again then (Android: `DrawSurfaceView` arm runnable). Test both: the deadline value, and
 that a `Process` call at the deadline with no new input releases the held samples.
+Scripted waits depend on these deadlines too: SimClient `DrawScripts.TapSettle` must exceed the recognizer's
+`DoubleTapWindow + TapDeadlineJitterAllowance`, or the script ends before a held two-finger tap fires. Raise it when
+those defaults change.
 
 ## Soak (flaky timing tests)
 Before calling a timing test fixed, run it under full CPU load, in parallel:
