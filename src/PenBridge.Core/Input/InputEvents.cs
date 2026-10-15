@@ -114,8 +114,8 @@ public enum GestureKind : byte
     /// <see cref="GestureEvent.DeltaY"/>: the finger's movement since the previous event in display points, through
     /// <see cref="GestureRecognizerOptions.DragGain"/> and <see cref="GestureRecognizerOptions.DragAcceleration"/>.
     /// Began comes when the finger first moves beyond <see cref="GestureRecognizerOptions.PointerSlop"/> of where it
-    /// landed and carries only that frame's step (the movement inside the slop is dropped, so the cursor starts
-    /// smoothly). Post a mouse-moved event at the current cursor plus the delta, clamped to the displays, for each
+    /// landed and carries the whole movement since the landing (the cursor catches up; nothing is lost to the slop).
+    /// Only when the phone's finger fallback is on (<see cref="GestureRecognizer.PhoneFingerFallback"/>). Post a mouse-moved event at the current cursor plus the delta, clamped to the displays, for each
     /// Began/Changed. Ended (the finger lifted, or a second finger landed) and Cancelled post nothing.
     /// </summary>
     PointerMove = 9,
@@ -135,7 +135,7 @@ public enum GestureKind : byte
     /// a Click that then moves beyond <see cref="GestureRecognizerOptions.PointerSlop"/>, or stays down longer than
     /// <see cref="GestureRecognizerOptions.TapMaxDuration"/>. Began: press the left button at the current cursor
     /// (click state 1, never counted as a double click), then move by the deltas (0 when it began by holding still);
-    /// Changed: drag by the deltas (same units and gain as PointerMove); Ended (lift, or a second finger landed) or
+    /// Changed: drag by the deltas (same units and gain as PointerMove; Began catches up the movement since landing); Ended (lift, or a second finger landed) or
     /// Cancelled: release the button at the current cursor. Always released: the head must post the mouse-up for both.
     /// </summary>
     PointerDrag = 11,

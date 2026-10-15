@@ -48,8 +48,7 @@ public class GesturePipelineOneFingerTests
 
         Assert.Equal(["PointerMove.Began", "PointerMove.Changed", "PointerMove.Ended"], Names());
         double dx = _p.GestureEvents().Sum(g => g.DeltaX);
-        double slop = 0.035 * GesturePipeline.Mapper.ShortSide; // dropped inside the slop
-        Assert.InRange(dx, 200 - slop - 2, 200 * 1.2);
+        Assert.InRange(dx, 198, 200 * 1.2); // nothing lost to the slop
         Assert.Empty(_p.PenEvents());
     }
 

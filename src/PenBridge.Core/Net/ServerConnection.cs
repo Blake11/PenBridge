@@ -433,7 +433,7 @@ internal sealed class ServerConnection
             {
                 case ControlMessageType.SurfaceInfo:
                     SurfaceInfoMessage surface = frame.Read<SurfaceInfoMessage>();
-                    input.ConfigureSurface(surface.WidthPx, surface.HeightPx);
+                    input.ConfigureSurface(surface.WidthPx, surface.HeightPx, surface.Capabilities);
                     break;
                 case ControlMessageType.InputFrame:
                     bool wasTls = input.Transport == InputTransport.Tls;

@@ -47,7 +47,7 @@ internal static class Program
                  needs a server offering FingerTouches), packet-loss (a circle with 20% of datagrams dropped)
         """;
 
-    private static readonly SurfaceInfoMessage Surface = new(1440, 3088, 500f, 500f, SurfaceOrientation.Portrait, SurfaceCapabilities.None);
+    private static readonly SurfaceInfoMessage Surface = new(1440, 3088, 500f, 500f, SurfaceOrientation.Portrait, SurfaceCapabilities.FingerFallback);
 
     public static async Task<int> Main(string[] args)
     {

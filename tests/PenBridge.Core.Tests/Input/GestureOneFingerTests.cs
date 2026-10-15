@@ -8,12 +8,14 @@ namespace PenBridge.Core.Tests.Input;
 /// </summary>
 public class GestureOneFingerTests
 {
-    // Square 1000x1000 surface onto a 1000x1000 display: pointer slop 3.5% = 35 pt, tap 300 ms, double tap 400 ms / 200 pt.
+    // Square 1000x1000 surface onto a 1000x1000 display. These tests use a 35 pt pointer slop (3.5%) for round numbers;
+    // tap 300 ms, double tap 400 ms / 200 pt.
     private static readonly CoordinateMapper Square = new(1000, 1000, new DisplayRect(0, 0, 1000, 1000));
 
     private static readonly GestureRecognizerOptions Linear = new()
     {
         OneFingerCursor = true,
+        PointerSlop = 0.035,
         DragAcceleration = GestureAcceleration.None,
     };
 
@@ -61,22 +63,23 @@ public class GestureOneFingerTests
     }
 
     [Fact]
-    public void Movement_within_the_slop_moves_nothing_then_only_each_frame_step_moves_the_cursor()
+    public void Movement_within_the_slop_moves_nothing_then_the_cursor_catches_up_the_whole_movement()
     {
         Frame(0, F(1, 500, 500));
         Frame(10, F(1, 520, 500));
         Frame(20, F(1, 534, 500)); // 34 pt: still inside the 35 pt slop
         Assert.Empty(Events);
 
-        Frame(30, F(1, 540, 504)); // crosses it: Began carries this frame's step only
+        Frame(30, F(1, 540, 504)); // crosses it: Began carries the movement since the landing
         Frame(40, F(1, 560, 494));
         Frame(50, F(1, 560, 494)); // no movement: no event
         Lift(60);
 
         Assert.Equal(["PointerMove.Began", "PointerMove.Changed", "PointerMove.Ended"], Names());
         GestureEvent began = Events[0];
-        Assert.Equal(6, began.DeltaX, 1);
+        Assert.Equal(40, began.DeltaX, 1);
         Assert.Equal(4, began.DeltaY, 1);
+        Assert.Equal(60, Events.Sum(e => e.DeltaX), 1); // all of the finger's travel
         Assert.Equal(20, Events[1].DeltaX, 1);
         Assert.Equal(-10, Events[1].DeltaY, 1);
         Assert.Equal(0, Events[2].DeltaX);
@@ -174,7 +177,7 @@ public class GestureOneFingerTests
         Lift(280);
 
         Assert.Equal(["Click1", "PointerDrag.Began", "PointerDrag.Changed", "PointerDrag.Ended"], Names());
-        Assert.Equal(30, Events[1].DeltaX, 1);
+        Assert.Equal(50, Events[1].DeltaX, 1); // since the landing at 500
         Assert.Equal(30, Events[2].DeltaX, 1);
         Assert.Equal(20, Events[2].DeltaY, 1);
         Assert.Equal(0, Events[1].ClickCount);
@@ -409,6 +412,33 @@ public class GestureOneFingerTests
         }
 
         Assert.Equal(["Click1", "Click2"], Names());
+    }
+
+    [Fact]
+    public void The_default_slop_is_about_a_millimetre_of_phone_travel()
+    {
+        Assert.Equal(0.015, new GestureRecognizerOptions().PointerSlop);
+        _rec = new GestureRecognizer(_sink, new GestureRecognizerOptions { OneFingerCursor = true }) { Mapper = Square };
+        Frame(0, F(1, 500, 500));
+        Frame(10, F(1, 514, 500)); // 14 pt of 1000: inside 15
+        Assert.Empty(Events);
+        Frame(20, F(1, 516, 500));
+        Assert.Equal(GestureKind.PointerMove, Assert.Single(Events).Kind);
+    }
+
+    [Fact]
+    public void A_phone_with_finger_fallback_off_gets_no_one_finger_gestures()
+    {
+        _rec.PhoneFingerFallback = false;
+        Tap(0);
+        Frame(200, F(1, 500, 500));
+        Frame(220, F(1, 600, 500));
+        Lift(240);
+        Assert.Empty(Events);
+
+        _rec.PhoneFingerFallback = true; // turned back on (a new SurfaceInfo): the next touch is a pointer again
+        Tap(400);
+        Assert.Equal(["Click1"], Names());
     }
 
     [Fact]

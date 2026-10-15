@@ -189,7 +189,13 @@ internal sealed class SessionInput : IDisposable
     }
 
     /// <summary>Applies SurfaceInfo: (re)configures the mapper. Frames are dropped until this is called.</summary>
-    public void ConfigureSurface(ushort widthPx, ushort heightPx)
+    /// <param name="widthPx">Surface width.</param>
+    /// <param name="heightPx">Surface height.</param>
+    /// <param name="capabilities">
+    /// The SurfaceInfo flags: <see cref="SurfaceCapabilities.FingerFallback"/> off means the phone's lone fingers do
+    /// nothing, so the one-finger cursor stays off (<see cref="GestureRecognizer.PhoneFingerFallback"/>).
+    /// </param>
+    public void ConfigureSurface(ushort widthPx, ushort heightPx, SurfaceCapabilities capabilities = SurfaceCapabilities.FingerFallback)
     {
         lock (_lock)
         {
@@ -200,7 +206,20 @@ internal sealed class SessionInput : IDisposable
 
             _surfaceWidth = widthPx;
             _surfaceHeight = heightPx;
+            _tracker.Gestures.PhoneFingerFallback = (capabilities & SurfaceCapabilities.FingerFallback) != 0;
             ApplyMapperLocked();
+        }
+    }
+
+    /// <summary>The last SurfaceInfo declared finger fallback on (tests, diagnostics).</summary>
+    internal bool PhoneFingerFallback
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _tracker.Gestures.PhoneFingerFallback;
+            }
         }
     }
 

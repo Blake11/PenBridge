@@ -96,11 +96,13 @@ public sealed record GestureRecognizerOptions
     public bool OneFingerCursor { get; init; }
 
     /// <summary>
-    /// One finger: how far it may move from where it landed and still be a tap. Movement within it doesn't move the
-    /// cursor, so a second finger landing (a two-finger gesture) never nudges it first. The default equals
-    /// <see cref="TapSlop"/>.
+    /// One finger: how far it may move from where it landed and still be a tap. Until it moves farther the cursor stays
+    /// put, so a second finger landing (a two-finger gesture) never nudges it; once it does, PointerMove Began catches
+    /// up the whole movement since the landing. 0.015 of the short side is about 1 mm on an S23 Ultra (≈70 mm short
+    /// side), about 13 pt when the phone's landscape surface fills a 1920×1080 pt display (≈895 pt short side). Kept
+    /// small so the cursor starts at once; a tap that drifts farther than this is a move, not a click.
     /// </summary>
-    public double PointerSlop { get; init; } = 0.035;
+    public double PointerSlop { get; init; } = 0.015;
 }
 
 /// <summary>
@@ -139,9 +141,9 @@ public sealed record GestureRecognizerOptions
 /// turn a double tap into two taps. Only <see cref="Cancel"/> drops a held tap.
 /// </para>
 /// <para>
-/// <b>One finger</b> (only with <see cref="GestureRecognizerOptions.OneFingerCursor"/>, ADR-0026): a touch sequence
+/// <b>One finger</b> (only with <see cref="GestureRecognizerOptions.OneFingerCursor"/> and <see cref="PhoneFingerFallback"/>, ADR-0026): a touch sequence
 /// whose first frame has exactly one contact is a pointer; a finger left over after a multi-finger gesture is never
-/// one. While it stays within <see cref="GestureRecognizerOptions.PointerSlop"/> of where it landed nothing moves.
+/// one. While it stays within <see cref="GestureRecognizerOptions.PointerSlop"/> of where it landed nothing moves; leaving it, the cursor catches up the whole movement.
 /// Lifting within <see cref="GestureRecognizerOptions.TapMaxDuration"/> without leaving the slop emits a Click at once
 /// (after a held two-finger Tap, which happened first). Leaving the slop begins a PointerMove, or a PointerDrag when the
 /// touch landed within <see cref="GestureRecognizerOptions.DoubleTapWindow"/> and
@@ -310,6 +312,14 @@ public sealed class GestureRecognizer
 
     /// <summary>Maps touch positions to display points; thresholds scale with its content size. Unset by default.</summary>
     public CoordinateMapper Mapper { get; set; }
+
+    /// <summary>
+    /// The phone reports a lone finger at all (SurfaceInfo <c>SurfaceCapabilities.FingerFallback</c>, i.e. its finger
+    /// fallback is on). With it off, a lone finger does nothing even with
+    /// <see cref="GestureRecognizerOptions.OneFingerCursor"/>, as before ADR-0026. Checked when a touch sequence starts.
+    /// True by default; the server sets it from every SurfaceInfo.
+    /// </summary>
+    public bool PhoneFingerFallback { get; set; } = true;
 
     /// <summary>Number of contacts in the last processed frame.</summary>
     public int ContactCount { get; private set; }
@@ -625,7 +635,7 @@ public sealed class GestureRecognizer
 
             case State.Idle:
             case State.Possible:
-                if (count == 1 && _state == State.Idle && previousCount == 0 && _options.OneFingerCursor)
+                if (count == 1 && _state == State.Idle && previousCount == 0 && _options.OneFingerCursor && PhoneFingerFallback)
                 {
                     StartPointer(touches, timestampUs); // only a touch sequence's first finger: never a leftover one
                 }
@@ -944,13 +954,12 @@ public sealed class GestureRecognizer
         if (moved || (_pointerPress && timestampUs - _pointerLandUs > _tapMaxUs))
         {
             // Beyond the slop it moves (or, as the next touch of a Click, drags); holding still that long drags too.
-            // Only this frame's step moves the cursor: the movement inside the slop is dropped, so it starts smoothly.
+            // Began catches up the whole movement since the landing, so no travel is lost to the slop.
             _pointerMoved = moved;
-            double rx = moved ? p.X - _prevCenter.X : 0;
-            double ry = moved ? p.Y - _prevCenter.Y : 0;
+            double rx = moved ? p.X - _pointerLand.X : 0;
+            double ry = moved ? p.Y - _pointerLand.Y : 0;
             Lock(_pointerPress ? State.PointerDragging : State.PointerMoving, timestampUs);
-            long dt = Math.Clamp(timestampUs - _prevUs, MinSpeedIntervalUs, MaxSpeedIntervalUs);
-            _speed = Math.Sqrt((rx * rx) + (ry * ry)) * 1e6 / dt;
+            _speed = Math.Sqrt((rx * rx) + (ry * ry)) * 1e6 / Math.Max(timestampUs - _pointerLandUs, MinSpeedIntervalUs);
             double gain = Gain(_speed);
             Emit(GesturePhase.Began, rx * gain, ry * gain, 1, 0, p, synthetic: false, timestampUs);
         }
