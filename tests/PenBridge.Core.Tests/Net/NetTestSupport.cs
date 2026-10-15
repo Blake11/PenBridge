@@ -147,12 +147,14 @@ internal sealed class ConcurrentSink : IInputSink
     private readonly Lock _lock = new();
     private readonly List<PenEvent> _pen = [];
     private readonly List<GestureEvent> _gestures = [];
+    private readonly List<object> _all = [];
 
     public void OnPenEvent(in PenEvent e)
     {
         lock (_lock)
         {
             _pen.Add(e);
+            _all.Add(e);
         }
     }
 
@@ -161,6 +163,16 @@ internal sealed class ConcurrentSink : IInputSink
         lock (_lock)
         {
             _gestures.Add(e);
+            _all.Add(e);
+        }
+    }
+
+    /// <summary>Pen and gesture events interleaved in the order the sink received them (boxed <see cref="PenEvent"/>/<see cref="GestureEvent"/>).</summary>
+    public object[] All()
+    {
+        lock (_lock)
+        {
+            return [.. _all];
         }
     }
 
@@ -188,6 +200,7 @@ internal sealed class ConcurrentSink : IInputSink
         {
             _pen.Clear();
             _gestures.Clear();
+            _all.Clear();
         }
     }
 }
