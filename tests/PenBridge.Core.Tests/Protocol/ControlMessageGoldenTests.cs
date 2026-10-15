@@ -31,6 +31,21 @@ public class ControlMessageGoldenTests
     }
 
     [Fact]
+    public void Hello_and_HelloAck_1_1_with_sample_dedupe()
+    {
+        Assert.Equal(1u, (uint)ProtocolCapabilities.SampleDedupe);
+        var hello = new HelloMessage(new ProtocolVersion(1, 1), DeviceId, "S23", ProtocolCapabilities.SampleDedupe);
+        HelloMessage h = Golden(hello, "0000001C 01 0101 000102030405060708090A0B0C0D0E0F 0003 533233 00000001");
+        Assert.Equal(ProtocolCapabilities.SampleDedupe, h.Capabilities);
+        Assert.True(h.Version.IsCompatibleWith(new ProtocolVersion(1, 0)));
+
+        byte[] challenge = Hex.Range(0x20, 32);
+        var ack = new HelloAckMessage(new ProtocolVersion(1, 1), "Mac", ProtocolCapabilities.SampleDedupe, challenge);
+        HelloAckMessage a = Golden(ack, "0000002C 02 0101 0003 4D6163 00000001" + Hex.Of(challenge));
+        Assert.Equal(ProtocolCapabilities.SampleDedupe, a.Capabilities);
+    }
+
+    [Fact]
     public void ClientPairRound1()
     {
         ClientPairRound1Message back = Golden(new ClientPairRound1Message(Hex.Bytes("AABBCC"), PairingSecretKind.Pin), "00000007 10 0003 AABBCC 01");

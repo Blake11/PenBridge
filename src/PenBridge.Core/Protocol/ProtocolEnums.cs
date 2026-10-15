@@ -41,6 +41,14 @@ public enum SurfaceOrientation : byte
 public enum ProtocolCapabilities : uint
 {
     None = 0,
+
+    /// <summary>
+    /// Since 1.1. Server: it skips the history samples of an input frame whose <c>timeUs</c> doesn't advance past the
+    /// previous frame's, so a resent frame never applies its samples twice. Client: it may resend a frame that carried
+    /// a click (contact then release within the frame) with that frame's own <c>timeUs</c> as its release repeats.
+    /// The client resends only when the server advertised this bit.
+    /// </summary>
+    SampleDedupe = 1,
 }
 
 /// <summary><c>u32</c> flags describing the phone surface in SurfaceInfo. Unknown bits are preserved and ignored.</summary>

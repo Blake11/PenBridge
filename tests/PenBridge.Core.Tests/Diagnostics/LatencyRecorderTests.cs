@@ -203,14 +203,15 @@ public class LatencyRecorderTests
         Assert.All(records, r => Assert.Equal(session, r.SessionId));
         Assert.True(Count(recorder, LatencyRecordKind.Input) >= 7);
 
-        // One shared fake clock that doesn't move during I/O: every corrected latency is exactly zero.
+        // One shared fake clock that doesn't move during I/O: every corrected latency is zero, except that the client
+        // keeps frame times strictly increasing (1 µs per frame sent at the same instant), which reads as a few µs early.
         LatencyReport report = LatencyAnalyzer.Analyze(records, h.Time.TimestampFrequency);
         SessionClock clock = Assert.Single(report.Sessions);
         Assert.True(clock.HasOffset);
         Assert.Equal(0, clock.MinRttUs);
         Assert.Equal(1, report.PenDown.Count);
-        Assert.Equal(0, report.Inject.MinUs, 1);
-        Assert.Equal(0, report.Inject.MaxUs, 1);
+        Assert.InRange(report.Inject.MinUs, -32, 0);
+        Assert.InRange(report.Inject.MaxUs, -32, 0);
         Assert.Equal(0, report.UnmeasuredInputs);
     }
 

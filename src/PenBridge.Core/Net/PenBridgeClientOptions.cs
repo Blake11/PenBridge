@@ -54,7 +54,9 @@ public sealed class PenBridgeClientOptions
 
     /// <summary>
     /// After the state becomes empty (pen out of range, no touches), the empty frame is repeated this many times at
-    /// the contact interval, so a single lost datagram doesn't leave the release to the receiver's watchdog.
+    /// the contact interval, so a single lost datagram doesn't leave the release to the receiver's watchdog. If the
+    /// emptying frame carried a whole click and the server advertised <see cref="Protocol.ProtocolCapabilities.SampleDedupe"/>,
+    /// the repeats resend that frame as it was, so a lost click datagram still clicks (once).
     /// </summary>
     public int ReleaseRepeats { get; init; } = 2;
 

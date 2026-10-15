@@ -42,7 +42,9 @@ public sealed record PenStateTrackerOptions
 /// </para>
 /// <para>
 /// Timestamps: the frame's u32 <c>timeUs</c> is unwrapped to a monotonic 64-bit µs clock (forward steps under
-/// 2^31 µs; a backwards step holds the clock). Not thread-safe: the caller serializes <see cref="ProcessFrame"/>,
+/// 2^31 µs; a backwards step holds the clock). That clock is the per-session sample-dedupe watermark: history samples
+/// of a frame that doesn't advance it are skipped (<see cref="ProcessFrame"/>); a new session has a new tracker, and a
+/// SurfaceInfo change keeps the watermark (the phone clock runs on). Not thread-safe: the caller serializes <see cref="ProcessFrame"/>,
 /// <see cref="CheckWatchdog"/> and <see cref="Reset"/>. Allocation-free per call. The tracker owns no timer
 /// (idle ≈ 0% CPU): after each frame, schedule a one-shot timer for <see cref="WatchdogDueIn"/> and call
 /// <see cref="CheckWatchdog"/> when it fires.
@@ -132,7 +134,10 @@ public sealed class PenStateTracker
     /// <summary>Processes one valid, in-order input frame (a decrypted datagram or TLS InputFrame).</summary>
     /// <param name="timeUs">The frame's <c>timeUs</c> (µs since session start, wraps).</param>
     /// <param name="pen">The current pen sample, or null when the frame carries no pen.</param>
-    /// <param name="history">Earlier pen samples from the same frame, oldest first; applied before <paramref name="pen"/>.</param>
+    /// <param name="history">
+    /// Earlier pen samples from the same frame, oldest first; applied before <paramref name="pen"/>, but only if
+    /// the frame time advances past the previous frame's (sample dedupe: a resent click is not applied twice).
+    /// </param>
     /// <param name="touches">All active touches.</param>
     public void ProcessFrame(uint timeUs, in PenSample? pen, ReadOnlySpan<PenSample> history, ReadOnlySpan<TouchSample> touches)
     {
@@ -146,7 +151,10 @@ public sealed class PenStateTracker
         bool hadTime = _hasTime;
         long now = Unwrap(timeUs);
 
-        if (history.Length > 0)
+        // Sample dedupe (ProtocolCapabilities.SampleDedupe): history samples were taken before the frame time, so a
+        // frame whose time doesn't advance past the last applied frame carries only samples already applied (a
+        // phone's click resend). Its current sample is still applied: it is the full state and idempotent.
+        if (history.Length > 0 && (!hadTime || now > previousFrameUs))
         {
             long interval = _historyIntervalUs;
             if (hadTime)

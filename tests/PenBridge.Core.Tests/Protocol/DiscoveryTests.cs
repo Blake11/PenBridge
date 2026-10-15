@@ -13,7 +13,7 @@ public class DiscoveryTests
     {
         var record = new BonjourTxtRecord(ProtocolInfo.Version, Fingerprint, "Paul’s Mac");
         Assert.Equal(
-            [new("v", "1.0"), new("fp", FingerprintText), new("name", "Paul’s Mac")],
+            [new("v", "1.1"), new("fp", FingerprintText), new("name", "Paul’s Mac")],
             record.ToEntries());
     }
 
@@ -56,7 +56,7 @@ public class DiscoveryTests
         var qr = new PairingQrPayload("192.168.1.20", 47820, Fingerprint, Token, ProtocolInfo.Version);
         string text = qr.Format();
         Assert.Equal(
-            "penbridge://pair?h=192.168.1.20&p=47820&fp=" + FingerprintText + "&t=4OHi4-Tl5ufo6err7O3u7_Dx8vP09fb3-Pn6-_z9_v8&v=1.0",
+            "penbridge://pair?h=192.168.1.20&p=47820&fp=" + FingerprintText + "&t=4OHi4-Tl5ufo6err7O3u7_Dx8vP09fb3-Pn6-_z9_v8&v=1.1",
             text);
 
         Assert.True(PairingQrPayload.TryParse(text, out PairingQrPayload? back));

@@ -18,7 +18,10 @@ Tests mirror the folders: `tests/PenBridge.Core.Tests/<Folder>/`. The only exter
 
 - The existing `ProtocolInfo.Version = 1` becomes `ProtocolVersion { Major = 1, Minor = 0 }`.
 - A different major is rejected with `Error(IncompatibleVersion)`. A different minor is accepted: features are gated by capability flags.
-- The Bonjour TXT record carries `v=1.0`, `fp=<base64url SHA-256 cert fingerprint>` and `name=<Mac name>`.
+- **1.1** adds the `SampleDedupe` capability (below); 1.0 peers ignore it.
+- **Capabilities** (`u32` flags in Hello/HelloAck; unknown bits are ignored): a feature is used only when the peer that must support it advertised it.
+  - `SampleDedupe = 1` (since 1.1). Mac: it applies a frame's history samples only if the frame's `timeUs` advances past the previous applied frame's (see the input rules). Phone: it may resend a click frame at its original `timeUs`; it does so only when the Mac advertised this bit.
+- The Bonjour TXT record carries `v=1.1`, `fp=<base64url SHA-256 cert fingerprint>` and `name=<Mac name>`.
 
 ## Control channel (TCP + TLS 1.2+, ADR-0013)
 
@@ -96,6 +99,9 @@ Messages (C = phone → Mac, S = Mac → phone):
 - Every datagram carries the **complete current state**: the pen if it's in range, plus all active touches.
 - While the pen is in contact or touches are active, the phone sends at least every 50 ms, even when nothing moves.
 - While the pen is only hovering (in range, no contact), the phone sends a keepalive at least every 250 ms.
+- **Frame times:** each new frame's `timeUs` is strictly after the previous new frame's (the phone bumps it by 1 µs if its clock didn't move). Only a resend (below) reuses an earlier time.
+- **Sample dedupe (Mac, `SampleDedupe`):** history samples were taken before their frame's `timeUs`. A frame whose `timeUs` doesn't advance past the last applied frame's (equal, or an earlier time that the stale check let through) skips its history and applies only its current pen sample, which is the full state and idempotent. The watermark is the tracker's unwrapped frame clock: per session, kept across SurfaceInfo changes (the phone clock runs on). A 1.0 phone never reuses a time, so this changes nothing for it.
+- **Release repeats and click resend (#92):** after the state becomes empty (pen out of range, no touches) the phone repeats it twice at the contact interval. If the frame that emptied it carried a whole click (a contact sample in its history, then the empty state: a cursor-mode tap or double-tap replay, which travels in one datagram) and the Mac advertised `SampleDedupe`, each repeat resends **that frame as it was** (same `timeUs`, same history), and a click frame also starts the repeats when nothing active was sent before it (a tap released within the arming delay). A lost click datagram is recovered, and the Mac applies the click once. Any newer frame ends the resend. Without the capability the repeats carry only the empty state, as in 1.0.
 - **Receiver watchdog:** with contact or active touches, after 150 ms with no valid datagram, synthesize the full release in this order: pen-up (and button-ups), touches-up (active gestures end as `Cancelled`), then pen-out-of-range. While only hovering, synthesize pen-out-of-range after 1 s with no valid datagram.
 
 ## Input processing (Core, used by the heads)
@@ -121,7 +127,7 @@ Messages (C = phone → Mac, S = Mac → phone):
 - `IInputSink`: receives the tracker and recognizer events on the Mac side. Phase 2's injector implements it; SimClient and tests use a recording sink.
 - `PenBridgeServer`: binds to 47820 with fallback, accepts sessions (one active, optional takeover), exposes `CurrentPin`, `CreateQrPayload()` and events.
 - `PenBridgeClient`: connect, pair (PIN or QR payload), auth, `SendState(in PenSample?, ReadOnlySpan<TouchSample>)`.
-- **QR payload:** `penbridge://pair?h=<host>&p=<port>&fp=<b64url>&t=<b64url token 32B>&v=1.0`.
+- **QR payload:** `penbridge://pair?h=<host>&p=<port>&fp=<b64url>&t=<b64url token 32B>&v=1.1` (the current protocol version).
 
 ## SimClient (`tools/PenBridge.SimClient`, net10.0 console)
 

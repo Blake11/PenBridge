@@ -205,7 +205,7 @@ internal sealed class ServerConnection
         DeviceName = hello.DeviceName;
 
         byte[] challenge = RandomNumberGenerator.GetBytes(WireSizes.Challenge);
-        await _channel.WriteAsync(new HelloAckMessage(ProtocolVersion.Current, _server.ServerName, ProtocolCapabilities.None, challenge)).ConfigureAwait(false);
+        await _channel.WriteAsync(new HelloAckMessage(ProtocolVersion.Current, _server.ServerName, _options.Capabilities, challenge)).ConfigureAwait(false);
 
         ReceivedControlFrame next = await ReadAsync().ConfigureAwait(false);
         if (next.Type == ControlMessageType.ClientPairRound1)

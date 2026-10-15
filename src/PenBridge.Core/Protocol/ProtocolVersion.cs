@@ -12,7 +12,7 @@ public readonly record struct ProtocolVersion(byte Major, byte Minor)
     public const int Size = 2;
 
     /// <summary>Version spoken by this build.</summary>
-    public static ProtocolVersion Current { get; } = new(1, 0);
+    public static ProtocolVersion Current { get; } = new(1, 1);
 
     /// <summary>Peers are compatible when the majors match; minors only gate optional features.</summary>
     public bool IsCompatibleWith(ProtocolVersion other) => Major == other.Major;
