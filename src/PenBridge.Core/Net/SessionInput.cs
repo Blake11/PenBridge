@@ -28,6 +28,9 @@ namespace PenBridge.Core.Net;
 /// dropped as stale, so a late TLS fallback frame can't overtake UDP input after the client switched back.</para>
 /// <para>A sink or tracker exception faults the session (reported once through the fault callback) instead of escaping
 /// into the UDP loop or a timer thread. Allocation-free per datagram except when the endpoint changes.</para>
+/// <para>Settings (ADR-0031..0033): <see cref="ApplySettings"/> and <see cref="SetTarget(MappingTarget)"/> take the input
+/// lock, so they apply between two frames and the next sample uses them (pen settings wait for a stroke to end,
+/// <see cref="PenStateTracker.ApplySettings"/>). <see cref="ActiveAreaChanged"/> is raised outside every lock.</para>
 /// </remarks>
 internal sealed class SessionInput : IDisposable
 {
@@ -66,10 +69,24 @@ internal sealed class SessionInput : IDisposable
     private ulong _lastAckedSequence;
     private bool _hasTime;
     private uint _lastTimeUs;
-    private DisplayRect _display;
-    private NormalizedRect _region;
+    private MappingTarget _target;
+    private InputSettings _settings = InputSettings.Default;
     private ushort _surfaceWidth;
     private ushort _surfaceHeight;
+    private NormalizedRect _activeArea = NormalizedRect.Full;
+    private StylusMode _areaMode;
+    private long _areaVersion;
+
+    // Raising ActiveAreaChanged (under _areaGate, never held while a handler runs): the latest area to raise, the
+    // version last raised, and whether a thread is raising.
+    private readonly Lock _areaGate = new();
+    private NormalizedRect _pendingArea;
+    private long _pendingAreaVersion;
+    private long _raisedAreaVersion;
+    private bool _raisingArea;
+
+    /// <summary>DPI assumed when SurfaceInfo carries none (Mouse mode's millimetres).</summary>
+    internal const float FallbackDpi = 400;
 
     private long _accepted;
     private long _stale;
@@ -98,8 +115,7 @@ internal sealed class SessionInput : IDisposable
         _time = time;
         _tracker = new PenStateTracker(sink, time, WithNegotiated(trackerOptions, negotiated));
         _cipher = new InputCipher(inputKey, sessionId);
-        _display = display;
-        _region = region;
+        _target = MappingTarget.ForDisplay(display, region);
         _onAck = onAck;
         _onFault = onFault;
         _latency = latency;
@@ -188,15 +204,23 @@ internal sealed class SessionInput : IDisposable
         }
     }
 
-    /// <summary>Applies SurfaceInfo: (re)configures the mapper. Frames are dropped until this is called.</summary>
+    /// <summary>
+    /// Applies SurfaceInfo: (re)configures the mapper and raises <see cref="ActiveAreaChanged"/>. Frames are dropped
+    /// until this is called.
+    /// </summary>
     /// <param name="widthPx">Surface width.</param>
     /// <param name="heightPx">Surface height.</param>
     /// <param name="capabilities">
     /// The SurfaceInfo flags: <see cref="SurfaceCapabilities.FingerFallback"/> off means the phone's lone fingers do
     /// nothing, so the one-finger cursor stays off (<see cref="GestureRecognizer.PhoneFingerFallback"/>).
     /// </param>
-    public void ConfigureSurface(ushort widthPx, ushort heightPx, SurfaceCapabilities capabilities = SurfaceCapabilities.FingerFallback)
+    /// <param name="xDpi">SurfaceInfo X DPI, for Mouse mode's millimetres; 0 or invalid assumes <see cref="FallbackDpi"/>.</param>
+    /// <param name="yDpi">SurfaceInfo Y DPI, likewise.</param>
+    public void ConfigureSurface(
+        ushort widthPx, ushort heightPx, SurfaceCapabilities capabilities = SurfaceCapabilities.FingerFallback, float xDpi = 0, float yDpi = 0)
     {
+        NormalizedRect area;
+        long version;
         lock (_lock)
         {
             if (_closed)
@@ -207,9 +231,90 @@ internal sealed class SessionInput : IDisposable
             _surfaceWidth = widthPx;
             _surfaceHeight = heightPx;
             _tracker.Gestures.PhoneFingerFallback = (capabilities & SurfaceCapabilities.FingerFallback) != 0;
+            _tracker.SetSurfaceSize(Millimetres(widthPx, xDpi), Millimetres(heightPx, yDpi));
             ApplyMapperLocked();
+            area = _activeArea = CurrentAreaLocked();
+            _areaMode = _tracker.Settings.StylusMode;
+            version = ++_areaVersion;
+        }
+
+        RaiseActiveArea(area, version);
+    }
+
+    /// <summary>The settings last applied (<see cref="InputSettings.Default"/> until <see cref="ApplySettings"/>).</summary>
+    public InputSettings Settings
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _settings;
+            }
         }
     }
+
+    /// <summary>
+    /// Applies input settings (ADR-0031..0033) between two frames: gesture settings at once, pen settings from the next
+    /// sample, or after the current stroke if the pen is in contact (<see cref="PenStateTracker.ApplySettings"/>).
+    /// Raises <see cref="ActiveAreaChanged"/> when the stylus mode in effect changes the active area (Mouse mode: the
+    /// full surface): here when it applies at once, else from the frame (or watchdog release) that ends the stroke.
+    /// Thread-safe; no-op after shutdown. Call it without holding locks a <see cref="ActiveAreaChanged"/> handler takes.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">A value is out of range (<see cref="InputSettings.Validate"/>).</exception>
+    public void ApplySettings(InputSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        settings.Validate();
+        NormalizedRect area;
+        long version;
+        lock (_lock)
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            _settings = settings;
+            _tracker.ApplySettings(settings);
+            if (!TryUpdateAreaLocked(out area, out version))
+            {
+                return;
+            }
+        }
+
+        RaiseActiveArea(area, version);
+    }
+
+    /// <summary>
+    /// The active area (normalized, in the current surface orientation) the phone should mark: the mapper's
+    /// <see cref="CoordinateMapper.ActiveArea"/> in Pen mode, the full surface in Mouse mode or before SurfaceInfo.
+    /// Follows the stylus mode in effect (a mode change waits for the stroke to end).
+    /// </summary>
+    public NormalizedRect ActiveArea
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _activeArea;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Raised with the new <see cref="ActiveArea"/> after every <see cref="ConfigureSurface"/>, and after
+    /// <see cref="SetTarget(MappingTarget)"/>, <see cref="ApplySettings"/> or a stylus-mode switch at the end of a stroke
+    /// (frame or watchdog thread) when the area changed (once a surface is configured).
+    /// </summary>
+    /// <remarks>
+    /// Raised outside every lock, one call at a time, latest value last: a value superseded before it was raised is
+    /// skipped, and a raise that arrives while another thread is raising is handed to that thread (so the handler may
+    /// run on any of the calling threads, after the triggering call returned). Handlers must only queue work (e.g. post
+    /// a 0x43 message to a send queue): no locks the callers may hold, no blocking sends. A handler that throws faults
+    /// the session (the fault callback, as for a sink failure); areas queued meanwhile are still raised. Calls into this
+    /// instance from a handler are allowed.
+    /// </remarks>
+    public event Action<NormalizedRect>? ActiveAreaChanged;
 
     /// <summary>The last SurfaceInfo declared finger fallback on (tests, diagnostics).</summary>
     internal bool PhoneFingerFallback
@@ -224,17 +329,30 @@ internal sealed class SessionInput : IDisposable
     }
 
     /// <summary>Changes the target display region.</summary>
-    public void SetTarget(DisplayRect display, NormalizedRect region)
+    public void SetTarget(DisplayRect display, NormalizedRect region) => SetTarget(MappingTarget.ForDisplay(display, region));
+
+    /// <summary>Changes the target (a display and region, or all displays); raises <see cref="ActiveAreaChanged"/> if the area changed.</summary>
+    public void SetTarget(MappingTarget target)
     {
+        ArgumentNullException.ThrowIfNull(target);
+        NormalizedRect area;
+        long version;
         lock (_lock)
         {
-            _display = display;
-            _region = region;
-            if (!_closed && _surfaceWidth > 0)
+            _target = target;
+            if (_closed || _surfaceWidth == 0)
             {
-                ApplyMapperLocked();
+                return;
+            }
+
+            ApplyMapperLocked();
+            if (!TryUpdateAreaLocked(out area, out version))
+            {
+                return;
             }
         }
+
+        RaiseActiveArea(area, version);
     }
 
     /// <summary>
@@ -247,6 +365,9 @@ internal sealed class SessionInput : IDisposable
         bool ack = false;
         ulong highest = 0;
         Exception? fault = null;
+        bool raise;
+        NormalizedRect area;
+        long version;
         lock (_lock)
         {
             if (_closed)
@@ -308,11 +429,17 @@ internal sealed class SessionInput : IDisposable
             }
 
             fault = HandlePayloadLocked(datagram.Slice(InputDatagramHeader.Size, payloadLength), InputTransport.Udp, received);
+            raise = TryTakeModeSwitchLocked(out area, out version);
         }
 
         if (ack)
         {
             _onAck?.Invoke(highest);
+        }
+
+        if (raise)
+        {
+            RaiseActiveArea(area, version);
         }
 
         Report(fault);
@@ -323,6 +450,9 @@ internal sealed class SessionInput : IDisposable
     {
         long received = _latency is null ? 0 : _time.GetTimestamp();
         Exception? fault;
+        bool raise;
+        NormalizedRect area;
+        long version;
         lock (_lock)
         {
             if (_closed)
@@ -331,6 +461,12 @@ internal sealed class SessionInput : IDisposable
             }
 
             fault = HandlePayloadLocked(payload, InputTransport.Tls, received);
+            raise = TryTakeModeSwitchLocked(out area, out version);
+        }
+
+        if (raise)
+        {
+            RaiseActiveArea(area, version);
         }
 
         Report(fault);
@@ -546,8 +682,105 @@ internal sealed class SessionInput : IDisposable
 
     private void ApplyMapperLocked()
     {
-        _tracker.Mapper = new CoordinateMapper(_surfaceWidth, _surfaceHeight, _display, _region);
+        _tracker.Mapper = new CoordinateMapper(_surfaceWidth, _surfaceHeight, _target);
     }
+
+    private NormalizedRect CurrentAreaLocked() =>
+        _surfaceWidth == 0 || _tracker.Settings.StylusMode == StylusMode.Mouse ? NormalizedRect.Full : _tracker.Mapper.ActiveArea;
+
+    /// <summary>
+    /// After the tracker ran (frame, watchdog): true (with the area to raise) when it switched the stylus mode in effect
+    /// (a change waiting for the stroke to end) and so the area changed. One field compare otherwise; allocation-free.
+    /// </summary>
+    private bool TryTakeModeSwitchLocked(out NormalizedRect area, out long version)
+    {
+        if (_closed || _tracker.Settings.StylusMode == _areaMode)
+        {
+            area = default;
+            version = 0;
+            return false;
+        }
+
+        return TryUpdateAreaLocked(out area, out version);
+    }
+
+    /// <summary>Recomputes the area; true (with a new version) when it changed and a surface is configured.</summary>
+    private bool TryUpdateAreaLocked(out NormalizedRect area, out long version)
+    {
+        _areaMode = _tracker.Settings.StylusMode;
+        area = CurrentAreaLocked();
+        version = 0;
+        bool changed = area != _activeArea;
+        _activeArea = area;
+        if (!changed || _surfaceWidth == 0)
+        {
+            return false;
+        }
+
+        version = ++_areaVersion;
+        return true;
+    }
+
+    /// <summary>
+    /// Raises <see cref="ActiveAreaChanged"/> outside every lock, one handler call at a time and latest value last: a
+    /// version older than one already queued is dropped; if another thread is raising, it raises this one after its
+    /// own call returns. A handler exception faults the session (reported once, as for the sink) and the drain goes on.
+    /// </summary>
+    private void RaiseActiveArea(NormalizedRect area, long version)
+    {
+        lock (_areaGate)
+        {
+            if (version <= _pendingAreaVersion)
+            {
+                return; // a newer area is queued or was raised
+            }
+
+            _pendingArea = area;
+            _pendingAreaVersion = version;
+            if (_raisingArea)
+            {
+                return; // the raising thread picks it up
+            }
+
+            _raisingArea = true;
+        }
+
+        while (true)
+        {
+            NormalizedRect next;
+            lock (_areaGate)
+            {
+                if (_pendingAreaVersion <= _raisedAreaVersion)
+                {
+                    _raisingArea = false;
+                    return;
+                }
+
+                next = _pendingArea;
+                _raisedAreaVersion = _pendingAreaVersion;
+            }
+
+            try
+            {
+                ActiveAreaChanged?.Invoke(next);
+            }
+#pragma warning disable CA1031 // A faulty handler faults the session like a faulty sink; the drain must go on.
+            catch (Exception ex)
+#pragma warning restore CA1031
+            {
+                Exception? fault;
+                lock (_lock)
+                {
+                    fault = FaultLocked(ex);
+                }
+
+                Report(fault); // a newer queued area is still raised by the next loop pass
+            }
+        }
+    }
+
+    private static double Millimetres(ushort px, float dpi) =>
+        px / (float.IsFinite(dpi) && dpi > 0 ? dpi : FallbackDpi) * 25.4;
 
     private void RearmLocked()
     {
@@ -559,6 +792,9 @@ internal sealed class SessionInput : IDisposable
     private void OnWatchdog()
     {
         Exception? fault = null;
+        bool raise;
+        NormalizedRect area;
+        long version;
         lock (_lock)
         {
             if (_closed)
@@ -577,6 +813,13 @@ internal sealed class SessionInput : IDisposable
             {
                 fault = FaultLocked(ex);
             }
+
+            raise = TryTakeModeSwitchLocked(out area, out version);
+        }
+
+        if (raise)
+        {
+            RaiseActiveArea(area, version);
         }
 
         Report(fault);

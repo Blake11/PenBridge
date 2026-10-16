@@ -243,7 +243,7 @@ public class PenStateTrackerTests
         _tracker.Mapper = new CoordinateMapper(1600, 1000, new DisplayRect(100, 50, 1440, 900));
         Frame(Samples.Hover(0, 0));
         Assert.Equal(new DisplayPoint(100, 50), _sink.Pen[0].Position);
-        Assert.Equal(_tracker.Mapper.ContentRect, _tracker.Gestures.Mapper.ContentRect);
+        Assert.Equal(_tracker.Mapper.GestureRect, _tracker.Gestures.Mapper.GestureRect);
     }
 
     [Fact]
