@@ -359,8 +359,10 @@ public sealed class PenBridgeServer : IAsyncDisposable
     /// <see cref="ProtocolCapabilities.RemoteSettings"/>; otherwise only stores it. Every new session gets the latest
     /// one right after SessionStart, so call this at startup, after every change and in reply to every
     /// <see cref="SettingsUpdateRequested"/>. Only queues the send: calls in quick succession coalesce and the phone
-    /// gets the latest snapshot. The task completes when it went out (or the session failed). Never throws for network
-    /// failures (a failed write closes the session).
+    /// gets the latest snapshot. The task completes when it went out (or the session failed); it is already complete
+    /// when there's no session, or the session isn't sending yet (between its activation and SessionStart): it then
+    /// gets the latest snapshot right after SessionStart. Never throws for network failures (a failed write closes the
+    /// session).
     /// </summary>
     /// <exception cref="ArgumentException">More than <see cref="SettingsWire.MaxEntries"/> entries.</exception>
     public Task SendSettingsSnapshotAsync(IReadOnlyList<SettingEntry> entries)
@@ -379,7 +381,8 @@ public sealed class PenBridgeServer : IAsyncDisposable
     /// <summary>
     /// Sets the targetable displays (ADR-0031; "All displays" is implied) and sends them to the active session like
     /// <see cref="SendSettingsSnapshotAsync"/> (coalesced, latest wins). The list always goes out before a snapshot
-    /// queued with it, and new sessions get it before their first snapshot.
+    /// queued with it, and new sessions get it before their first snapshot. As there, the task is already complete when
+    /// there's no session or it isn't sending yet (between its activation and SessionStart).
     /// </summary>
     /// <exception cref="ArgumentException">More than <see cref="SettingsWire.MaxDisplays"/> displays.</exception>
     public Task SendDisplayListAsync(IReadOnlyList<DisplayListEntry> displays)
