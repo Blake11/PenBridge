@@ -91,6 +91,12 @@ public sealed class PenBridgeServerOptions
     /// <summary>Sustained rate of failed datagram decryptions tolerated per session (bursts up to twice this).</summary>
     public int MaxAuthFailuresPerSecond { get; init; } = 16;
 
+    /// <summary>
+    /// The initial input settings (ADR-0031..0033: stylus mode, side button, pressure curve, gestures) applied to every
+    /// session; the defaults reproduce the behaviour without settings. Change them at run time through the server.
+    /// </summary>
+    public InputSettings InputSettings { get; init; } = InputSettings.Default;
+
     /// <summary>Watchdog and history options for the tracker.</summary>
     public PenStateTrackerOptions? TrackerOptions { get; init; }
 
