@@ -33,6 +33,9 @@ internal sealed class PadScreen : Screen
 
     public override bool IsFullScreen => true;
 
+    /// <summary>True for a pad over the host's session; false for the debug preview pad.</summary>
+    public bool IsSession => !_preview;
+
     public override void Resume()
     {
         if (_controller is null)

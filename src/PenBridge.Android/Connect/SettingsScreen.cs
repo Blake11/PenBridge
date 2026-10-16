@@ -244,7 +244,15 @@ internal sealed class SettingsScreen : Screen
             .SetNegativeButton("Cancel", (_, _) => { })!
             .SetPositiveButton("Forget", (_, _) =>
             {
+                bool current = Host.CurrentMac is { } now && now.Id == mac.Id;
                 Host.Forget(mac.Fingerprint);
+                if (current && Activity.Screens.HasSessionPad)
+                {
+                    // Opened over the pad: that session just ended for good, so leave the dead pad for the Mac list.
+                    Activity.Screens.PopToRoot();
+                    return;
+                }
+
                 RebuildPaired();
             })!
             .Show();

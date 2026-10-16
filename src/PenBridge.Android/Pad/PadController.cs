@@ -28,7 +28,9 @@ public sealed class PadController : IDisposable
     private const int MenuDisconnect = 6;
     private const int MenuChangeMac = 7;
     private const int MenuSettings = 8;
+#if DEBUG
     private const int MenuDebugArea = 9;
+#endif
     private const int OrientationGroup = 1;
 
     private readonly Activity _activity;
@@ -53,7 +55,9 @@ public sealed class PadController : IDisposable
     private float _palmSizeThreshold;
     private TouchSizeReadoutView? _readout;
     private NormalizedRect _activeArea = NormalizedRect.Full;
+#if DEBUG
     private bool _debugArea;
+#endif
     private ScreenOrientation _hostOrientation;
     private bool _started;
     private volatile bool _disposed;
@@ -198,10 +202,13 @@ public sealed class PadController : IDisposable
     public void SetActiveArea(NormalizedRect area)
     {
         _activeArea = area;
-        if (!_debugArea)
+#if DEBUG
+        if (_debugArea)
         {
-            _look.SetActiveArea(area);
+            return;
         }
+#endif
+        _look.SetActiveArea(area);
     }
 
     /// <summary>Applies the surface look: background, marker opacity, centre marker, and matching ink and dot colours.</summary>
@@ -383,11 +390,15 @@ public sealed class PadController : IDisposable
             _fingerFallbackEnabled ? SurfaceCapabilities.FingerFallback : SurfaceCapabilities.None);
         Surface = surface;
         _output.UpdateSurface(surface);
+#if DEBUG
         if (_debugArea)
         {
             _look.SetActiveArea(DebugSampleArea(width, height));
         }
+#endif
     }
+
+#if DEBUG
 
     /// <summary>
     /// Debug-only preview of a non-full active area (screenshots before the Mac sends one): the largest centred 4:3
@@ -417,6 +428,7 @@ public sealed class PadController : IDisposable
         _debugArea = !_debugArea;
         _look.SetActiveArea(_debugArea ? DebugSampleArea(_surface.Width, _surface.Height) : _activeArea);
     }
+#endif
 
     private void OnWindowFocusRegained()
     {
@@ -550,9 +562,11 @@ public sealed class PadController : IDisposable
             case MenuSettings:
                 SettingsRequested?.Invoke(this, EventArgs.Empty);
                 break;
+#if DEBUG
             case MenuDebugArea:
                 ToggleDebugArea();
                 break;
+#endif
             case MenuDisconnect:
                 DisconnectRequested?.Invoke(this, EventArgs.Empty);
                 break;

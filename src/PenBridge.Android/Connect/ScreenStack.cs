@@ -31,19 +31,21 @@ internal sealed class ScreenStack : Java.Lang.Object, View.IOnApplyWindowInsetsL
 
     public int Count => _stack.Count;
 
-    /// <summary>True when a screen of type <typeparamref name="T"/> is anywhere on the stack (top or below).</summary>
-    public bool Contains<T>()
-        where T : Screen
+    /// <summary>True when a session pad (<see cref="PadScreen.IsSession"/>) is anywhere on the stack (top or below).</summary>
+    public bool HasSessionPad
     {
-        foreach (Screen screen in _stack)
+        get
         {
-            if (screen is T)
+            foreach (Screen screen in _stack)
             {
-                return true;
+                if (screen is PadScreen { IsSession: true })
+                {
+                    return true;
+                }
             }
-        }
 
-        return false;
+            return false;
+        }
     }
 
     public void Push(Screen screen)
