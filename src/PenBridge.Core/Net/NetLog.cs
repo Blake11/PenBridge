@@ -87,4 +87,7 @@ internal static partial class NetLog
 
     [LoggerMessage(33, LogLevel.Information, "Paired with server '{ServerName}'")]
     public static partial void ClientPaired(ILogger logger, string serverName);
+
+    [LoggerMessage(35, LogLevel.Debug, "Device {DeviceId} requested {Count} setting changes")]
+    public static partial void SettingsUpdateReceived(ILogger logger, Guid deviceId, int count);
 }

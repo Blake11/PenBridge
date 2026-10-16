@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
+using PenBridge.Core.Input;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
 using SecretKind = PenBridge.Core.Security.PairingSecretKind;
@@ -30,6 +31,11 @@ internal sealed class ServerConnection
     private readonly IPAddress _address;
     private readonly long _epoch;
     private readonly TaskCompletionSource _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly SemaphoreSlim _settingsWrite = new(1, 1); // orders settings and active-area writes, latest value wins
+    private readonly Lock _areaLock = new();
+    private NormalizedRect? _activeArea; // latest requested; guarded by _areaLock
+    private NormalizedRect? _activeAreaSent; // guarded by _settingsWrite
+    private volatile bool _sessionReady; // SessionStart written: session-only messages may follow
     private byte[] _deviceIdBytes = [];
     private ProtocolCapabilities _negotiated; // advertised by both sides (set from Hello)
     private ITimer? _handshake;
@@ -404,6 +410,11 @@ internal sealed class ServerConnection
                 Volatile.Write(ref _pingTimer, _time.CreateTimer(PingCallback, this, _options.PingInterval, _options.PingInterval));
             }
 
+            // From here on the server's sends reach this session; the pushes below send whatever was set before.
+            _sessionReady = true;
+            await PushSettingsAsync(snapshot: true, displays: true).ConfigureAwait(false);
+            await PushActiveAreaAsync().ConfigureAwait(false);
+
             return true;
         }
         finally
@@ -452,12 +463,22 @@ internal sealed class ServerConnection
                 case ControlMessageType.Pong:
                     UpdateRtt(frame.Read<PongMessage>().TimestampUs, input.SessionId);
                     break;
+                case ControlMessageType.SettingsUpdate when (_negotiated & ProtocolCapabilities.RemoteSettings) != 0:
+                    SettingsUpdateMessage update = frame.Read<SettingsUpdateMessage>();
+                    NetLog.SettingsUpdateReceived(_log, DeviceId, update.Entries.Count);
+                    if (update.Entries.Count > 0)
+                    {
+                        _server.RaiseSettingsUpdateRequested(_info!, update.Entries);
+                    }
+
+                    break;
                 case ControlMessageType.Bye:
                     return SessionEndReason.PeerClosed;
                 case ControlMessageType.Error:
                     LogPeerError(frame);
                     return SessionEndReason.PeerError;
                 default:
+                    // Includes the settings messages without their capability, and the server-to-phone ones.
                     throw new ProtocolException(ProtocolErrorCode.UnexpectedMessage, "Unexpected control message during a session.");
             }
         }
@@ -485,6 +506,98 @@ internal sealed class ServerConnection
         if (ErrorMessage.TryRead(frame.Payload.Span, out ErrorMessage error))
         {
             NetLog.PeerError(_log, error.Code, PeerText.Sanitize(error.Message));
+        }
+    }
+
+    /// <summary>
+    /// Sends the server's latest DisplayList and/or SettingsSnapshot if this session negotiated
+    /// <see cref="ProtocolCapabilities.RemoteSettings"/> and SessionStart went out. The values are read under the
+    /// settings write lock, so concurrent pushes can't leave an older value last on the wire. Never throws.
+    /// </summary>
+    internal async Task PushSettingsAsync(bool snapshot, bool displays)
+    {
+        if (!_sessionReady || (_negotiated & ProtocolCapabilities.RemoteSettings) == 0 || RequestedReason is not null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _settingsWrite.WaitAsync(_channel.Token).ConfigureAwait(false);
+            try
+            {
+                (SettingsSnapshotMessage? latest, DisplayListMessage? list) = _server.SettingsState;
+                if (displays && list is { } d)
+                {
+                    await _channel.WriteAsync(d).ConfigureAwait(false);
+                }
+
+                if (snapshot && latest is { } s)
+                {
+                    await _channel.WriteAsync(s).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                _settingsWrite.Release();
+            }
+        }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException or SocketException or InvalidOperationException or NotSupportedException)
+        {
+            _channel.Abort();
+        }
+    }
+
+    /// <summary>Queues the active area for this session (ADR-0031); only the latest one is sent, and only with <see cref="ProtocolCapabilities.ActiveArea"/>.</summary>
+    /// <exception cref="ArgumentOutOfRangeException">A non-finite area.</exception>
+    internal void SendActiveArea(NormalizedRect area)
+    {
+        _ = ActiveAreaMessage.FromNormalized(area); // validates before anything is queued
+        if ((_negotiated & ProtocolCapabilities.ActiveArea) == 0)
+        {
+            return;
+        }
+
+        lock (_areaLock)
+        {
+            _activeArea = area;
+        }
+
+        _ = PushActiveAreaAsync();
+    }
+
+    private async Task PushActiveAreaAsync()
+    {
+        if (!_sessionReady || (_negotiated & ProtocolCapabilities.ActiveArea) == 0 || RequestedReason is not null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _settingsWrite.WaitAsync(_channel.Token).ConfigureAwait(false);
+            try
+            {
+                NormalizedRect? area;
+                lock (_areaLock)
+                {
+                    area = _activeArea;
+                }
+
+                if (area is { } a && a != _activeAreaSent)
+                {
+                    await _channel.WriteAsync(ActiveAreaMessage.FromNormalized(a)).ConfigureAwait(false);
+                    _activeAreaSent = a;
+                }
+            }
+            finally
+            {
+                _settingsWrite.Release();
+            }
+        }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException or SocketException or InvalidOperationException or NotSupportedException)
+        {
+            _channel.Abort();
         }
     }
 

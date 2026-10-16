@@ -51,6 +51,8 @@ public sealed class PenBridgeServer : IAsyncDisposable
     private readonly Dictionary<IPAddress, int> _pendingByAddress = [];
     private int _pending;
     private volatile bool _allowTakeover;
+    private SettingsSnapshotMessage? _settingsSnapshot; // guarded by _gate
+    private DisplayListMessage? _displayList; // guarded by _gate
     private DisplayRect _display;
     private NormalizedRect _region;
     private SessionInput? _ppsInput;
@@ -103,6 +105,14 @@ public sealed class PenBridgeServer : IAsyncDisposable
 
     /// <summary>Raised when the active session ends (after its input was released).</summary>
     public event EventHandler<SessionEndedEventArgs>? SessionEnded;
+
+    /// <summary>
+    /// Raised when the phone sends a SettingsUpdate (needs <see cref="PenBridgeServerOptions.RemoteSettings"/>), on the
+    /// session's control-read task, in arrival order, never under the input lock. Validate and apply the entries, then
+    /// reply with <see cref="SendSettingsSnapshotAsync"/> (the snapshot is the acknowledgement, ADR-0030). Handlers must
+    /// be quick and marshal to the UI themselves.
+    /// </summary>
+    public event EventHandler<SettingsUpdateRequestedEventArgs>? SettingsUpdateRequested;
 
     /// <summary>The bound TCP/UDP port (0 before <see cref="Start"/>).</summary>
     public int Port { get; private set; }
@@ -267,6 +277,59 @@ public sealed class PenBridgeServer : IAsyncDisposable
 
         input?.SetTarget(display, region);
     }
+
+    /// <summary>
+    /// Sets the Mac settings snapshot (ADR-0030) and sends it to the active session if it negotiated
+    /// <see cref="ProtocolCapabilities.RemoteSettings"/>; otherwise only stores it. Every new session gets the latest
+    /// one right after SessionStart, so call this at startup, after every change and in reply to every
+    /// <see cref="SettingsUpdateRequested"/>. Never throws for network failures (a failed write closes the session).
+    /// </summary>
+    /// <exception cref="ArgumentException">More than <see cref="SettingsWire.MaxEntries"/> entries.</exception>
+    public Task SendSettingsSnapshotAsync(IReadOnlyList<SettingEntry> entries)
+    {
+        var message = new SettingsSnapshotMessage(entries);
+        ServerConnection? target;
+        lock (_gate)
+        {
+            _settingsSnapshot = message;
+            target = _active;
+        }
+
+        return target is null ? Task.CompletedTask : target.PushSettingsAsync(snapshot: true, displays: false);
+    }
+
+    /// <summary>
+    /// Sets the targetable displays (ADR-0031; "All displays" is implied) and sends them to the active session like
+    /// <see cref="SendSettingsSnapshotAsync"/>. New sessions get the list before their first snapshot.
+    /// </summary>
+    /// <exception cref="ArgumentException">More than <see cref="SettingsWire.MaxDisplays"/> displays.</exception>
+    public Task SendDisplayListAsync(IReadOnlyList<DisplayListEntry> displays)
+    {
+        var message = new DisplayListMessage(displays);
+        ServerConnection? target;
+        lock (_gate)
+        {
+            _displayList = message;
+            target = _active;
+        }
+
+        return target is null ? Task.CompletedTask : target.PushSettingsAsync(snapshot: false, displays: true);
+    }
+
+    /// <summary>The latest settings snapshot and display list (null until set).</summary>
+    internal (SettingsSnapshotMessage? Snapshot, DisplayListMessage? Displays) SettingsState
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return (_settingsSnapshot, _displayList);
+            }
+        }
+    }
+
+    /// <summary>Sends the active area to the active session if it negotiated <see cref="ProtocolCapabilities.ActiveArea"/> (latest wins).</summary>
+    internal void SendActiveArea(NormalizedRect area) => Volatile.Read(ref _active)?.SendActiveArea(area);
 
     /// <summary>A snapshot for the menu: active device, transport, RTT, packets/s and input counters.</summary>
     public PenBridgeServerStats GetStats()
@@ -560,6 +623,9 @@ public sealed class PenBridgeServer : IAsyncDisposable
     internal void RaiseSessionStarted(SessionInfo session) => Raise(SessionStarted, new SessionStartedEventArgs(session));
 
     internal void RaiseSessionEnded(SessionInfo session, SessionEndReason reason) => Raise(SessionEnded, new SessionEndedEventArgs(session, reason));
+
+    internal void RaiseSettingsUpdateRequested(SessionInfo session, IReadOnlyList<SettingEntry> entries) =>
+        Raise(SettingsUpdateRequested, new SettingsUpdateRequestedEventArgs(session, entries));
 
     private void Raise<T>(EventHandler<T>? handler, T args)
     {

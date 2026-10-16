@@ -75,14 +75,22 @@ public sealed class PenBridgeServerOptions
     /// </summary>
     public bool FingerTouches { get; init; }
 
+    /// <summary>Advertise <see cref="ProtocolCapabilities.RemoteSettings"/> (ADR-0030); off until the head handles <see cref="PenBridgeServer.SettingsUpdateRequested"/>.</summary>
+    public bool RemoteSettings { get; init; }
+
+    /// <summary>Advertise <see cref="ProtocolCapabilities.ActiveArea"/> (ADR-0031); off until the head's mapping uses the active area.</summary>
+    public bool ActiveArea { get; init; }
+
     /// <summary>
     /// Capabilities sent in HelloAck: <see cref="ProtocolCapabilities.SampleDedupe"/>, plus
-    /// <see cref="ProtocolCapabilities.FingerTouches"/> when <see cref="FingerTouches"/> is set. Tests override it to act
+    /// <see cref="ProtocolCapabilities.FingerTouches"/>, <see cref="ProtocolCapabilities.RemoteSettings"/> and
+    /// <see cref="ProtocolCapabilities.ActiveArea"/> when their options are set. Tests override it to act
     /// as an older server.
     /// </summary>
     internal ProtocolCapabilities Capabilities
     {
-        get => _capabilities ?? (ProtocolCapabilities.SampleDedupe | (FingerTouches ? ProtocolCapabilities.FingerTouches : ProtocolCapabilities.None));
+        get => _capabilities ?? (ProtocolCapabilities.SampleDedupe | (FingerTouches ? ProtocolCapabilities.FingerTouches : ProtocolCapabilities.None)
+            | (RemoteSettings ? ProtocolCapabilities.RemoteSettings : ProtocolCapabilities.None) | (ActiveArea ? ProtocolCapabilities.ActiveArea : ProtocolCapabilities.None));
         init => _capabilities = value;
     }
 

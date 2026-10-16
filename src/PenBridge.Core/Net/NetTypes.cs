@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using PenBridge.Core.Input;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
 
@@ -208,6 +209,37 @@ public sealed class SessionEndedEventArgs(SessionInfo session, SessionEndReason 
 public sealed class DevicePairedEventArgs(PairedDevice device) : EventArgs
 {
     public PairedDevice Device { get; } = device;
+}
+
+/// <summary>
+/// Raised by <see cref="PenBridgeServer.SettingsUpdateRequested"/>: the phone asks to change Mac settings (ADR-0030).
+/// The entries are structurally valid but untrusted: validate each one (<see cref="Settings.MacSettingValues.ApplyUpdate"/>),
+/// apply the valid ones, then reply with <see cref="PenBridgeServer.SendSettingsSnapshotAsync"/>.
+/// </summary>
+public sealed class SettingsUpdateRequestedEventArgs(SessionInfo session, IReadOnlyList<SettingEntry> entries) : EventArgs
+{
+    public SessionInfo Session { get; } = session;
+
+    public IReadOnlyList<SettingEntry> Entries { get; } = entries;
+}
+
+/// <summary>Raised by <see cref="PenBridgeClient.SettingsSnapshotReceived"/>: every Mac setting (unknown keys included; ignore them).</summary>
+public sealed class SettingsSnapshotEventArgs(IReadOnlyList<SettingEntry> entries) : EventArgs
+{
+    public IReadOnlyList<SettingEntry> Entries { get; } = entries;
+}
+
+/// <summary>Raised by <see cref="PenBridgeClient.DisplayListReceived"/>: the displays the Mac can target ("All displays" is implied).</summary>
+public sealed class DisplayListEventArgs(IReadOnlyList<DisplayListEntry> displays) : EventArgs
+{
+    public IReadOnlyList<DisplayListEntry> Displays { get; } = displays;
+}
+
+/// <summary>Raised by <see cref="PenBridgeClient.ActiveAreaReceived"/>: the part of the surface that maps onto the whole target (ADR-0031).</summary>
+public sealed class ActiveAreaEventArgs(NormalizedRect area) : EventArgs
+{
+    /// <summary>Fractions of the surface, in its current orientation.</summary>
+    public NormalizedRect Area { get; } = area;
 }
 
 /// <summary>Raised by <see cref="PenBridgeClient.Disconnected"/>.</summary>
