@@ -78,7 +78,7 @@ internal sealed class ServerConnection
         socket.SendTimeout = (int)ControlChannel.SyncSendTimeout.TotalMilliseconds;
         _channel = new ControlChannel(socket, _time);
         _epoch = _time.GetTimestamp();
-        _pushes = new CoalescingWriter(DrainPushesAsync);
+        _pushes = new CoalescingWriter(DrainPushesAsync, OnPushFault);
         _settingsUpdates = new TokenBucket(_time, SettingsUpdatesPerSecond, SettingsUpdateBurst);
 
         // Armed at accept: the whole pre-session phase is bounded from the first byte.
@@ -683,6 +683,13 @@ internal sealed class ServerConnection
     private async ValueTask<bool> TryPushAsync<T>(T message)
         where T : IControlMessage<T> =>
         RequestedReason is null && await _channel.TryWriteAsync(message).ConfigureAwait(false);
+
+    /// <summary>The push writer died on an exception its drain doesn't expect (a bug): log it and end the connection.</summary>
+    private void OnPushFault(Exception exception)
+    {
+        NetLog.Unexpected(_log, _remote, exception);
+        _channel.Abort();
+    }
 
     private void OnUdpAck(ulong highestSequence) => _ = SendUdpAckAsync(highestSequence);
 

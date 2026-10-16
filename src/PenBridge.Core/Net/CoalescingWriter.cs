@@ -10,12 +10,14 @@ namespace PenBridge.Core.Net;
 /// <remarks>
 /// Nothing runs on the requesting thread but the lock and, when idle, queuing the loop to the thread pool, so callers
 /// may request from event handlers, timers or under other locks. Requests made before <see cref="Enable"/> are kept and
-/// drained by it. A drain that returns false (a failed write) stops the writer for good.
+/// drained by it. A drain that returns false (a failed write) stops the writer for good; so does one that throws, after
+/// reporting the exception to the fault callback (a bug: the owner must not keep a connection whose writer is gone).
 /// </remarks>
 internal sealed class CoalescingWriter
 {
     private readonly Lock _lock = new();
     private readonly Func<int, Task<bool>> _drain;
+    private readonly Action<Exception>? _onFault;
     private int _pending; // guarded by _lock
     private bool _enabled; // guarded by _lock
     private bool _stopped; // guarded by _lock
@@ -25,7 +27,14 @@ internal sealed class CoalescingWriter
     /// Writes the latest state of every bit in its argument, in the order the caller needs; false stops the writer.
     /// Must not throw. Called on one loop at a time.
     /// </param>
-    public CoalescingWriter(Func<int, Task<bool>> drain) => _drain = drain;
+    /// <param name="onFault">
+    /// Called (on the writer loop) with an exception the drain threw anyway, after the writer stopped; must not throw.
+    /// </param>
+    public CoalescingWriter(Func<int, Task<bool>> drain, Action<Exception>? onFault = null)
+    {
+        _drain = drain;
+        _onFault = onFault;
+    }
 
     /// <summary>Starts writing: drains everything requested so far and every later request.</summary>
     /// <returns>Completes when the bits pending now (and any requested meanwhile) are written, or the writer stopped.</returns>
@@ -107,15 +116,17 @@ internal sealed class CoalescingWriter
             }
 
             bool ok;
+            Exception? fault = null;
             try
             {
                 ok = await _drain(bits).ConfigureAwait(false);
             }
 #pragma warning disable CA1031 // The drain must not throw; if it does, stop instead of losing the loop with _loop set.
-            catch (Exception)
+            catch (Exception ex)
 #pragma warning restore CA1031
             {
                 ok = false;
+                fault = ex;
             }
 
             if (!ok)
@@ -125,6 +136,11 @@ internal sealed class CoalescingWriter
                     _stopped = true;
                     _pending = 0;
                     _loop = null;
+                }
+
+                if (fault is not null)
+                {
+                    _onFault?.Invoke(fault);
                 }
 
                 return;

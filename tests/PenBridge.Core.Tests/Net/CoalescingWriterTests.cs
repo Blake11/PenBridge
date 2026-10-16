@@ -106,20 +106,37 @@ public class CoalescingWriterTests
     }
 
     [Fact]
-    public async Task A_throwing_drain_stops_the_writer_instead_of_wedging_it()
+    public async Task A_throwing_drain_stops_the_writer_instead_of_wedging_it_and_reports_the_fault()
     {
         int drains = 0;
-        var writer = new CoalescingWriter(_ =>
-        {
-            Interlocked.Increment(ref drains);
-            throw new InvalidOperationException("bug");
-        });
+        var bug = new InvalidOperationException("bug");
+        var faults = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+        var writer = new CoalescingWriter(
+            _ =>
+            {
+                Interlocked.Increment(ref drains);
+                throw bug;
+            },
+            faults.Enqueue);
         _ = writer.Enable();
 
         await writer.Request(1).Bounded();
         await writer.Request(1).Bounded();
 
         Assert.Equal(1, drains);
+        Assert.Same(bug, Assert.Single(faults));
+    }
+
+    [Fact]
+    public async Task A_failed_drain_is_not_a_fault()
+    {
+        var faults = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+        var writer = new CoalescingWriter(_ => Task.FromResult(false), faults.Enqueue);
+        _ = writer.Enable();
+
+        await writer.Request(1).Bounded();
+
+        Assert.Empty(faults);
     }
 
     [Fact]

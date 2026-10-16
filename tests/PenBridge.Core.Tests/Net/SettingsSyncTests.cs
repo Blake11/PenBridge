@@ -375,6 +375,20 @@ public class SettingsSyncTests
     }
 
     [Fact]
+    public async Task A_push_writer_fault_ends_the_session_instead_of_leaving_it_without_pushes()
+    {
+        await using NetHarness h = Harness();
+        await PairAsync(h);
+        ServerConnection connection = h.Server.ActiveConnection!;
+        connection.BeforePushDrain = _ => throw new ArgumentException("a bug in the drain");
+
+        await h.Server.SendSettingsSnapshotAsync(Snapshot(1)).Bounded();
+
+        await Wait.Until(() => connection.IsChannelAborted, "the connection aborted");
+        await Wait.Until(() => h.Server.ActiveConnection != connection, "the session ended");
+    }
+
+    [Fact]
     public async Task Server_sends_validate_their_arguments()
     {
         await using NetHarness h = Harness();
