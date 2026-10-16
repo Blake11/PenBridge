@@ -414,6 +414,7 @@ internal sealed class ServerConnection
                 _options.LatencyRecorder,
                 _negotiated);
             input.ForgedDatagramFlood += OnForgedFlood;
+            input.ActiveAreaChanged += SendActiveArea; // only marks the push dirty (any thread, no _gate)
             Input = input;
             if (!_server.PublishInput(this, input) || RequestedReason is not null)
             {
@@ -470,7 +471,7 @@ internal sealed class ServerConnection
             {
                 case ControlMessageType.SurfaceInfo:
                     SurfaceInfoMessage surface = frame.Read<SurfaceInfoMessage>();
-                    input.ConfigureSurface(surface.WidthPx, surface.HeightPx, surface.Capabilities);
+                    input.ConfigureSurface(surface.WidthPx, surface.HeightPx, surface.Capabilities, surface.XDpi, surface.YDpi);
                     break;
                 case ControlMessageType.InputFrame:
                     bool wasTls = input.Transport == InputTransport.Tls;

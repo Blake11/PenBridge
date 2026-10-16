@@ -75,6 +75,30 @@ public sealed class MacSettingValues
         return index < 0 ? throw new ArgumentOutOfRangeException(nameof(key)) : _values[index];
     }
 
+    /// <summary>
+    /// The input settings these values describe (stylus mode, side button, pressure curve, gesture settings), for
+    /// <see cref="Net.PenBridgeServer.SetInputSettings"/>. TargetDisplay, Region and RegionAspectLock are the Mac's
+    /// mapping target (<see cref="Net.PenBridgeServer.SetTarget(MappingTarget)"/>), not input settings. The values
+    /// are always valid, so the result passes <see cref="InputSettings.Validate"/>.
+    /// </summary>
+    public InputSettings ToInputSettings() => new()
+    {
+        StylusMode = (StylusMode)StylusMode,
+        MouseSpeed = MouseSpeed,
+        MouseAcceleration = MouseAcceleration,
+        SideButton = (SideButtonAction)SideButton,
+        TipFeel = TipFeel,
+        ClickThreshold = ClickThreshold,
+        FullPressureAt = FullPressureAt,
+        SmartZoom = (SmartZoomMode)SmartZoom,
+        PointerSpeed = PointerSpeed,
+        ScrollSpeed = ScrollSpeed,
+        ZoomEnabled = Zoom,
+        RotateEnabled = Rotate,
+        ThreeFingerDragEnabled = ThreeFingerDrag,
+        FourFingerGesturesEnabled = FourFingerGestures,
+    };
+
     /// <summary>Every setting, in key order: the content of a SettingsSnapshot.</summary>
     public IReadOnlyList<SettingEntry> ToEntries() => [.. _values];
 

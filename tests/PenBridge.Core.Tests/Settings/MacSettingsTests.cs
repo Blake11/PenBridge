@@ -281,6 +281,43 @@ public class MacSettingsTests
         Assert.True(back.Rotate);
     }
 
+    [Fact]
+    public void Values_convert_to_input_settings()
+    {
+        Assert.Equal(InputSettings.Default, new MacSettingValues().ToInputSettings());
+
+        var values = MacSettingValues.FromEntries(
+        [
+            SettingEntry.Int(MacSettingKey.StylusMode, 1),
+            SettingEntry.Float(MacSettingKey.MouseSpeed, 2f),
+            SettingEntry.Bool(MacSettingKey.MouseAcceleration, false),
+            SettingEntry.Int(MacSettingKey.SideButton, 3),
+            SettingEntry.Float(MacSettingKey.TipFeel, -0.5f),
+            SettingEntry.Float(MacSettingKey.ClickThreshold, 0.4f),
+            SettingEntry.Float(MacSettingKey.FullPressureAt, MathF.BitIncrement(0.4f + MacSettings.MinPressureSpan)), // the tightest valid pair
+            SettingEntry.Int(MacSettingKey.SmartZoom, 2),
+            SettingEntry.Float(MacSettingKey.PointerSpeed, 0.5f),
+            SettingEntry.Float(MacSettingKey.ScrollSpeed, 3f),
+            SettingEntry.Bool(MacSettingKey.Zoom, false),
+            SettingEntry.Bool(MacSettingKey.Rotate, false),
+            SettingEntry.Bool(MacSettingKey.ThreeFingerDrag, false),
+            SettingEntry.Bool(MacSettingKey.FourFingerGestures, false),
+        ]);
+        InputSettings s = values.ToInputSettings();
+        s.Validate();
+        Assert.Equal(StylusMode.Mouse, s.StylusMode);
+        Assert.Equal(2, s.MouseSpeed);
+        Assert.False(s.MouseAcceleration);
+        Assert.Equal(SideButtonAction.DoubleClick, s.SideButton);
+        Assert.Equal(-0.5, s.TipFeel);
+        Assert.Equal(0.4f, (float)s.ClickThreshold);
+        Assert.Equal(values.FullPressureAt, (float)s.FullPressureAt);
+        Assert.Equal(SmartZoomMode.Off, s.SmartZoom);
+        Assert.Equal(0.5, s.PointerSpeed);
+        Assert.Equal(3, s.ScrollSpeed);
+        Assert.False(s.ZoomEnabled || s.RotateEnabled || s.ThreeFingerDragEnabled || s.FourFingerGesturesEnabled);
+    }
+
     [Theory]
     [InlineData("StylusMode=1", "StylusMode=Mouse")]
     [InlineData("stylusmode=mouse", "StylusMode=Mouse")]

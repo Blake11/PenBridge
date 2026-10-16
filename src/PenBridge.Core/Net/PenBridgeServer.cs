@@ -53,8 +53,9 @@ public sealed class PenBridgeServer : IAsyncDisposable
     private volatile bool _allowTakeover;
     private SettingsSnapshotMessage? _settingsSnapshot; // guarded by _gate
     private DisplayListMessage? _displayList; // guarded by _gate
-    private DisplayRect _display;
-    private NormalizedRect _region;
+    private readonly Lock _applyLock = new(); // orders target/settings applications to the input; see ApplyToInput
+    private MappingTarget _target; // guarded by _gate
+    private InputSettings _inputSettings; // guarded by _gate
     private SessionInput? _ppsInput;
     private long _ppsCount;
     private long _ppsTimestamp;
@@ -74,14 +75,16 @@ public sealed class PenBridgeServer : IAsyncDisposable
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPendingConnections, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPendingConnectionsPerAddress, 1);
         _ = new CoordinateMapper(1, 1, options.TargetDisplay, options.TargetRegion); // validates the target
+        ArgumentNullException.ThrowIfNull(options.InputSettings);
+        options.InputSettings.Validate();
 
         _options = options;
         _log = (options.LoggerFactory ?? NullLoggerFactory.Instance).CreateLogger("PenBridge.Server");
         _pins = new PinIssuer(options.TimeProvider);
         _pins.SecretsChanged += OnSecretsChanged;
         _allowTakeover = options.AllowTakeover;
-        _display = options.TargetDisplay;
-        _region = options.TargetRegion;
+        _target = MappingTarget.ForDisplay(options.TargetDisplay, options.TargetRegion);
+        _inputSettings = options.InputSettings;
         _serverName = WireString.Truncate(options.ServerName ?? string.Empty);
         _tlsOptions = new SslServerAuthenticationOptions
         {
@@ -265,18 +268,90 @@ public sealed class PenBridgeServer : IAsyncDisposable
     }
 
     /// <summary>Changes the display region the phone maps to (applies to the active session immediately).</summary>
-    public void SetTarget(DisplayRect display, NormalizedRect region)
+    public void SetTarget(DisplayRect display, NormalizedRect region) => SetTarget(MappingTarget.ForDisplay(display, region));
+
+    /// <summary>
+    /// Changes the mapping target (one display and region, or all displays; ADR-0031) for the active session and every
+    /// later one. When the active area changes and the session negotiated <see cref="ProtocolCapabilities.ActiveArea"/>,
+    /// the phone gets the new area. Thread-safe.
+    /// </summary>
+    public void SetTarget(MappingTarget target)
     {
-        _ = new CoordinateMapper(1, 1, display, region);
-        SessionInput? input;
+        ArgumentNullException.ThrowIfNull(target);
         lock (_gate)
         {
-            _display = display;
-            _region = region;
-            input = _activeInput;
+            _target = target;
         }
 
-        input?.SetTarget(display, region);
+        ApplyToInput(target: true, settings: false);
+    }
+
+    /// <summary>
+    /// Changes the input settings (ADR-0031..0033: stylus mode, side button, pressure curve, gestures) for the active
+    /// session and every later one; starts from <see cref="PenBridgeServerOptions.InputSettings"/>. Pen settings take
+    /// effect between strokes. A stylus mode change that changes the active area sends it to the phone (with
+    /// <see cref="ProtocolCapabilities.ActiveArea"/>). Thread-safe.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">Settings out of range (<see cref="InputSettings.Validate"/>).</exception>
+    public void SetInputSettings(InputSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        settings.Validate();
+        lock (_gate)
+        {
+            _inputSettings = settings;
+        }
+
+        ApplyToInput(target: false, settings: true);
+    }
+
+    /// <summary>The current input settings.</summary>
+    public InputSettings InputSettings
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _inputSettings;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Applies the latest target and input settings to the active input. Runs outside <c>_gate</c> and the input lock
+    /// (SessionInput takes the input lock and raises ActiveAreaChanged after it); <c>_applyLock</c> serializes the
+    /// applications and each reads the latest values under it, so the last one to run applies the latest state.
+    /// Lock order: <c>_applyLock</c>, then <c>_gate</c> or the input lock (never held while taking <c>_applyLock</c>).
+    /// </summary>
+    private void ApplyToInput(bool target, bool settings)
+    {
+        lock (_applyLock)
+        {
+            SessionInput? input;
+            MappingTarget latestTarget;
+            InputSettings latestSettings;
+            lock (_gate)
+            {
+                input = _activeInput;
+                latestTarget = _target;
+                latestSettings = _inputSettings;
+            }
+
+            if (input is null)
+            {
+                return;
+            }
+
+            if (target)
+            {
+                input.SetTarget(latestTarget);
+            }
+
+            if (settings)
+            {
+                input.ApplySettings(latestSettings);
+            }
+        }
     }
 
     /// <summary>
@@ -518,14 +593,19 @@ public sealed class PenBridgeServer : IAsyncDisposable
                 if (published)
                 {
                     _inputOwner = input;
-                    input.SetTarget(_display, _region);
                     Volatile.Write(ref _activeInput, input);
                 }
             }
         }
 
-        // Outside the locks: the fault callback closes the old connection.
+        // Outside the locks: the fault callback closes the old connection. The target and settings are applied
+        // before SessionStart goes out, so no input of this session is processed without them.
         previous?.ReportFault(fault);
+        if (published)
+        {
+            ApplyToInput(target: true, settings: true);
+        }
+
         return published;
     }
 

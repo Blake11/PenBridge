@@ -113,6 +113,8 @@ public class SettingsSyncTests
         await using NetHarness h = Harness();
         var areas = new ConcurrentQueue<NormalizedRect>();
         PenBridgeClient client = await PairAsync(h, c => c.ActiveAreaReceived += (_, e) => areas.Enqueue(e.Area));
+        await Wait.Until(() => !areas.IsEmpty, "the area after SurfaceInfo");
+        areas.Clear();
 
         var first = new NormalizedRect(0.125, 0, 0.75, 1);
         h.Server.SendActiveArea(first);
