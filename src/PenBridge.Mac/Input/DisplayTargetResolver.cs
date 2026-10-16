@@ -5,6 +5,7 @@ using Foundation;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using PenBridge.Core.Input;
+using PenBridge.Core.Settings;
 using PenBridge.Mac.Services;
 
 namespace PenBridge.Mac.Input;
@@ -18,9 +19,9 @@ namespace PenBridge.Mac.Input;
 public sealed record DisplayInfo(uint Id, string Uuid, string Name, DisplayRect Bounds, bool IsMain);
 
 /// <summary>
-/// Resolves the display the phone surface maps to (ADR-0005, ADR-0016): the main display by default, or the user's
-/// choice remembered by UUID, falling back to main while that display is missing. Follows display reconfiguration
-/// (connect, disconnect, resolution, arrangement) without polling.
+/// Resolves the display the phone surface maps to (ADR-0005, ADR-0016, ADR-0031): the main display by default, the
+/// user's choice remembered by UUID (falling back to main while that display is missing), or all displays. Follows
+/// display reconfiguration (connect, disconnect, resolution, arrangement) without polling.
 /// </summary>
 /// <remarks>
 /// <para><b>Main thread only</b> (it reads NSScreen); the constructor and every member throw otherwise. Events are
@@ -29,12 +30,11 @@ public sealed record DisplayInfo(uint Id, string Uuid, string Name, DisplayRect 
 /// the main thread once a CoreGraphics display reconfiguration has completed (the same source as
 /// <c>CGDisplayRegisterReconfigurationCallback</c>, already coalesced and with NSScreen updated). It requires a running
 /// NSApplication, which the menu-bar app has.</para>
-/// <para>Wiring (shell): create it with the saved UUID (<see cref="SettingsStore"/>), call <see cref="Bind"/> with the
-/// <see cref="ServerHost"/> and the injector before <c>ServerHost.StartAsync</c>, persist <see cref="PreferredUuid"/>
-/// after <see cref="SetTarget"/>, and list <see cref="Displays"/> in the menu. <c>ServerHost.SetTarget</c> keeps the
-/// target across server restarts (sleep/wake).</para>
-/// <para>No display (e.g. lid closed, nothing attached): <see cref="HasDisplay"/> is false, the binding stops input
-/// at the injector instead of mapping to a placeholder, and it is logged once until a display returns.</para>
+/// <para>Wiring: <see cref="SettingsSync"/> feeds it the stored TargetDisplay and turns <see cref="Target"/> /
+/// <see cref="IsAllDisplays"/> / <see cref="Displays"/> into the server's mapping target; the menu and the Settings
+/// window list <see cref="Displays"/>.</para>
+/// <para>No display (e.g. lid closed, nothing attached): <see cref="HasDisplay"/> is false, input is stopped at the
+/// injector instead of mapping to a placeholder, and it is logged once until a display returns.</para>
 /// </remarks>
 public sealed class DisplayTargetResolver : IDisposable
 {
@@ -45,14 +45,15 @@ public sealed class DisplayTargetResolver : IDisposable
     private DisplayInfo[] _displays = [];
     private bool _disposed;
     private bool _loggedNoDisplay;
+    private bool _resolvedAll;
 
-    /// <param name="preferredUuid">The remembered display UUID, or null for the main display.</param>
+    /// <param name="target">The stored TargetDisplay: a display UUID, <see cref="MacSettings.AllDisplays"/>, or null / "" for the main display.</param>
     /// <param name="logger">Diagnostics (target changes only).</param>
-    public DisplayTargetResolver(string? preferredUuid = null, ILogger<DisplayTargetResolver>? logger = null)
+    public DisplayTargetResolver(string? target = null, ILogger<DisplayTargetResolver>? logger = null)
     {
         RequireMainThread();
         _logger = (ILogger?)logger ?? NullLogger.Instance;
-        PreferredUuid = string.IsNullOrEmpty(preferredUuid) ? null : preferredUuid;
+        SetPreference(target);
         Target = new DisplayInfo((uint)CGDisplay.MainDisplayID, string.Empty, "Main display", PlaceholderBounds, IsMain: true);
         _observer = NSNotificationCenter.DefaultCenter.AddObserver(
             NSApplication.DidChangeScreenParametersNotification, _ => Refresh());
@@ -69,8 +70,9 @@ public sealed class DisplayTargetResolver : IDisposable
     public IReadOnlyList<DisplayInfo> Displays => _displays;
 
     /// <summary>
-    /// The resolved target. While <see cref="HasDisplay"/> is false it is the last display seen (or a 1×1 placeholder
-    /// before any); never map input to it then.
+    /// The resolved target display: the chosen one, else main. With <see cref="IsAllDisplays"/> it is the main
+    /// display (the menu's check mark and the region don't use it then). While <see cref="HasDisplay"/> is false it is
+    /// the last display seen (or a 1×1 placeholder before any); never map input to it then.
     /// </summary>
     public DisplayInfo Target { get; private set; }
 
@@ -83,11 +85,17 @@ public sealed class DisplayTargetResolver : IDisposable
     /// <summary>True when <see cref="PreferredUuid"/> is set but that display is not connected, so main is used.</summary>
     public bool IsUsingFallback { get; private set; }
 
-    /// <summary>Chooses the target by UUID (null = main display) and resolves it; raises <see cref="TargetChanged"/> if it moved.</summary>
-    public void SetTarget(string? uuid)
+    /// <summary>The target is every display as one desktop (ADR-0031); <see cref="Displays"/> are the target.</summary>
+    public bool IsAllDisplays { get; private set; }
+
+    /// <summary>
+    /// Chooses the target: a display UUID, <see cref="MacSettings.AllDisplays"/>, or null / "" for the main display,
+    /// and resolves it; raises <see cref="TargetChanged"/> if it moved.
+    /// </summary>
+    public void SetTarget(string? target)
     {
         RequireMainThread();
-        PreferredUuid = string.IsNullOrEmpty(uuid) ? null : uuid;
+        SetPreference(target);
         Resolve();
     }
 
@@ -111,23 +119,6 @@ public sealed class DisplayTargetResolver : IDisposable
         Resolve();
     }
 
-    /// <summary>
-    /// Applies <see cref="Target"/> through <see cref="ServerHost.SetTarget"/> now and on every change, until the
-    /// returned handle is disposed. This is the reconfiguration path that updates the server's coordinate mapper.
-    /// While no display exists the host keeps its last target and <paramref name="injector"/> drops input
-    /// (<see cref="CGEventTabletInjector.IsTargetAvailable"/>).
-    /// </summary>
-    /// <param name="host">The host whose target display to drive (main thread, like this resolver).</param>
-    /// <param name="injector">The host's injector, gated while no display exists.</param>
-    /// <param name="region">Sub-region of the display (ADR-0005); the whole display by default.</param>
-    public IDisposable Bind(ServerHost host, CGEventTabletInjector injector, NormalizedRect? region = null)
-    {
-        ArgumentNullException.ThrowIfNull(host);
-        ArgumentNullException.ThrowIfNull(injector);
-        RequireMainThread();
-        return new Binding(this, host, injector, region ?? NormalizedRect.Full);
-    }
-
     public void Dispose()
     {
         if (_disposed)
@@ -138,6 +129,12 @@ public sealed class DisplayTargetResolver : IDisposable
         _disposed = true;
         NSNotificationCenter.DefaultCenter.RemoveObserver(_observer);
         _observer.Dispose();
+    }
+
+    private void SetPreference(string? target)
+    {
+        IsAllDisplays = string.Equals(target, MacSettings.AllDisplays, StringComparison.Ordinal);
+        PreferredUuid = IsAllDisplays || string.IsNullOrEmpty(target) ? null : target;
     }
 
     private static void RequireMainThread()
@@ -260,58 +257,25 @@ public sealed class DisplayTargetResolver : IDisposable
         }
 
         _loggedNoDisplay = false;
-        if (next == Target && HasDisplay)
+        if (next == Target && HasDisplay && _resolvedAll == IsAllDisplays)
         {
             return;
         }
 
         HasDisplay = true;
+        _resolvedAll = IsAllDisplays;
 
         Target = next;
         DisplayRect r = next.Bounds;
-        InputLog.TargetDisplay(_logger, next.Name, next.Uuid, r.X, r.Y, r.Width, r.Height, IsUsingFallback ? " (fallback: chosen display missing)" : string.Empty);
+        if (IsAllDisplays)
+        {
+            InputLog.TargetAllDisplays(_logger, _displays.Length);
+        }
+        else
+        {
+            InputLog.TargetDisplay(_logger, next.Name, next.Uuid, r.X, r.Y, r.Width, r.Height, IsUsingFallback ? " (fallback: chosen display missing)" : string.Empty);
+        }
+
         TargetChanged?.Invoke(this, EventArgs.Empty);
-    }
-
-    private sealed class Binding : IDisposable
-    {
-        private readonly DisplayTargetResolver _resolver;
-        private readonly ServerHost _host;
-        private readonly CGEventTabletInjector _injector;
-        private readonly NormalizedRect _region;
-        private bool _disposed;
-
-        public Binding(DisplayTargetResolver resolver, ServerHost host, CGEventTabletInjector injector, NormalizedRect region)
-        {
-            _resolver = resolver;
-            _host = host;
-            _injector = injector;
-            _region = region;
-            resolver.TargetChanged += OnTargetChanged;
-            Apply();
-        }
-
-        public void Dispose()
-        {
-            if (!_disposed)
-            {
-                _disposed = true;
-                _resolver.TargetChanged -= OnTargetChanged;
-            }
-        }
-
-        private void OnTargetChanged(object? sender, EventArgs e) => Apply();
-
-        private void Apply()
-        {
-            if (!_resolver.HasDisplay)
-            {
-                _injector.IsTargetAvailable = false;
-                return;
-            }
-
-            _host.SetTarget(_resolver.Target.Bounds, _region);
-            _injector.IsTargetAvailable = true;
-        }
     }
 }

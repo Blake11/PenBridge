@@ -13,9 +13,11 @@ namespace PenBridge.Mac.Input;
 
 /// <summary>
 /// Injects pen input into macOS as CGEvent tablet events (ADR-0003): proximity events announce a pen or eraser, then
-/// mouse events with the tablet-point subtype carry position, pressure, tilt and rotation. The side button is a
-/// right-click while hovering (ADR-0016); held at contact-down it makes the stroke a right-button drag, latched until
-/// the tip lifts (ADR-0022). Gesture events go to <see cref="CGEventGestureInjector"/> (ADR-0023: scroll with momentum,
+/// mouse events with the tablet-point subtype carry position, pressure, tilt and rotation. The side button follows the
+/// configured action (ADR-0032; Core's planner): a right or middle click while hovering, a double click, the eraser
+/// while held, or nothing; held at contact-down Right/Middle make the stroke a drag with that button, latched until
+/// the tip lifts (ADR-0022). In Mouse mode the events are the same, at Core's relative cursor; the tracker anchors
+/// it at the current cursor through <see cref="ICursorLocator"/>. Gesture events go to <see cref="CGEventGestureInjector"/> (ADR-0023: scroll with momentum,
 /// magnify/rotate, smart zoom, two-finger tap; ADR-0026: the relative one-finger cursor as plain mouse events), under
 /// the same lock. A pen event first releases any finger drag, so the pen's events start with no button held.
 /// </summary>
@@ -44,10 +46,10 @@ namespace PenBridge.Mac.Input;
 /// <para><b>Pause</b> is <see cref="PausableInputSink"/>'s job (it calls <see cref="ReleaseAll"/>, then drops input
 /// until a resync point); the injector has no pause state of its own.</para>
 /// <para><b>Safety.</b> Leave, pause, a missing display, disconnect (the server's synthesized release) and
-/// <see cref="ReleaseAll"/> post every outstanding up and the proximity leave. Each post stands alone: a failure
+/// <see cref="ReleaseAll"/> post every outstanding up (left, right, middle) and the proximity leave. Each post stands alone: a failure
 /// does not skip the remaining releases, and the failed step is reverted in the planner state so it is retried.</para>
 /// </remarks>
-public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink, IDisposable
+public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink, ICursorLocator, IDisposable
 {
     /// <summary>The System Settings pane where the user grants Accessibility.</summary>
     public const string AccessibilitySettingsUrl = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
@@ -69,6 +71,7 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
 
     private const uint ButtonLeft = (uint)CGMouseButton.Left;
     private const uint ButtonRight = (uint)CGMouseButton.Right;
+    private const uint ButtonMiddle = (uint)CGMouseButton.Center;
 
     /// <summary>The TCC database updates shortly after the Accessibility broadcast; check again after this delay.</summary>
     private static readonly TimeSpan AccessibilityRecheckDelay = TimeSpan.FromSeconds(1);
@@ -85,8 +88,10 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
     private HostClockAnchor _clock;
     private ClickState _leftClicks;
     private ClickState _rightClicks;
+    private ClickState _middleClicks;
     private long _leftClickCount;
     private long _rightClickCount;
+    private long _middleClickCount;
     private long _mouseEventNumber;
     private DisplayPoint _lastPoint;
     private PenSample _lastSample;
@@ -235,7 +240,7 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
             _gestures.OnPenActivity(); // the pen takes over: stop a scroll coast, release a three-finger drag
 
             Span<TabletStep> steps = stackalloc TabletStep[TabletEventPlanner.MaxSteps];
-            int count = TabletEventPlanner.Plan(ref _state, e.Kind, e.Button, e.Sample.Tool, steps, e.Sample.Buttons);
+            int count = TabletEventPlanner.Plan(ref _state, e.Kind, e.Button, e.Sample.Tool, steps, e.Sample.Buttons, e.SideButton);
             _lastPoint = e.Position;
             _lastSample = e.Sample;
             if (count == 0)
@@ -253,6 +258,32 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
             long nowNs = TabletEventMath.TicksToNanoseconds(Stopwatch.GetTimestamp(), Stopwatch.Frequency);
             long timestampNs = TabletEventMath.MapTimestamp(ref _clock, e.TimestampUs, nowNs, MaxTimestampLagNs);
             PostAll(steps[..count], e.Position, e.Sample, timestampNs);
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The current cursor (a new event's location, <c>CGEventCreate(NULL)</c>), in global display points. Called by
+    /// the tracker under the input lock on entering range in Mouse mode; one short-lived event, no lock here.
+    /// </remarks>
+    public bool TryGetCursorLocation(out DisplayPoint location)
+    {
+        IntPtr ev = NativeMethods.CGEventCreate(IntPtr.Zero);
+        if (ev == IntPtr.Zero)
+        {
+            location = default;
+            return false;
+        }
+
+        try
+        {
+            NativePoint p = NativeMethods.CGEventGetLocation(ev);
+            location = new DisplayPoint(p.X, p.Y);
+            return double.IsFinite(p.X) && double.IsFinite(p.Y);
+        }
+        finally
+        {
+            NativeMethods.CFRelease(ev);
         }
     }
 
@@ -412,13 +443,23 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
                 return PostMouse(CGEventType.MouseMoved, ButtonLeft, clickState: 0, step, at, sample, timestampNs);
             case TabletAction.LeftDown:
                 _mouseEventNumber++;
-                _leftClickCount = TabletEventMath.NextClickCount(
-                    ref _leftClicks, timestampNs, at, _doubleClickNs, TabletEventMath.ClickSlopFor(step.Tool, ClickSlop));
+                if (step.ClickState > 0)
+                {
+                    // The planner's double click (side button): states 1, 2 as planned; the next tip tap starts at 1.
+                    _leftClickCount = step.ClickState;
+                    _leftClicks = default;
+                }
+                else
+                {
+                    _leftClickCount = TabletEventMath.NextClickCount(
+                        ref _leftClicks, timestampNs, at, _doubleClickNs, TabletEventMath.ClickSlopFor(step.Tool, ClickSlop));
+                }
+
                 return PostMouse(CGEventType.LeftMouseDown, ButtonLeft, _leftClickCount, step, at, sample, timestampNs);
             case TabletAction.LeftDragged:
                 return PostMouse(CGEventType.LeftMouseDragged, ButtonLeft, _leftClickCount, step, at, sample, timestampNs);
             case TabletAction.LeftUp:
-                return PostMouse(CGEventType.LeftMouseUp, ButtonLeft, _leftClickCount, step, at, sample, timestampNs);
+                return PostMouse(CGEventType.LeftMouseUp, ButtonLeft, step.ClickState > 0 ? step.ClickState : _leftClickCount, step, at, sample, timestampNs);
             case TabletAction.RightDown:
                 _mouseEventNumber++;
                 _rightClickCount = TabletEventMath.NextClickCount(
@@ -428,6 +469,15 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
                 return PostMouse(CGEventType.RightMouseDragged, ButtonRight, _rightClickCount, step, at, sample, timestampNs);
             case TabletAction.RightUp:
                 return PostMouse(CGEventType.RightMouseUp, ButtonRight, _rightClickCount, step, at, sample, timestampNs);
+            case TabletAction.MiddleDown:
+                _mouseEventNumber++;
+                _middleClickCount = TabletEventMath.NextClickCount(
+                    ref _middleClicks, timestampNs, at, _doubleClickNs, TabletEventMath.ClickSlopFor(step.Tool, ClickSlop));
+                return PostMouse(CGEventType.OtherMouseDown, ButtonMiddle, _middleClickCount, step, at, sample, timestampNs);
+            case TabletAction.MiddleDragged:
+                return PostMouse(CGEventType.OtherMouseDragged, ButtonMiddle, _middleClickCount, step, at, sample, timestampNs);
+            case TabletAction.MiddleUp:
+                return PostMouse(CGEventType.OtherMouseUp, ButtonMiddle, _middleClickCount, step, at, sample, timestampNs);
             default:
                 return true;
         }

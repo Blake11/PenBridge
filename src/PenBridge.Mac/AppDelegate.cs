@@ -34,7 +34,7 @@ public sealed partial class AppDelegate : NSApplicationDelegate
     private SettingsStore? _settings;
     private CGEventTabletInjector? _injector;
     private DisplayTargetResolver? _resolver;
-    private IDisposable? _displayBinding;
+    private SettingsSync? _settingsSync;
     private ServerHost? _host;
     private PairingWindowController? _pairing;
     private GlobalHotkey? _hotkey;
@@ -55,9 +55,11 @@ public sealed partial class AppDelegate : NSApplicationDelegate
         _log = _loggers.CreateLogger<AppDelegate>();
         _settings = new SettingsStore();
         _injector = new CGEventTabletInjector(_loggers.CreateLogger<CGEventTabletInjector>());
-        _resolver = new DisplayTargetResolver(_settings.TargetDisplayUuid, _loggers.CreateLogger<DisplayTargetResolver>());
+        _resolver = new DisplayTargetResolver(_settings.TargetDisplay, _loggers.CreateLogger<DisplayTargetResolver>());
         _host = new ServerHost(_injector, SecretStoreFactory.Create(_loggers), _settings, _loggers);
-        _displayBinding = _resolver.Bind(_host, _injector);
+
+        // Applies the stored settings and target before the server starts, then follows every change (ADR-0030).
+        _settingsSync = new SettingsSync(_settings, _resolver, _host, _injector, _loggers.CreateLogger<SettingsSync>());
         _pairing = new PairingWindowController(_host);
 
         _hotkey = new GlobalHotkey(_loggers.CreateLogger<GlobalHotkey>());
@@ -156,10 +158,10 @@ public sealed partial class AppDelegate : NSApplicationDelegate
 
             _pairing?.Dispose(); // closes the panel and the server's pairing window
             _settingsWindow?.Dispose(); // closes the Settings window and a region overlay
+            _settingsSync?.Dispose();
 
             // Bye(Shutdown) to the phone, advert withdrawn, injector released by the server's session teardown.
             await _host!.DisposeAsync().ConfigureAwait(true);
-            _displayBinding?.Dispose();
             _resolver?.Dispose();
             _injector?.Dispose();
             _statusItem?.Dispose();

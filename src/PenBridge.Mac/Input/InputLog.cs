@@ -35,4 +35,7 @@ internal static partial class InputLog
 
     [LoggerMessage(109, LogLevel.Information, "Smart zoom (two-finger double tap): {Enabled}")]
     public static partial void SmartZoom(ILogger logger, bool enabled);
+
+    [LoggerMessage(110, LogLevel.Information, "Target: all displays ({Count} active)")]
+    public static partial void TargetAllDisplays(ILogger logger, int count);
 }

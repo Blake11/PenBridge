@@ -3,6 +3,7 @@ using AppKit;
 using CoreGraphics;
 using Foundation;
 using PenBridge.Core.Input;
+using PenBridge.Core.Settings;
 using PenBridge.Mac.Input;
 using PenBridge.Mac.Services;
 using PenBridge.Mac.Shell;
@@ -17,9 +18,10 @@ namespace PenBridge.Mac.Settings;
 /// <para>Main thread only. The window is built on <see cref="Show"/> and released when it closes; while closed nothing
 /// is observed (idle cost zero). While open it follows <see cref="SettingsStore.Changed"/> (menu toggles, later the
 /// phone) and display reconfiguration; nothing polls.</para>
-/// <para>Controls write to the store only; applying the settings is the server's job (P5-C2). The display target
-/// also drives <see cref="DisplayTargetResolver"/>, as the menu does. Sliders commit when released (or per arrow-key
-/// step), so a drag is one change, not one per pixel.</para>
+/// <para>Controls write to the store only; <see cref="SettingsSync"/> applies them (server, resolver) and pushes the
+/// snapshot to the phone, and phone edits come back through the store, so the window follows them live. Ranges come
+/// from Core's key table (<see cref="MacSettings"/>). Sliders commit when released (or per arrow-key step), so a drag
+/// is one change, not one per pixel.</para>
 /// <para>Standard AppKit controls and semantic colours: follows light/dark; keyboard navigation via the window's
 /// recalculated key-view loop (Tab, plus Full Keyboard Access for popups and checkboxes).</para>
 /// </remarks>
@@ -78,7 +80,8 @@ public sealed class SettingsWindowController : IDisposable
     /// <param name="host">For "Allow takeover", which the host applies and persists.</param>
     /// <param name="phoneSurfaceAspect">
     /// The connected phone surface's width / height in its current orientation, or null when unknown; the region
-    /// aspect lock uses it, else the display's ratio. Wired by P5-C2.
+    /// aspect lock uses it, else the display's ratio. Not wired yet: Core's server doesn't expose the session's
+    /// surface size to the head.
     /// </param>
     public SettingsWindowController(SettingsStore store, DisplayTargetResolver resolver, ServerHost host, Func<double?>? phoneSurfaceAspect = null)
     {
@@ -222,10 +225,13 @@ public sealed class SettingsWindowController : IDisposable
         _mouseAcceleration = Checkbox("Acceleration", v => _store.MouseAcceleration = v);
         _sideButton = Popup(() => _store.SideButton = (SideButtonAction)(int)_sideButton.IndexOfSelectedItem, SideButtonTitles);
 
-        _tipFeel = new SliderRow(SettingLimits.MinTipFeel, SettingLimits.MaxTipFeel, v => Commit(() => _store.TipFeel = (float)v), OnCurveSliding, v => v.ToString("+0.00;−0.00;0", CultureInfo.CurrentCulture), "Soft", "Firm");
-        _clickThreshold = new SliderRow(SettingLimits.MinClickThreshold, SettingLimits.MaxClickThreshold, v => Commit(() => _store.ClickThreshold = (float)v), OnCurveSliding, Percent);
+        MacSettingDescriptor tipFeel = MacSettings.Get(MacSettingKey.TipFeel);
+        MacSettingDescriptor threshold = MacSettings.Get(MacSettingKey.ClickThreshold);
+        MacSettingDescriptor full = MacSettings.Get(MacSettingKey.FullPressureAt);
+        _tipFeel = new SliderRow(tipFeel.Min, tipFeel.Max, v => Commit(() => _store.TipFeel = (float)v), OnCurveSliding, v => v.ToString("+0.00;−0.00;0", CultureInfo.CurrentCulture), "Soft", "Firm");
+        _clickThreshold = new SliderRow(threshold.Min, threshold.Max, v => Commit(() => _store.ClickThreshold = (float)v), OnCurveSliding, Percent);
         _clickThreshold.Slider.ToolTip = "Below this pressure the pen hovers instead of touching (0: the phone decides).";
-        _fullPressureAt = new SliderRow(SettingLimits.MinFullPressureAt, SettingLimits.MaxFullPressureAt, v => Commit(() => _store.FullPressureAt = (float)v), OnCurveSliding, Percent);
+        _fullPressureAt = new SliderRow(full.Min, full.Max, v => Commit(() => _store.FullPressureAt = (float)v), OnCurveSliding, Percent);
         _fullPressureAt.Slider.ToolTip = "Pressing this hard already gives full pressure.";
 
         _pad = new PressureTestPad();
@@ -376,8 +382,8 @@ public sealed class SettingsWindowController : IDisposable
         string target = _store.TargetDisplay;
         _target.RemoveAllItems();
         _targetValues.Clear();
-        AddTarget("Main display", SettingLimits.MainDisplay);
-        bool found = target.Length == 0 || target == SettingLimits.AllDisplays;
+        AddTarget("Main display", MacSettings.MainDisplay);
+        bool found = target.Length == 0 || target == MacSettings.AllDisplays;
         foreach (DisplayInfo d in _resolver.Displays)
         {
             AddTarget(d.Name + (d.IsMain ? " (main)" : string.Empty), d.Uuid);
@@ -389,7 +395,7 @@ public sealed class SettingsWindowController : IDisposable
             AddTarget("Disconnected display (using main)", target);
         }
 
-        AddTarget("All displays", SettingLimits.AllDisplays);
+        AddTarget("All displays", MacSettings.AllDisplays);
         for (int i = 0; i < _targetValues.Count; i++)
         {
             if (string.Equals(_targetValues[i], target, StringComparison.OrdinalIgnoreCase))
@@ -400,7 +406,7 @@ public sealed class SettingsWindowController : IDisposable
         }
 
         DisplayInfo? display = RegionDisplay();
-        bool all = target == SettingLimits.AllDisplays;
+        bool all = target == MacSettings.AllDisplays;
         NormalizedRect region = display is null ? NormalizedRect.Full : _store.GetRegion(display.Uuid);
         _regionText.StringValue = all ? "Not used with All displays"
             : display is null ? "The display is not connected"
@@ -465,8 +471,7 @@ public sealed class SettingsWindowController : IDisposable
             return;
         }
 
-        _store.TargetDisplay = _targetValues[index];
-        _resolver.SetTarget(_store.TargetDisplayUuid);
+        _store.TargetDisplay = _targetValues[index]; // SettingsSync re-targets the resolver and the server
     }
 
     private void OnSetRegion()
@@ -535,7 +540,7 @@ public sealed class SettingsWindowController : IDisposable
     private DisplayInfo? RegionDisplay()
     {
         string target = _store.TargetDisplay;
-        if (target == SettingLimits.AllDisplays)
+        if (target == MacSettings.AllDisplays)
         {
             return null;
         }
@@ -645,7 +650,7 @@ public sealed class SettingsWindowController : IDisposable
 
     // Speeds are 0.25..4 on a log2 slider (−2..2) so 1× sits in the middle.
     private static SliderRow SpeedSlider(Action<float> commit) =>
-        new(Math.Log2(SettingLimits.MinSpeed), Math.Log2(SettingLimits.MaxSpeed), v => commit((float)Math.Pow(2, v)), null, v => Math.Pow(2, v).ToString("0.00", CultureInfo.CurrentCulture) + "×");
+        new(Math.Log2(MacSettings.Get(MacSettingKey.MouseSpeed).Min), Math.Log2(MacSettings.Get(MacSettingKey.MouseSpeed).Max), v => commit((float)Math.Pow(2, v)), null, v => Math.Pow(2, v).ToString("0.00", CultureInfo.CurrentCulture) + "×");
 
     private static string Percent(double v) => Math.Round(v * 100).ToString(CultureInfo.CurrentCulture) + "%";
 

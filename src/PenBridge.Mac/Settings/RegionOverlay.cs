@@ -2,6 +2,7 @@ using AppKit;
 using CoreGraphics;
 using Foundation;
 using PenBridge.Core.Input;
+using PenBridge.Core.Settings;
 
 namespace PenBridge.Mac.Settings;
 
@@ -13,7 +14,10 @@ namespace PenBridge.Mac.Settings;
 /// <remarks>Main thread only. Event-driven; one instance per drag session, closed by <see cref="Close"/>.</remarks>
 internal sealed class RegionOverlay : IDisposable
 {
-    /// <summary>Smallest accepted rectangle side, in points; a smaller drag (e.g. a click) is ignored.</summary>
+    /// <summary>
+    /// Smallest accepted rectangle side, in points, and at least the key table's <see cref="MacSettings.MinRegionSize"/>
+    /// of the display; a smaller drag (e.g. a click) is ignored.
+    /// </summary>
     private const double MinSide = 24;
 
     private readonly OverlayWindow _window;
@@ -41,6 +45,10 @@ internal sealed class RegionOverlay : IDisposable
             HasShadow = false,
             CollectionBehavior = NSWindowCollectionBehavior.CanJoinAllSpaces | NSWindowCollectionBehavior.FullScreenAuxiliary,
         };
+
+        // The dimming is dark in either system appearance: keep the controls on it (Cancel) dark too, else in light
+        // mode they draw light-on-dark and nearly vanish.
+        _window.Appearance = NSAppearance.GetAppearance(NSAppearance.NameDarkAqua);
         _window.SetFrame(frame, display: true);
         _view = new OverlayView(this, new CGRect(CGPoint.Empty, frame.Size), current, aspect is > 0 && double.IsFinite(aspect.Value) ? aspect : null);
         _window.ContentView = _view;
@@ -182,7 +190,9 @@ internal sealed class RegionOverlay : IDisposable
         public override void MouseUp(NSEvent theEvent)
         {
             CGRect rect = Selection(Clamp(ConvertPointFromView(theEvent.LocationInWindow, null)));
-            if (rect.Width < MinSide || rect.Height < MinSide)
+            CGSize size = Bounds.Size;
+            if (rect.Width < Math.Max(MinSide, MacSettings.MinRegionSize * size.Width)
+                || rect.Height < Math.Max(MinSide, MacSettings.MinRegionSize * size.Height))
             {
                 _selection = null;
                 NeedsDisplay = true;
