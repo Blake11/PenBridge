@@ -7,6 +7,7 @@ using PenBridge.Core.Input;
 using PenBridge.Core.Net;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
+using PenBridge.Core.Settings;
 
 namespace PenBridge.Android.Services;
 
@@ -52,6 +53,14 @@ public sealed class ClientHost : IAsyncDisposable
     private bool _autoConnectSuppressed;
     private bool _autoConnectTried;
 
+    // The Mac's settings, display list and active area (protocol 1.2, ADR-0030/0031): main thread only.
+    private MacSettingValues? _macSettings;
+    private IReadOnlyList<DisplayListEntry> _macDisplays = [];
+    private NormalizedRect _activeArea = NormalizedRect.Full;
+
+    /// <summary>Settings updates go out one after the other, in the order the user made them.</summary>
+    private Task _settingsUpdates = Task.CompletedTask;
+
     /// <summary>Discovery-advertised endpoints that failed the pin for the current target (spoofed or stale TXT).</summary>
     private readonly HashSet<string> _rejectedEndpoints = new(StringComparer.Ordinal);
 
@@ -84,7 +93,32 @@ public sealed class ClientHost : IAsyncDisposable
     /// <summary>Raised on the main thread when <see cref="DiscoveredMacs"/> or the browse status change.</summary>
     public event EventHandler? DiscoveredChanged;
 
+    /// <summary>
+    /// Raised on the main thread when <see cref="MacSettings"/> or <see cref="MacDisplays"/> change: a SettingsSnapshot
+    /// or DisplayList from the Mac, or the session coming up or ending.
+    /// </summary>
+    public event EventHandler? MacSettingsChanged;
+
+    /// <summary>Raised on the main thread when <see cref="ActiveArea"/> changes.</summary>
+    public event EventHandler? ActiveAreaChanged;
+
     public ClientHostState State => _state;
+
+    /// <summary>
+    /// The connected Mac's settings (ADR-0030) from its last SettingsSnapshot, or null: not connected, a Mac without
+    /// <see cref="ProtocolCapabilities.RemoteSettings"/> (1.0/1.1), or no snapshot yet. Main thread.
+    /// </summary>
+    public MacSettingValues? MacSettings => _state.Status == ClientHostStatus.Connected ? _macSettings : null;
+
+    /// <summary>The displays the connected Mac can target ("All displays" is implied); empty with no <see cref="MacSettings"/>. Names are peer text.</summary>
+    public IReadOnlyList<DisplayListEntry> MacDisplays => MacSettings is null ? [] : _macDisplays;
+
+    /// <summary>
+    /// The part of the pad surface that maps onto the Mac's whole target (ADR-0031), in the current surface
+    /// orientation. The whole surface unless the Mac sent one (<see cref="ProtocolCapabilities.ActiveArea"/>); kept
+    /// through a reconnect, reset by a rotation until the Mac sends the new one. Main thread.
+    /// </summary>
+    public NormalizedRect ActiveArea => _activeArea;
 
     /// <summary>
     /// Capabilities the current session negotiated (<see cref="PenBridgeClient.NegotiatedCapabilities"/>), or
@@ -272,11 +306,41 @@ public sealed class ClientHost : IAsyncDisposable
     {
         EnsureUsable();
         _ = surface.PayloadSize;
+        bool rotated = surface.Orientation != _surface.Orientation;
         _surface = surface;
+        if (rotated)
+        {
+            // The area is for the old orientation: show the whole surface until the Mac answers the new SurfaceInfo.
+            // Its new area differs unless it is the whole surface again, so the Mac's dedupe never leaves this stale.
+            SetActiveArea(NormalizedRect.Full);
+        }
+
         if (_client is { IsConnected: true } client)
         {
             _ = SendSurfaceAsync(client, surface);
         }
+    }
+
+    /// <summary>
+    /// Sends a SettingsUpdate (ADR-0030) without blocking: updates go out in call order. The Mac answers with a
+    /// snapshot (<see cref="MacSettingsChanged"/>), which is the truth to redraw from; a rejected value simply comes
+    /// back unchanged. Ignored unless <see cref="MacSettings"/> is available. Main thread.
+    /// </summary>
+    public void UpdateMacSettings(IReadOnlyList<SettingEntry> entries)
+    {
+        EnsureUsable();
+        ArgumentNullException.ThrowIfNull(entries);
+        if (entries.Count == 0 || MacSettings is null || Volatile.Read(ref _client) is not { IsConnected: true } client)
+        {
+            return;
+        }
+
+        _settingsUpdates = _settingsUpdates.ContinueWith(
+            _ => client.UpdateSettingsAsync(entries),
+            CancellationToken.None,
+            TaskContinuationOptions.None,
+            TaskScheduler.Default).Unwrap();
+        Observe(_settingsUpdates, "settings update");
     }
 
     // ---- Hot path ----
@@ -314,7 +378,7 @@ public sealed class ClientHost : IAsyncDisposable
         Discovery.Dispose();
         if (client is not null)
         {
-            client.Disconnected -= OnClientDisconnected;
+            Unsubscribe(client);
             await CloseClientAsync(client, graceful: true).ConfigureAwait(true);
         }
 
@@ -397,7 +461,7 @@ public sealed class ClientHost : IAsyncDisposable
             PenBridgeClient client = await Task.Run(CreateClient, cts.Token).ConfigureAwait(true);
             if (generation != _generation)
             {
-                client.Disconnected -= OnClientDisconnected;
+                Unsubscribe(client);
                 Observe(client.DisposeAsync().AsTask(), "client close");
                 return false;
             }
@@ -506,6 +570,11 @@ public sealed class ClientHost : IAsyncDisposable
         Settings.RecordConnected(fingerprint, name, host, port);
         _retryAttempt = 0;
         _autoConnectSuppressed = false;
+        if ((client.NegotiatedCapabilities & ProtocolCapabilities.ActiveArea) == 0)
+        {
+            SetActiveArea(NormalizedRect.Full); // a Mac without ActiveArea: the whole surface (the area kept from before a reconnect is gone)
+        }
+
         Log.Info(Tag, "Connected");
         SetState(new ClientHostState(ClientHostStatus.Connected, name, client.Transport, RoundMs(client.RoundTripTime)));
         _main.RemoveCallbacks(_refreshAction);
@@ -639,9 +708,11 @@ public sealed class ClientHost : IAsyncDisposable
     private void DropClient(bool graceful)
     {
         PenBridgeClient? old = Interlocked.Exchange(ref _client, null);
+        _macSettings = null; // the session's; the next one sends its own (SetState raises MacSettingsChanged)
+        _macDisplays = [];
         if (old is not null)
         {
-            old.Disconnected -= OnClientDisconnected;
+            Unsubscribe(old);
             Observe(CloseClientAsync(old, graceful), "client close");
         }
     }
@@ -689,7 +760,18 @@ public sealed class ClientHost : IAsyncDisposable
             LoggerFactory = _loggerFactory,
         });
         client.Disconnected += OnClientDisconnected;
+        client.SettingsSnapshotReceived += OnClientSettingsSnapshot;
+        client.DisplayListReceived += OnClientDisplayList;
+        client.ActiveAreaReceived += OnClientActiveArea;
         return client;
+    }
+
+    private void Unsubscribe(PenBridgeClient client)
+    {
+        client.Disconnected -= OnClientDisconnected;
+        client.SettingsSnapshotReceived -= OnClientSettingsSnapshot;
+        client.DisplayListReceived -= OnClientDisplayList;
+        client.ActiveAreaReceived -= OnClientActiveArea;
     }
 
     /// <summary>Core raises this on a thread-pool thread; hop to the main looper.</summary>
@@ -701,6 +783,74 @@ public sealed class ClientHost : IAsyncDisposable
         }
     }
 
+    /// <summary>Read-loop thread: parse off the main thread, then apply there if the client is still current.</summary>
+    private void OnClientSettingsSnapshot(object? sender, SettingsSnapshotEventArgs e)
+    {
+        if (sender is PenBridgeClient client && !_disposed)
+        {
+            MacSettingValues values = MacSettingValues.FromEntries(e.Entries);
+            _main.Post(() =>
+            {
+                if (!_disposed && ReferenceEquals(client, _client))
+                {
+                    _macSettings = values;
+                    RaiseMacSettingsChanged();
+                }
+            });
+        }
+    }
+
+    private void OnClientDisplayList(object? sender, DisplayListEventArgs e)
+    {
+        if (sender is PenBridgeClient client && !_disposed)
+        {
+            IReadOnlyList<DisplayListEntry> displays = e.Displays;
+            _main.Post(() =>
+            {
+                if (!_disposed && ReferenceEquals(client, _client))
+                {
+                    _macDisplays = displays;
+                    RaiseMacSettingsChanged();
+                }
+            });
+        }
+    }
+
+    private void OnClientActiveArea(object? sender, ActiveAreaEventArgs e)
+    {
+        if (sender is PenBridgeClient client && !_disposed)
+        {
+            NormalizedRect area = e.Area;
+            _main.Post(() =>
+            {
+                if (!_disposed && ReferenceEquals(client, _client))
+                {
+                    SetActiveArea(area);
+                }
+            });
+        }
+    }
+
+    private void RaiseMacSettingsChanged()
+    {
+        // Before Connected the getters hide the values; SetState raises again when the session is up.
+        if (_state.Status == ClientHostStatus.Connected)
+        {
+            MacSettingsChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    private void SetActiveArea(NormalizedRect area)
+    {
+        if (area == _activeArea)
+        {
+            return;
+        }
+
+        _activeArea = area;
+        ActiveAreaChanged?.Invoke(this, EventArgs.Empty);
+    }
+
     private void SetState(ClientHostState state)
     {
         if (state == _state)
@@ -708,8 +858,22 @@ public sealed class ClientHost : IAsyncDisposable
             return;
         }
 
+        bool wasConnected = _state.Status == ClientHostStatus.Connected;
+        bool connected = state.Status == ClientHostStatus.Connected;
         _state = state;
+
+        // The area survives a reconnect (the Mac resends it after the new SurfaceInfo), not the end of the target.
+        if (!connected && (state.Status != ClientHostStatus.Connecting || !state.IsReconnecting))
+        {
+            SetActiveArea(NormalizedRect.Full);
+        }
+
+        // The Mac settings themselves are dropped with their client (DropClient); they show only while Connected.
         StateChanged?.Invoke(this, new ClientHostStateChangedEventArgs(state));
+        if (connected != wasConnected)
+        {
+            MacSettingsChanged?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     private void SetError(ClientErrorKind kind, string message) =>
