@@ -72,8 +72,9 @@ if [[ "$DUMP_NOW" == 1 ]]; then
   [[ -n "$pid" ]] || die "PenBridge (the Mac app) is not running"
   # The handler exists only while the capture is on (LatencyLog); otherwise SIGUSR1 would terminate the app. The
   # user default may have changed since launch, so ask the app's own log, and send nothing when unsure.
-  if [[ -z "$(penbridge_log_since_start "$pid" 'Latency capture on' | tail -n 1)" ]]; then
-    die "the running PenBridge (pid $pid) has latency capture off, so no dump was requested (SIGUSR1 would quit it). Turn it on with --enable and restart the app."
+  if [[ -z "$(penbridge_log_since_start "$pid" 'Latency capture on' | tail -n 1)" ]] ||
+     [[ -n "$(penbridge_log_since_start "$pid" 'SIGUSR1 latency dumps unavailable' | tail -n 1)" ]]; then
+    die "the running PenBridge (pid $pid) has latency capture off, or its log couldn't be read, so no dump was requested (SIGUSR1 would quit it). Turn it on with --enable and restart the app."
   fi
   before="$(newest)"
   kill -USR1 "$pid" || die "could not signal PenBridge (pid $pid)"
