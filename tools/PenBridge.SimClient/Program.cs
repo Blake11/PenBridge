@@ -440,6 +440,7 @@ internal static class Program
                 LatencyRecorder = latency?.Recorder,
                 FingerTouches = fingerTouches,
                 RemoteSettings = true,
+                ActiveArea = true,
             });
             SimSettings.Attach(server);
             server.Start();
@@ -468,6 +469,20 @@ internal static class Program
             new("sim-side", "Sim Side Display", false, 1920, 1080),
         ];
 
+        // Global layout of the fake displays: the side display to the right of the main one.
+        private static readonly DisplayRect[] Rects = [new(0, 0, 1512, 982), new(1512, 0, 1920, 1080)];
+
+        private static MappingTarget TargetFor(MacSettingValues values)
+        {
+            if (values.TargetDisplay == MacSettings.AllDisplays)
+            {
+                return MappingTarget.ForAllDisplays(Rects);
+            }
+
+            DisplayRect display = values.TargetDisplay == Displays[1].Id ? Rects[1] : Rects[0];
+            return MappingTarget.ForDisplay(display, values.Region);
+        }
+
         public static void Attach(PenBridgeServer server)
         {
             var values = new MacSettingValues();
@@ -481,6 +496,8 @@ internal static class Program
                     IReadOnlyList<SettingEntry> changed = values.ApplyUpdate(e.Entries, Displays);
                     Console.WriteLine($"[server] settings update: {e.Entries.Count} entries, changed: {(changed.Count == 0 ? "nothing" : string.Join(", ", changed.Select(c => PeerText.Sanitize(MacSettings.Format(c)))))}");
                     reply = values.ToEntries();
+                    server.SetInputSettings(values.ToInputSettings());
+                    server.SetTarget(TargetFor(values));
                 }
 
                 _ = server.SendSettingsSnapshotAsync(reply);
