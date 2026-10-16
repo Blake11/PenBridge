@@ -21,6 +21,15 @@ public sealed record PenStateTrackerOptions
     /// </summary>
     public TimeSpan HistorySampleInterval { get; init; } = TimeSpan.FromMicroseconds(4167);
 
+    /// <summary>
+    /// Mouse mode (ADR-0032): display points the cursor moves per millimetre of pen movement on the phone, before
+    /// <see cref="InputSettings.MouseSpeed"/> and the acceleration. Must be positive and finite.
+    /// </summary>
+    public double MousePointsPerMillimetre { get; init; } = 8;
+
+    /// <summary>Mouse mode: the acceleration curve (on the cursor speed in points/s) when <see cref="InputSettings.MouseAcceleration"/> is on.</summary>
+    public GestureAcceleration MouseAcceleration { get; init; } = new();
+
     public GestureRecognizerOptions Gestures { get; init; } = new();
 }
 
@@ -72,6 +81,28 @@ public sealed class PenStateTracker
     private PenSample _last;
     private CoordinateMapper _mapper;
 
+    // Settings (ADR-0032): the ones in effect, and newer ones waiting for the stroke to end.
+    private readonly ICursorLocator? _locator;
+    private InputSettings _settings = InputSettings.Default;
+    private InputSettings? _pending;
+    private PressureCurve _curve = PressureCurve.Linear;
+    private bool _eraserStroke; // Eraser action: the current contact decided its tool at contact-down
+    private bool _eraserLatched;
+
+    // Mouse mode: the relative cursor.
+    private bool _relative; // the events are positioned at _cursor
+    private bool _anchored;
+    private bool _hasCursor;
+    private DisplayPoint _cursor;
+    private PenSample _ref;
+    private long _refUs;
+    private double _mouseSpeed;
+    private double _mmPerUnitX = DefaultSurfaceMillimetres / CoordinateMapper.NormalizedMax;
+    private double _mmPerUnitY = DefaultSurfaceMillimetres / CoordinateMapper.NormalizedMax;
+
+    /// <summary>Surface size assumed until <see cref="SetSurfaceSize"/> is called (mm per side).</summary>
+    public const double DefaultSurfaceMillimetres = 100;
+
     public PenStateTracker(IInputSink sink, TimeProvider? timeProvider = null, PenStateTrackerOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(sink);
@@ -79,7 +110,50 @@ public sealed class PenStateTracker
         _time = timeProvider ?? TimeProvider.System;
         _options = options ?? new PenStateTrackerOptions();
         _historyIntervalUs = Math.Max(0, _options.HistorySampleInterval.Ticks / TimeSpan.TicksPerMicrosecond);
+        if (!(_options.MousePointsPerMillimetre > 0) || !double.IsFinite(_options.MousePointsPerMillimetre))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "MousePointsPerMillimetre must be positive and finite.");
+        }
+
+        ArgumentNullException.ThrowIfNull(_options.MouseAcceleration, nameof(PenStateTrackerOptions.MouseAcceleration));
+        _options.MouseAcceleration.Validate(nameof(PenStateTrackerOptions.MouseAcceleration));
+        _locator = sink as ICursorLocator;
         Gestures = new GestureRecognizer(sink, _options.Gestures);
+    }
+
+    /// <summary>The settings in effect for the pen (a newer set waits while the pen is in contact).</summary>
+    public InputSettings Settings => _settings;
+
+    /// <summary>
+    /// Applies input settings (ADR-0032/0033). Gesture settings apply at once (<see cref="GestureRecognizer.ApplySettings"/>).
+    /// Pen settings (stylus mode, side button, pressure curve) apply from the next sample, but while the pen is in
+    /// contact they wait until it lifts: a stroke finishes as it started. Not thread-safe (call it where frames are
+    /// processed, e.g. under the server's input lock); allocation-free.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">A value is out of range (<see cref="InputSettings.Validate"/>).</exception>
+    public void ApplySettings(InputSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        settings.Validate();
+        Gestures.ApplySettings(settings);
+        if (_contact)
+        {
+            _pending = settings;
+        }
+        else
+        {
+            Adopt(settings);
+        }
+    }
+
+    /// <summary>
+    /// The phone surface's physical size in the current orientation (from SurfaceInfo: pixels / DPI), for Mouse mode's
+    /// millimetre-based movement. Non-positive or non-finite values keep <see cref="DefaultSurfaceMillimetres"/>.
+    /// </summary>
+    public void SetSurfaceSize(double widthMm, double heightMm)
+    {
+        _mmPerUnitX = (widthMm > 0 && double.IsFinite(widthMm) ? widthMm : DefaultSurfaceMillimetres) / CoordinateMapper.NormalizedMax;
+        _mmPerUnitY = (heightMm > 0 && double.IsFinite(heightMm) ? heightMm : DefaultSurfaceMillimetres) / CoordinateMapper.NormalizedMax;
     }
 
     public GestureRecognizer Gestures { get; }
@@ -228,6 +302,8 @@ public sealed class PenStateTracker
         {
             EmitLeave(synthetic: true);
         }
+
+        AdoptPending();
     }
 
     /// <summary>
@@ -294,12 +370,19 @@ public sealed class PenStateTracker
 
     private static bool IsKnownTool(PenTool tool) => tool is PenTool.Pen or PenTool.Eraser or PenTool.FingerFallback;
 
-    private void Step(in PenSample next, bool present)
+    private void Step(in PenSample raw, bool present)
     {
-        bool nextIn = present && IsInRangeSample(next);
-        if (nextIn && !IsKnownTool(next.Tool))
+        AdoptPending();
+        bool nextIn = present && IsInRangeSample(raw);
+        if (nextIn && !IsKnownTool(raw.Tool))
         {
             return;
+        }
+
+        PenSample next = nextIn ? Transform(raw) : raw;
+        if (nextIn)
+        {
+            UpdateCursor(next);
         }
 
         if (!_inRange)
@@ -350,6 +433,7 @@ public sealed class PenStateTracker
             _contact = false;
             changed = false;
             Emit(PenEventKind.Up, next, PenButtons.None, PenTool.None, synthetic: false);
+            AdoptPending(); // the stroke finished in the old settings; the rest of the sample uses the new ones
         }
 
         PenButtons released = _buttons & ~next.Buttons;
@@ -376,6 +460,8 @@ public sealed class PenStateTracker
     private void EmitLeave(bool synthetic)
     {
         _inRange = false;
+        _anchored = false;
+        _eraserStroke = false;
         PenSample gone = _last with { State = PenState.None, Pressure = 0, Buttons = PenButtons.None };
         Emit(PenEventKind.ProximityLeave, gone, PenButtons.None, PenTool.None, synthetic);
         _last = gone;
@@ -418,7 +504,134 @@ public sealed class PenStateTracker
 
     private void Emit(PenEventKind kind, in PenSample sample, PenButtons button, PenTool previousTool, bool synthetic)
     {
+        DisplayPoint at = _relative ? _cursor : _mapper.Map(sample.X, sample.Y);
         _sink.OnPenEvent(new PenEvent(
-            kind, sample, _mapper.Map(sample.X, sample.Y), button, previousTool, synthetic, EventTime(_sampleTimeUs)));
+            kind, sample, at, button, previousTool, synthetic, EventTime(_sampleTimeUs), _settings.SideButton));
     }
+
+    private void AdoptPending()
+    {
+        if (_pending is { } pending && !_contact)
+        {
+            _pending = null;
+            Adopt(pending);
+        }
+    }
+
+    private void Adopt(InputSettings settings)
+    {
+        if (settings.StylusMode != _settings.StylusMode)
+        {
+            _anchored = false; // Mouse mode starts from the cursor where it is
+        }
+
+        _settings = settings;
+        _curve = settings.PressureCurve;
+    }
+
+    /// <summary>
+    /// Applies the pen settings to an in-range sample: the pressure curve and click threshold (pen and eraser only),
+    /// then the Eraser side-button action (the tool is the eraser while the button is held, latched at contact-down).
+    /// </summary>
+    private PenSample Transform(in PenSample raw)
+    {
+        PenSample s = raw;
+        bool stylus = s.Tool is PenTool.Pen or PenTool.Eraser;
+        if (stylus && (s.State & PenState.Contact) != 0 && !_curve.IsIdentity)
+        {
+            s = _curve.TryApply(s.Pressure, out ushort pressure)
+                ? s with { Pressure = pressure }
+                : s with { State = PenState.InRange, Pressure = 0 };
+        }
+
+        if (_settings.SideButton != SideButtonAction.Eraser || s.Tool != PenTool.Pen)
+        {
+            _eraserStroke = false;
+            return s;
+        }
+
+        bool held = (s.Buttons & PenButtons.Primary) != 0;
+        bool eraser;
+        if ((s.State & PenState.Contact) != 0)
+        {
+            if (!_eraserStroke)
+            {
+                _eraserStroke = true; // contact-down: latch (ADR-0022)
+                _eraserLatched = held;
+            }
+
+            eraser = _eraserLatched;
+        }
+        else
+        {
+            _eraserStroke = false;
+            eraser = held;
+        }
+
+        return s with { Tool = eraser ? PenTool.Eraser : PenTool.Pen, Buttons = s.Buttons & ~PenButtons.Primary };
+    }
+
+    /// <summary>
+    /// Mouse mode: the first in-range sample anchors the cursor where it is (no movement); each later one moves it by
+    /// the pen's movement in millimetres × <see cref="PenStateTrackerOptions.MousePointsPerMillimetre"/> ×
+    /// <see cref="InputSettings.MouseSpeed"/>, accelerated by speed when <see cref="InputSettings.MouseAcceleration"/>
+    /// is on, and keeps it on the target's displays. Pen mode, and the finger fallback, stay absolute.
+    /// </summary>
+    private void UpdateCursor(in PenSample s)
+    {
+        _relative = _settings.StylusMode == StylusMode.Mouse && s.Tool is PenTool.Pen or PenTool.Eraser;
+        if (!_relative)
+        {
+            _anchored = false;
+            return;
+        }
+
+        if (!_anchored)
+        {
+            _anchored = true;
+            if (_locator is not null && _locator.TryGetCursorLocation(out DisplayPoint location))
+            {
+                _cursor = location;
+            }
+            else if (!_hasCursor)
+            {
+                DisplayRect b = _mapper.TargetRect;
+                _cursor = new DisplayPoint(b.X + (b.Width / 2), b.Y + (b.Height / 2));
+            }
+
+            _hasCursor = true;
+            _cursor = _mapper.ClampToDisplays(_cursor);
+            _ref = s;
+            _refUs = _sampleTimeUs;
+            _mouseSpeed = 0;
+            return;
+        }
+
+        int dx = s.X - _ref.X;
+        int dy = s.Y - _ref.Y;
+        long dt = Math.Clamp(_sampleTimeUs - _refUs, MinSpeedIntervalUs, MaxSpeedIntervalUs);
+        _ref = s;
+        _refUs = _sampleTimeUs;
+        if (dx == 0 && dy == 0)
+        {
+            return;
+        }
+
+        double scale = _options.MousePointsPerMillimetre * _settings.MouseSpeed;
+        double px = dx * _mmPerUnitX * scale;
+        double py = dy * _mmPerUnitY * scale;
+        if (_settings.MouseAcceleration)
+        {
+            double speed = Math.Sqrt((px * px) + (py * py)) * 1e6 / dt;
+            _mouseSpeed = (_mouseSpeed + speed) / 2;
+            double gain = _options.MouseAcceleration.GainAt(_mouseSpeed);
+            px *= gain;
+            py *= gain;
+        }
+
+        _cursor = _mapper.ClampToDisplays(new DisplayPoint(_cursor.X + px, _cursor.Y + py));
+    }
+
+    private const long MinSpeedIntervalUs = 1_000;
+    private const long MaxSpeedIntervalUs = 100_000;
 }

@@ -24,8 +24,13 @@ public enum PenEventKind : byte
 }
 
 /// <summary>
-/// One pen edge event. <see cref="Sample"/> is the raw normalized sample; <see cref="Position"/> is the same point
-/// mapped to global display points by the tracker's <see cref="CoordinateMapper"/>.
+/// One pen edge event. <see cref="Sample"/> is the normalized sample after the input settings (ADR-0032): its pressure
+/// is curved (<see cref="PressureCurve"/>; a contact below the click threshold arrives as hover), and with
+/// <see cref="SideButtonAction.Eraser"/> its tool is <see cref="PenTool.Eraser"/> while the side button is held (or was
+/// held at contact-down), with the button itself removed. <see cref="Position"/> is where to post it in global display
+/// points: in <see cref="StylusMode.Pen"/> the sample mapped by the tracker's <see cref="CoordinateMapper"/>; in
+/// <see cref="StylusMode.Mouse"/> the tracker's relative cursor (anchored at the current cursor on entering range,
+/// moved by the pen's movement, kept on the displays).
 /// </summary>
 /// <param name="Kind">What happened.</param>
 /// <param name="Sample">The sample the event was derived from (for synthesized releases: the last known sample with contact/pressure/buttons cleared as appropriate).</param>
@@ -34,6 +39,9 @@ public enum PenEventKind : byte
 /// <param name="PreviousTool">For ToolChanged: the tool before the change; otherwise <see cref="PenTool.None"/>.</param>
 /// <param name="Synthetic">True when the event was synthesized by the watchdog or a reset rather than received.</param>
 /// <param name="TimestampUs">Monotonic µs since session start (the datagram <c>timeUs</c> unwrapped to 64 bits; history samples are spaced before it).</param>
+/// <param name="SideButton">
+/// The side-button action in effect (constant through a stroke); pass it to <see cref="TabletEventPlanner.Plan"/>.
+/// </param>
 public readonly record struct PenEvent(
     PenEventKind Kind,
     PenSample Sample,
@@ -41,7 +49,8 @@ public readonly record struct PenEvent(
     PenButtons Button,
     PenTool PreviousTool,
     bool Synthetic,
-    long TimestampUs);
+    long TimestampUs,
+    SideButtonAction SideButton = SideButtonAction.RightClick);
 
 /// <summary>
 /// Gesture kinds produced by <see cref="GestureRecognizer"/> (ADR-0023, trackpad parity). The kind of a moving
@@ -231,4 +240,16 @@ public interface IInputSink
     void OnPenEvent(in PenEvent e);
 
     void OnGestureEvent(in GestureEvent e);
+}
+
+/// <summary>
+/// Optionally implemented by an <see cref="IInputSink"/> (or a wrapper that forwards it) to report the host's current
+/// cursor location. In <see cref="StylusMode.Mouse"/> the tracker reads it once each time the pen enters range (or the
+/// mode switches on), to anchor the relative cursor there, so re-entering never jumps the cursor. Without it the
+/// tracker keeps its own last cursor (initially the centre of the target).
+/// </summary>
+public interface ICursorLocator
+{
+    /// <summary>The cursor in global display points. Called under the input lock: must be quick and must not block.</summary>
+    bool TryGetCursorLocation(out DisplayPoint location);
 }
