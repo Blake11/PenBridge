@@ -3,11 +3,13 @@ using AppKit;
 using CoreFoundation;
 using Foundation;
 using Microsoft.Extensions.Logging;
+using PenBridge.Core.Input;
 using PenBridge.Core.Net;
 using PenBridge.Core.Security;
 using PenBridge.Mac.Input;
 using PenBridge.Mac.Pairing;
 using PenBridge.Mac.Services;
+using PenBridge.Mac.Settings;
 using ServiceManagement;
 
 namespace PenBridge.Mac.Shell;
@@ -38,6 +40,7 @@ public sealed partial class StatusItemController : IDisposable
     private readonly SettingsStore _settings;
     private readonly PairingWindowController _pairing;
     private readonly GlobalHotkey _hotkey;
+    private readonly SettingsWindowController _settingsWindow;
     private readonly ILogger _log;
     private readonly NSStatusItem _item;
     private readonly NSMenu _menu;
@@ -56,6 +59,7 @@ public sealed partial class StatusItemController : IDisposable
         SettingsStore settings,
         PairingWindowController pairing,
         GlobalHotkey hotkey,
+        SettingsWindowController settingsWindow,
         ILogger<StatusItemController> log)
     {
         ArgumentNullException.ThrowIfNull(host);
@@ -64,6 +68,7 @@ public sealed partial class StatusItemController : IDisposable
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(pairing);
         ArgumentNullException.ThrowIfNull(hotkey);
+        ArgumentNullException.ThrowIfNull(settingsWindow);
         ArgumentNullException.ThrowIfNull(log);
         _host = host;
         _injector = injector;
@@ -71,6 +76,7 @@ public sealed partial class StatusItemController : IDisposable
         _settings = settings;
         _pairing = pairing;
         _hotkey = hotkey;
+        _settingsWindow = settingsWindow;
         _log = log;
 
         _item = NSStatusBar.SystemStatusBar.CreateStatusItem(NSStatusItemLength.Variable);
@@ -334,8 +340,18 @@ public sealed partial class StatusItemController : IDisposable
         _menu.AddItem(pair);
         _menu.AddItem(PairedDevicesItem(state));
 
-        // 7. Display ▸, 8. Allow takeover, 9. Run at startup.
+        // 7. Display ▸, 8. Pen mode / Mouse mode, 9. Allow takeover, 10. Run at startup.
         _menu.AddItem(DisplayItem());
+        StylusMode mode = _settings.StylusMode;
+        NSMenuItem penMode = Action("Pen mode", () => _settings.StylusMode = StylusMode.Pen);
+        penMode.State = mode == StylusMode.Pen ? NSCellStateValue.On : NSCellStateValue.Off;
+        penMode.ToolTip = "The phone surface maps onto the display.";
+        _menu.AddItem(penMode);
+        NSMenuItem mouseMode = Action("Mouse mode", () => _settings.StylusMode = StylusMode.Mouse);
+        mouseMode.State = mode == StylusMode.Mouse ? NSCellStateValue.On : NSCellStateValue.Off;
+        mouseMode.ToolTip = "The hovering pen moves the cursor from where it is, like a mouse.";
+        _menu.AddItem(mouseMode);
+        _menu.AddItem(NSMenuItem.SeparatorItem);
         NSMenuItem takeover = Action("Allow takeover", () => _host.SetAllowTakeover(!_host.State.AllowTakeover));
         takeover.State = state.AllowTakeover ? NSCellStateValue.On : NSCellStateValue.Off;
         takeover.ToolTip = "A newly connecting paired device replaces the active one instead of being refused.";
@@ -343,7 +359,11 @@ public sealed partial class StatusItemController : IDisposable
         _menu.AddItem(RunAtStartupItem());
         _menu.AddItem(NSMenuItem.SeparatorItem);
 
-        // 10. Open logs, 11. Quit.
+        // 11. Settings…, 12. Open logs, 13. Quit.
+        NSMenuItem settings = Action("Settings…", () => _settingsWindow.Show());
+        settings.KeyEquivalent = ",";
+        settings.KeyEquivalentModifierMask = NSEventModifierMask.CommandKeyMask;
+        _menu.AddItem(settings);
         _menu.AddItem(Action("Open logs", OpenLogs));
         _menu.AddItem(NSMenuItem.SeparatorItem);
         _menu.AddItem(new NSMenuItem("Quit PenBridge", "q", (_, _) => NSApplication.SharedApplication.Terminate(null)));
@@ -379,6 +399,7 @@ public sealed partial class StatusItemController : IDisposable
         var item = new NSMenuItem("Display");
         var submenu = new NSMenu { AutoEnablesItems = false };
         IReadOnlyList<DisplayInfo> displays = _resolver.Displays;
+        bool all = _settings.TargetDisplay == SettingLimits.AllDisplays;
         if (displays.Count == 0)
         {
             submenu.AddItem(Disabled("No displays"));
@@ -389,9 +410,14 @@ public sealed partial class StatusItemController : IDisposable
             string title = display.Name + (display.IsMain ? " (main)" : string.Empty);
             string uuid = display.Uuid;
             NSMenuItem entry = Action(title, () => ChooseDisplay(uuid));
-            entry.State = _resolver.HasDisplay && display.Uuid == _resolver.Target.Uuid ? NSCellStateValue.On : NSCellStateValue.Off;
+            entry.State = !all && _resolver.HasDisplay && display.Uuid == _resolver.Target.Uuid ? NSCellStateValue.On : NSCellStateValue.Off;
             submenu.AddItem(entry);
         }
+
+        NSMenuItem allDisplays = Action("All displays", () => ChooseDisplay(SettingLimits.AllDisplays));
+        allDisplays.State = all ? NSCellStateValue.On : NSCellStateValue.Off;
+        allDisplays.ToolTip = "Every display together, as one desktop.";
+        submenu.AddItem(allDisplays);
 
         if (_resolver.IsUsingFallback)
         {
@@ -430,13 +456,16 @@ public sealed partial class StatusItemController : IDisposable
         NSWorkspace.SharedWorkspace.OpenUrl(url);
     }
 
-    private void ChooseDisplay(string uuid)
+    // target: a display UUID or SettingLimits.AllDisplays. The resolver handles single displays; "All displays" maps
+    // to the main display there until the server applies it (P5-C2).
+    private void ChooseDisplay(string target)
     {
-        _resolver.SetTarget(uuid);
-        _settings.TargetDisplayUuid = _resolver.PreferredUuid;
+        _settings.TargetDisplay = target;
+        _resolver.SetTarget(_settings.TargetDisplayUuid);
     }
 
-    private static void ToggleRunAtStartup()
+    /// <summary>Toggles the login item (or opens System Settings while approval is pending). Shared with the Settings window.</summary>
+    internal static void ToggleRunAtStartup()
     {
         SMAppServiceStatus status = LoginItem.Status;
         if (status == SMAppServiceStatus.RequiresApproval)

@@ -5,12 +5,13 @@ using Microsoft.Extensions.Logging;
 using PenBridge.Mac.Input;
 using PenBridge.Mac.Pairing;
 using PenBridge.Mac.Services;
+using PenBridge.Mac.Settings;
 using PenBridge.Mac.Shell;
 
 namespace PenBridge.Mac;
 
 /// <summary>
-/// Composes the menu-bar app: settings, Keychain, os_log, the CGEvent injector and display resolver, the
+/// Composes the menu-bar app: settings (store and Settings window), Keychain, os_log, the CGEvent injector and display resolver, the
 /// <see cref="ServerHost"/>, the status item and the global pause hotkey. Quits cleanly (Bye to the phone, advert
 /// withdrawn, nothing left pressed).
 /// </summary>
@@ -37,6 +38,7 @@ public sealed partial class AppDelegate : NSApplicationDelegate
     private ServerHost? _host;
     private PairingWindowController? _pairing;
     private GlobalHotkey? _hotkey;
+    private SettingsWindowController? _settingsWindow;
     private StatusItemController? _statusItem;
     private bool _terminating;
     private bool _replied;
@@ -62,7 +64,8 @@ public sealed partial class AppDelegate : NSApplicationDelegate
         _hotkey.Pressed += OnHotkeyPressed;
         _hotkey.Register();
 
-        _statusItem = new StatusItemController(_host, _injector, _resolver, _settings, _pairing, _hotkey, _loggers.CreateLogger<StatusItemController>());
+        _settingsWindow = new SettingsWindowController(_settings, _resolver, _host);
+        _statusItem = new StatusItemController(_host, _injector, _resolver, _settings, _pairing, _hotkey, _settingsWindow, _loggers.CreateLogger<StatusItemController>());
         Log.Launched(_log, NSBundle.MainBundle.ObjectForInfoDictionary("CFBundleShortVersionString")?.ToString() ?? "?");
 
         PromptAccessibilityOnce();
@@ -152,6 +155,7 @@ public sealed partial class AppDelegate : NSApplicationDelegate
             }
 
             _pairing?.Dispose(); // closes the panel and the server's pairing window
+            _settingsWindow?.Dispose(); // closes the Settings window and a region overlay
 
             // Bye(Shutdown) to the phone, advert withdrawn, injector released by the server's session teardown.
             await _host!.DisposeAsync().ConfigureAwait(true);
