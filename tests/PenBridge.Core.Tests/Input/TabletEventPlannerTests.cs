@@ -336,8 +336,13 @@ public class TabletEventPlannerTests
         Assert.Equal(PenTool.Eraser, _state.Tool);
     }
 
-    [Fact]
-    public void Planning_is_allocation_free()
+    [Theory]
+    [InlineData(SideButtonAction.RightClick)]
+    [InlineData(SideButtonAction.MiddleClick)]
+    [InlineData(SideButtonAction.DoubleClick)]
+    [InlineData(SideButtonAction.None)]
+    [InlineData(SideButtonAction.Eraser)]
+    public void Planning_is_allocation_free(SideButtonAction action)
     {
         var buffer = new TabletStep[TabletEventPlanner.MaxSteps];
         var state = default(TabletPostedState);
@@ -352,7 +357,7 @@ public class TabletEventPlannerTests
         {
             PenTool tool = (i / kinds.Length) % 2 == 0 ? PenTool.Pen : PenTool.Eraser;
             PenButtons held = (i / (kinds.Length * 2)) % 2 == 0 ? PenButtons.None : PenButtons.Primary;
-            posted += TabletEventPlanner.Plan(ref state, kinds[i % kinds.Length], PenButtons.Primary, tool, buffer, held);
+            posted += TabletEventPlanner.Plan(ref state, kinds[i % kinds.Length], PenButtons.Primary, tool, buffer, held, action);
             if (i % 7 == 0)
             {
                 posted += TabletEventPlanner.Release(ref state, buffer);

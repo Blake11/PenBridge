@@ -180,4 +180,129 @@ public class SideButtonActionTests
         Assert.Equal([ProximityEnter, ButtonDown], _sink.PenKinds());
         Assert.Equal(SideButtonAction.RightClick, _sink.Pen[1].SideButton);
     }
+
+    // The tracker's events through the planner, as the Mac head posts them (each event with its own action).
+
+    private int _planned;
+
+    private List<TabletAction> PlanTracked()
+    {
+        var actions = new List<TabletAction>();
+        for (; _planned < _sink.Pen.Count; _planned++)
+        {
+            PenEvent e = _sink.Pen[_planned];
+            int n = TabletEventPlanner.Plan(ref _state, e.Kind, e.Button, e.Sample.Tool, _buffer, e.Sample.Buttons, e.SideButton);
+            actions.AddRange(_buffer[..n].Select(st => st.Action));
+        }
+
+        return actions;
+    }
+
+    [Fact]
+    public void Right_click_to_eraser_while_held_in_hover_releases_the_right_button()
+    {
+        var t = new PenStateTracker(_sink, _time) { Mapper = new CoordinateMapper(1, 1, new DisplayRect(0, 0, 65535, 65535)) };
+        Frame(t, Samples.Hover(10, 10));
+        Frame(t, Samples.Hover(10, 10, buttons: PenButtons.Primary));
+        Assert.Contains(TabletAction.RightDown, PlanTracked());
+        Assert.True(_state.Right);
+
+        t.ApplySettings(new InputSettings { SideButton = SideButtonAction.Eraser });
+        Frame(t, Samples.Hover(12, 10, buttons: PenButtons.Primary)); // still held: now the eraser
+        List<TabletAction> switched = PlanTracked();
+        Assert.Contains(TabletAction.RightUp, switched);
+        Assert.False(_state.Side);
+        Assert.Equal(PenTool.Eraser, _state.Tool);
+
+        Frame(t, Samples.Hover(12, 10)); // released: the pen again, no button
+        PlanTracked();
+        Assert.Equal(PenTool.Pen, _state.Tool);
+        Assert.False(_state.Side);
+        Assert.True(_state.InProximity);
+    }
+
+    [Fact]
+    public void Eraser_to_right_click_while_held_in_hover_returns_to_the_pen_and_presses_right()
+    {
+        PenStateTracker t = EraserTracker();
+        Frame(t, Samples.Hover(10, 10, buttons: PenButtons.Primary));
+        PlanTracked();
+        Assert.Equal(PenTool.Eraser, _state.Tool);
+
+        t.ApplySettings(new InputSettings { SideButton = SideButtonAction.RightClick });
+        Frame(t, Samples.Hover(12, 10, buttons: PenButtons.Primary));
+        List<TabletAction> switched = PlanTracked();
+        Assert.Equal(PenTool.Pen, _state.Tool);
+        Assert.Contains(TabletAction.RightDown, switched);
+
+        Frame(t, Samples.Hover(12, 10));
+        Assert.Contains(TabletAction.RightUp, PlanTracked());
+        Assert.False(_state.Side);
+        Assert.Equal(PenTool.Pen, _state.Tool);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Watchdog_with_the_eraser_button_held_leaves_and_the_next_entry_is_the_pen(bool touching)
+    {
+        PenStateTracker t = EraserTracker();
+        Frame(t, Samples.Hover(10, 10, buttons: PenButtons.Primary));
+        if (touching)
+        {
+            Frame(t, Samples.Touch(10, 10, buttons: PenButtons.Primary));
+        }
+
+        PlanTracked();
+        Assert.Equal(PenTool.Eraser, _state.Tool);
+
+        _time.Advance(TimeSpan.FromSeconds(2));
+        Assert.True(t.CheckWatchdog());
+        List<TabletAction> released = PlanTracked();
+        Assert.Equal(TabletAction.ProximityLeave, released[^1]);
+        Assert.False(_state.InProximity);
+        Assert.False(_state.Contact);
+        Assert.False(_state.Left);
+        Assert.False(_state.Side);
+        Assert.Equal(PenEventKind.ProximityLeave, _sink.Pen[^1].Kind);
+        Assert.Equal(PenTool.Eraser, _sink.Pen[^1].Sample.Tool);
+
+        // The phone comes back with the button released: the pen enters (a touch is a pen stroke, not a latched eraser).
+        Frame(t, touching ? Samples.Touch(12, 10) : Samples.Hover(12, 10));
+        PlanTracked();
+        Assert.True(_state.InProximity);
+        Assert.Equal(PenTool.Pen, _state.Tool);
+        Assert.All(_sink.Pen.Skip(_sink.Pen.FindLastIndex(e => e.Kind == PenEventKind.ProximityLeave) + 1), e => Assert.Equal(PenTool.Pen, e.Sample.Tool));
+    }
+
+    [Fact]
+    public void Click_threshold_dip_mid_stroke_keeps_the_eraser_latch_within_the_hysteresis_and_lifts_below_it()
+    {
+        PenStateTracker t = EraserTracker();
+        t.ApplySettings(new InputSettings { SideButton = SideButtonAction.Eraser, ClickThreshold = 0.3, FullPressureAt = 0.9 });
+        ushort P(double p) => (ushort)Math.Round(p * 65535);
+        Frame(t, Samples.Hover(10, 10, buttons: PenButtons.Primary));
+        Frame(t, Samples.Touch(10, 10, P(0.5), buttons: PenButtons.Primary));
+        Frame(t, Samples.Touch(11, 10, P(0.5))); // button released: the stroke stays the eraser
+        Frame(t, Samples.Touch(12, 10, P(0.29))); // just below the threshold, within the hysteresis: still down
+        Assert.Equal([ProximityEnter, Down, Drag, Drag], _sink.PenKinds());
+        Assert.Equal(PenTool.Eraser, _sink.Pen[^1].Sample.Tool);
+        Assert.Equal(0, _sink.Pen[^1].Sample.Pressure);
+        Assert.True(t.IsInContact);
+
+        Frame(t, Samples.Touch(13, 10, P(0.27))); // below threshold − 0.02: lifts, and the pen returns
+        Assert.Equal([ProximityEnter, Down, Drag, Drag, Up, ToolChanged, Move], _sink.PenKinds());
+        Assert.Equal(PenTool.Eraser, _sink.Pen[4].Sample.Tool);
+        Assert.Equal(PenTool.Pen, _sink.Pen[^1].Sample.Tool);
+        Assert.False(t.IsInContact);
+
+        Frame(t, Samples.Touch(14, 10, P(0.29))); // pressing again needs the full threshold
+        Assert.False(t.IsInContact);
+        Frame(t, Samples.Touch(14, 10, P(0.31)));
+        Assert.Equal(Down, _sink.Pen[^1].Kind);
+        Assert.Equal(PenTool.Pen, _sink.Pen[^1].Sample.Tool);
+        PlanTracked();
+        Assert.Equal(PenTool.Pen, _state.Tool);
+        Assert.True(_state.Left);
+    }
 }
