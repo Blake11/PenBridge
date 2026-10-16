@@ -6,6 +6,7 @@
 #
 # types:  feat fix refactor perf docs test build ci chore style revert
 # scopes: core protocol security input net simclient mac android ios windows ci deps docs spec release (optional)
+# The text after ": " must not start with an uppercase letter (as in pr-title.yml).
 # Merge, Revert "...", fixup!, squash! and amend! commits are allowed as-is.
 
 msg_file="$1"
@@ -49,8 +50,19 @@ if [ "$len" -gt 100 ]; then
     exit 1
 fi
 
-if printf '%s\n' "$subject" | grep -Eq "^[a-z]+(\\([a-z]+\\))?!?: [A-Z]"; then
-    echo "commit-msg: warning: subject should start with a lowercase letter." >&2
+# Same rule as pr-title.yml (subjectPattern '^(?![A-Z]).+$'): the description after ": " must
+# not start with an uppercase ASCII letter. No acronym exception: reword ("CGEvent tap ..." ->
+# "the CGEvent tap ..."). pr-title.yml exempts only Dependabot's "Bump ..." PR titles, which never
+# pass through this hook.
+if printf '%s\n' "$subject" | LC_ALL=C grep -Eq "^($types)(\\(($scopes)\\))?!?: [A-Z]"; then
+    cat >&2 <<MSG
+commit-msg: the subject must start with a lowercase letter (same rule as the PR title check):
+
+    $subject
+
+Example:   fix(mac): keep the tablet mapping after a display change
+MSG
+    exit 1
 fi
 
 exit 0
