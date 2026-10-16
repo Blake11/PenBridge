@@ -30,7 +30,7 @@ Never: platform heads, CI, docs (except your `ws-<id>.md` progress file) — unl
 ## Serena (own `serena-core` server)
 - First call `initial_instructions` (it gives your session id), then `activate_project` with the absolute worktree path from your prompt (the main checkout for shared-tree work); never activate another tree. Skip `onboarding` and memories (gitignored, not shared).
 - C# discovery: `get_symbols_overview`, then `find_symbol` (`include_body` for the members you need) and `find_referencing_symbols`, rather than reading whole files.
-- Before any Serena call, check `get_current_config` shows your own worktree; if not, `activate_project` it again. Why: a server can be shared and `activate_project` is global to it, so another agent may have switched it.
+- After `activate_project`, and again before each later Serena call, check `get_current_config` shows your own worktree; if not, `activate_project` it again. Why: a server can be shared and `activate_project` is global to it, so another agent may have switched it.
 - Make edits with Edit/Write on absolute paths. Use Serena's symbol edits (`replace_symbol_body`, `insert_*_symbol`, `rename_symbol`, `replace_in_files`) only right after that check, and only if no second agent of your type runs in parallel; otherwise Serena is read-only for you. Serena edits obey the same file-ownership rules as any edit.
 
 ## Rules (all workstreams)

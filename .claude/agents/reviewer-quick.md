@@ -20,7 +20,7 @@ Diff target from the prompt (default `git diff origin/main...HEAD` plus uncommit
 - touches `src/PenBridge.Core/Protocol/**`, `Net/**`, `Security/**` (pairing, crypto, secrets), `ProtocolInfo.cs`, the Core input path (`Input/**`), `src/PenBridge.Mac/Input/**` (injection), `src/PenBridge.Android/Pad/**` (sampling), Bonjour TXT, Keychain/Keystore code, or anything per-sample.
 
 ## Serena (own `serena-review-quick` server, read-only tools)
-Before any Serena call check `get_current_config` shows the tree under review (a server's active project is global to it; re-activate if not). First call `initial_instructions` (it gives your session id), then `activate_project` with the absolute path of the tree under review (worktree from the prompt, else the main checkout). Skip `onboarding` and memories (gitignored, not shared). Prefer `get_symbols_overview` / `find_symbol` / `find_referencing_symbols` over reading whole C# files to check callers, implementations and the members a diff touches.
+First call `initial_instructions` (it gives your session id), then `activate_project` with the absolute path of the tree under review (worktree from the prompt, else the main checkout). Before each later Serena call check `get_current_config` still shows that tree (a server's active project is global to it; re-activate if not). Skip `onboarding` and memories (gitignored, not shared). Prefer `get_symbols_overview` / `find_symbol` / `find_referencing_symbols` over reading whole C# files to check callers, implementations and the members a diff touches.
 
 ## Checklist
 1. Correctness: logic, edge cases, error paths, threading (AppKit main thread, Android UI thread).
