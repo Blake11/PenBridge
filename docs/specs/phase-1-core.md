@@ -173,6 +173,7 @@ Messages (C = phone → Mac, S = Mac → phone):
 - `pair --host <h> [--port] --pin <pin>` | `pair --qr "<payload>"`, then `draw <script>` with built-in scripts: line, circle, pressure-ramp, tilt-sweep, hover, button-click, two-finger-scroll, pinch, packet-loss (drops 20% of datagrams).
 - It stores its identity in `~/.penbridge/simclient/`.
 - An `--in-process-server` mode starts a `PenBridgeServer` with a logging `IInputSink`, for demos without the Mac app.
+- `settings [--set Key=Value]...` (1.2) prints the Mac's settings snapshot and display list and sends an update (e.g. `--set StylusMode=Mouse`); `draw --settings` prints what the Mac sends. The in-process server keeps validated settings in memory with two fake displays.
 
 ## Acceptance (phase)
 
