@@ -50,6 +50,7 @@ internal sealed class ServerConnection
     private readonly Lock _areaLock = new();
     private NormalizedRect? _activeArea; // latest requested; guarded by _areaLock
     private NormalizedRect? _activeAreaSent; // only touched by the push writer
+    private int _resendArea; // set per SurfaceInfo (any thread); the writer consumes it to drop the dedupe once
     // The last list and snapshot sent, by their (immutable, per-send) arrays; only touched by the push writer.
     private IReadOnlyList<DisplayListEntry>? _displaysSent;
     private IReadOnlyList<SettingEntry>? _snapshotSent;
@@ -481,6 +482,13 @@ internal sealed class ServerConnection
                 case ControlMessageType.SurfaceInfo:
                     SurfaceInfoMessage surface = frame.Read<SurfaceInfoMessage>();
                     input.ConfigureSurface(surface.WidthPx, surface.HeightPx, surface.Capabilities, surface.XDpi, surface.YDpi);
+                    if ((_negotiated & ProtocolCapabilities.ActiveArea) != 0)
+                    {
+                        // The phone resets its outline on every surface change and waits for the area, even an unchanged one.
+                        Volatile.Write(ref _resendArea, 1);
+                        _ = RequestPush(PushActiveArea);
+                    }
+
                     break;
                 case ControlMessageType.InputFrame:
                     bool wasTls = input.Transport == InputTransport.Tls;
@@ -656,7 +664,8 @@ internal sealed class ServerConnection
                     area = _activeArea;
                 }
 
-                if (area is { } a && a != _activeAreaSent)
+                bool force = Interlocked.Exchange(ref _resendArea, 0) != 0;
+                if (area is { } a && (force || a != _activeAreaSent))
                 {
                     if (!await TryPushAsync(ActiveAreaMessage.FromNormalized(a)).ConfigureAwait(false))
                     {

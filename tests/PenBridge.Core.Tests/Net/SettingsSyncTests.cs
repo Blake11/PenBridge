@@ -110,6 +110,60 @@ public class SettingsSyncTests
         Assert.True(client.IsConnected);
     }
 
+    private static readonly NormalizedRect Marker = new(0, 0.25, 1, 0.5);
+
+    /// <summary>
+    /// Pairs and waits until every pairing-time active-area push (the connect-time one and the SurfaceInfo's resend) has
+    /// reached the phone, without moving the area: the server pinged, so it read the pairing SurfaceInfo (in-order
+    /// channel) and its resend is queued; each display list drain starts after the previous drain's writes, and a drain
+    /// writes any pending area after its displays, so the second list arriving means the area was written and received.
+    /// </summary>
+    private static async Task<(PenBridgeClient Client, ConcurrentQueue<NormalizedRect> Areas)> PairSettledAsync(NetHarness h)
+    {
+        var areas = new ConcurrentQueue<NormalizedRect>();
+        PenBridgeClient client = await PairAsync(h, c => c.ActiveAreaReceived += (_, e) => areas.Enqueue(e.Area));
+        await Wait.Until(() => !areas.IsEmpty, "the area after pairing");
+        await PingRoundTripAsync(h);
+        DisplayListEntry[] first = [Displays[1]];
+        await h.Server.SendDisplayListAsync(first);
+        await Wait.Until(() => client.LastDisplayList is { } l && l.Count == 1 && l[0] == first[0], "the first settling list");
+        DisplayListEntry[] second = [Displays[0]];
+        await h.Server.SendDisplayListAsync(second);
+        await Wait.Until(() => client.LastDisplayList is { } l && l.Count == 1 && l[0] == second[0], "the second settling list");
+        return (client, areas);
+    }
+
+    [Fact]
+    public async Task Surface_changes_are_answered_with_the_active_area_even_when_unchanged()
+    {
+        await using NetHarness h = Harness();
+        (PenBridgeClient client, ConcurrentQueue<NormalizedRect> areas) = await PairSettledAsync(h);
+        int baseline = areas.Count;
+        NormalizedRect area = client.LastActiveArea!.Value;
+
+        // Both SurfaceInfos may reach the server before the writer drains: still at least one push, the unchanged area.
+        await client.UpdateSurfaceAsync(NetHarness.Surface);
+        await client.UpdateSurfaceAsync(NetHarness.Surface);
+        await Wait.Until(() => areas.Count > baseline, "the area after the surface changes");
+
+        Assert.InRange(areas.Count - baseline, 1, 2);
+        Assert.Equal(area, client.LastActiveArea!.Value);
+    }
+
+    [Fact]
+    public async Task An_unchanged_active_area_without_a_surface_change_is_not_resent()
+    {
+        await using NetHarness h = Harness();
+        (PenBridgeClient client, ConcurrentQueue<NormalizedRect> areas) = await PairSettledAsync(h);
+        int baseline = areas.Count;
+
+        h.Server.SendActiveArea(client.LastActiveArea!.Value); // unchanged: deduped
+        h.Server.SendActiveArea(Marker); // ordering marker behind it
+        await Wait.Until(() => client.LastActiveArea is { } a && Math.Abs(a.Y - Marker.Y) < 1e-3, "the marker");
+
+        Assert.Equal(1, areas.Count - baseline);
+    }
+
     [Fact]
     public async Task The_active_area_reaches_the_phone_and_only_changes_are_sent()
     {
