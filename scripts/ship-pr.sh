@@ -3,7 +3,7 @@
 # check, and with --merge squash-merge it and clean up the worktree. Needs the user's approval to push / merge.
 #
 # Usage: scripts/ship-pr.sh <worktree> --title "<conventional title>" --body-file <file> [--merge] [--no-test]
-#                           [--dry-run]
+#                           [--timeout <min>] [--dry-run]
 #   <worktree>          the branch's worktree (e.g. .claude/worktrees/feat-x); its branch is shipped
 #   --title <title>     PR title = the squash commit: Conventional Commit, same rule as .githooks/commit-msg and
 #                       the pr-title check (allowed types/scopes, lowercase subject)
@@ -12,6 +12,7 @@
 #                       .claude/progress/**/ws-*.md into the main checkout, remove the worktree and its local
 #                       branches (incl. worktree-agent-* ones it contains), git pull --ff-only in the main checkout
 #   --no-test           skip scripts/test.sh
+#   --timeout <min>     give up waiting for the checks after this many minutes (default 45)
 #   --dry-run           run the local checks (and the tests), then print what would happen; no rebase, push or gh
 #                       write
 #
@@ -19,18 +20,19 @@
 # not an ancestor of HEAD (stale remote branch — prints the reconcile steps; never force-pushes); rebase onto
 # origin/main when the branch was never pushed (a pushed branch is not rebased: that would need a force-push);
 # refuse commit messages with Co-Authored-By / "Generated with"; scripts/test.sh; git push -u origin <branch>;
-# gh pr create (or reuse the branch's open PR); wait for the checks (gh pr checks --watch, every 15 s).
+# gh pr create (or reuse the branch's open PR); wait for the checks (polled every 15 s; done after two quiet polls).
 # Exit status: 0 shipped (or dry run passed), 1 on any refusal or failure.
 set -euo pipefail
 source "$(dirname "$0")/lib/common.sh"
 
-WT=""; TITLE=""; BODY=""; MERGE=0; TEST=1; DRY=0
+WT=""; TITLE=""; BODY=""; MERGE=0; TEST=1; DRY=0; TIMEOUT_MIN=45
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --title) TITLE="${2:-}"; [[ -n "$TITLE" ]] || die "--title needs a value"; shift ;;
     --body-file) BODY="${2:-}"; [[ -n "$BODY" ]] || die "--body-file needs a path"; shift ;;
     --merge) MERGE=1 ;;
     --no-test) TEST=0 ;;
+    --timeout) TIMEOUT_MIN="${2:-}"; [[ "$TIMEOUT_MIN" =~ ^[1-9][0-9]*$ ]] || die "--timeout needs whole minutes"; shift ;;
     --dry-run) DRY=1 ;;
     -h|--help) usage_from_header "$0"; exit 0 ;;
     -*) die "unknown argument: $1 (see --help)" ;;
@@ -41,6 +43,9 @@ done
 [[ -n "$WT" ]] || die "pass the worktree path (see --help)"
 [[ -n "$TITLE" ]] || die "pass --title \"<type>(<scope>): <subject>\""
 [[ -n "$BODY" ]] || die "pass --body-file <file>"
+[[ -f "$BODY" ]] || die "no such body file: $BODY"
+# Absolute: gh runs from inside the worktree.
+BODY="$(cd "$(dirname "$BODY")" && pwd)/$(basename "$BODY")"
 
 [[ -d "$WT" ]] || die "no such directory: $WT"
 WT="$(git -C "$WT" rev-parse --show-toplevel 2>/dev/null)" || die "$WT is not inside a git checkout"
@@ -146,12 +151,12 @@ fi
 # ---- dry run ends here -------------------------------------------------------------------
 if [[ $DRY -eq 1 ]]; then
   step "Dry run — would now"
-  info "git -C $WT push -u origin $BRANCH"
+  info "git -C $WT push -u origin refs/heads/$BRANCH:refs/heads/$BRANCH"
   info "gh pr create --base main --head $BRANCH --title \"$TITLE\" --body-file $BODY   (or reuse the open PR for $BRANCH)"
-  info "wait for every check (gh pr checks <n> --watch --interval 15); fail on any failed/cancelled check"
+  info "wait up to $TIMEOUT_MIN min for every check (polled every 15 s); fail on any failed/cancelled check"
   if [[ $MERGE -eq 1 ]]; then
     info "copy $WT/.claude/progress/**/ws-*.md → $MAIN/.claude/progress/ (newer files only)"
-    info "git worktree remove --force $WT"
+    info "git worktree remove $WT   (refused if it has uncommitted or untracked work, or HEAD is not pushed)"
     info "gh pr merge <n> --squash --delete-branch   (from $MAIN)"
     info "delete local branch $BRANCH and worktree-agent-* branches it contains; git -C $MAIN pull --ff-only"
   fi
@@ -161,7 +166,8 @@ fi
 
 # ---- push + PR -------------------------------------------------------------------------
 step "Push"
-git -C "$WT" push --quiet -u origin "$BRANCH" || die "push rejected (never force-pushed) — see the stale-branch steps in skill pr"
+# Explicit refspec without "+": a non-fast-forward push is rejected, never forced.
+git -C "$WT" push --quiet -u origin "refs/heads/$BRANCH:refs/heads/$BRANCH" || die "push rejected (never force-pushed) — see the stale-branch steps in skill pr"
 ok "pushed $(git -C "$WT" rev-parse --short HEAD) to origin/$BRANCH"
 
 step "Pull request"
@@ -180,23 +186,26 @@ pr="${pr_url##*/}"
 [[ "$pr" =~ ^[0-9]+$ ]] || die "could not read the PR number from '$pr_url'"
 
 # ---- checks ----------------------------------------------------------------------------
-step "Checks (every 15 s)"
+step "Checks (every 15 s, up to $TIMEOUT_MIN min)"
+deadline=$(( $(date +%s) + TIMEOUT_MIN * 60 ))
 for i in $(seq 1 20); do   # checks register a few seconds after the push; give them up to 5 minutes
   [[ -n "$(ghw pr checks "$pr" --json name --jq '.[].name' 2>/dev/null || true)" ]] && break
-  [[ $i -lt 20 ]] || die "no checks reported for $pr_url after 5 minutes"
+  [[ $i -lt 20 && $(date +%s) -lt $deadline ]] || die "no checks reported for $pr_url after $(( i * 15 / 60 )) min"
   sleep 15
 done
-# --watch ends when nothing is pending; a job created late (after "Detect changes") can show up just after, so
-# look again once more before trusting the result.
-for _ in 1 2 3; do
-  ghw pr checks "$pr" --watch --interval 15 >/dev/null 2>&1 || true
-  sleep 15
+# Done after two consecutive polls with nothing pending: a job created late (after "Detect changes") shows up
+# between them.
+quiet=0
+while :; do
   # gh pr checks exits non-zero while checks are pending or failed, even with --json: judge by the output.
   pending="$(ghw pr checks "$pr" --json bucket --jq '[.[] | select(.bucket == "pending")] | length' 2>/dev/null || true)"
   [[ "$pending" =~ ^[0-9]+$ ]] || die "gh pr checks failed for $pr_url"
-  [[ "$pending" -eq 0 ]] && break
+  if [[ "$pending" -eq 0 ]]; then quiet=$((quiet + 1)); else quiet=0; fi
+  [[ $quiet -ge 2 ]] && break
+  [[ $(date +%s) -lt $deadline ]] \
+    || die "$pending check(s) still pending on $pr_url after $TIMEOUT_MIN min (gh pr checks $pr; re-run with --timeout <min>)"
+  sleep 15
 done
-[[ "$pending" -eq 0 ]] || die "checks still pending on $pr_url"
 bad="$(ghw pr checks "$pr" --json name,bucket,link --jq '"ok", (.[] | select(.bucket == "fail" or .bucket == "cancel") | "\(.name)  \(.link)")' 2>/dev/null || true)"
 [[ "$(head -n 1 <<<"$bad")" == ok ]] || die "gh pr checks failed for $pr_url"
 bad="$(tail -n +2 <<<"$bad")"
@@ -222,8 +231,8 @@ for _ in 1 2 3 4 5 6; do
   sleep 15
 done
 case "$state" in
-  "MERGEABLE CLEAN"|"MERGEABLE HAS_HOOKS"|"MERGEABLE UNSTABLE") ok "mergeable ($state)" ;;
-  *) die "PR is not mergeable yet ($state) — see $pr_url" ;;
+  "MERGEABLE CLEAN"|"MERGEABLE HAS_HOOKS") ok "mergeable ($state)" ;;
+  *) die "PR is not mergeable yet ($state; UNSTABLE = a check is pending or failing) — see $pr_url" ;;
 esac
 [[ "$(git -C "$WT" rev-parse HEAD)" == "$(git -C "$WT" rev-parse "origin/$BRANCH")" ]] || die "HEAD differs from origin/$BRANCH — push first"
 tip="$(git -C "$WT" rev-parse HEAD)"
@@ -239,8 +248,18 @@ if [[ -d "$WT/.claude/progress" ]]; then
   done < <(find "$WT/.claude/progress" -type f -name 'ws-*.md')
 fi
 
-# Remove the worktree before merging: gh can't delete a local branch that a worktree has checked out.
-git -C "$MAIN" worktree remove --force "$WT"
+# Remove the worktree before merging: gh can't delete a local branch that a worktree has checked out. Re-check
+# right before: nothing uncommitted or untracked (ignored files such as .claude/progress don't count, and don't
+# block `git worktree remove`), and HEAD is exactly what the remote has. Never --force.
+dirty="$(git -C "$WT" status --porcelain)"
+if [[ -n "$dirty" ]]; then
+  printf '%s\n' "$dirty" | sed 's/^/      /' >&2
+  die "the worktree has uncommitted or untracked work (above) — left in place, not merged; commit or remove it, then re-run"
+fi
+remote_now="$(git -C "$WT" ls-remote --heads origin "$BRANCH" | awk '{print $1}')"
+[[ "$remote_now" == "$tip" ]] \
+  || die "origin/$BRANCH (${remote_now:-missing}) is not HEAD ($tip) — worktree left in place, not merged; push first"
+git -C "$MAIN" worktree remove "$WT" || die "git worktree remove refused (see above) — worktree left in place, not merged"
 ok "removed worktree ${WT/#$HOME/~}"
 if ! (cd "$MAIN" && gh pr merge "$pr" --squash --delete-branch); then
   fail "gh pr merge failed; the branch is kept"
