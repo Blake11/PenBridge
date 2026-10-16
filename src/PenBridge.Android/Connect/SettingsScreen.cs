@@ -2,6 +2,7 @@ using System.Globalization;
 using Android.Content.PM;
 using Android.Views;
 using Android.Widget;
+using PenBridge.Android.Pad;
 using PenBridge.Android.Services;
 using PenBridge.Core;
 using PenBridge.Core.Input;
@@ -9,7 +10,8 @@ using PenBridge.Core.Input;
 namespace PenBridge.Android.Connect;
 
 /// <summary>
-/// About + settings: finger mode and drawing pressure, default pad orientation, and the paired Macs (forget removes this
+/// About + settings: the pad surface look (ADR-0031), finger mode and drawing pressure, default pad orientation, and
+/// the paired Macs (forget removes this
 /// phone's key for that Mac; the Mac keeps its own record until it's removed there too).
 /// </summary>
 internal sealed class SettingsScreen : Screen
@@ -37,6 +39,35 @@ internal sealed class SettingsScreen : Screen
         SettingsStore settings = Host.Settings;
         ScrollView page = Ui.Page(ctx, out LinearLayout content);
         content.AddView(Ui.Header(ctx, "Settings", () => Activity.Screens.Pop()));
+
+        // Surface look (ADR-0031, phone-only): applied when the pad is shown again.
+        content.AddView(Ui.Text(ctx, "Surface", TextRole.Label));
+        content.AddView(Ui.Text(ctx, "Background"));
+        var backgroundGroup = new RadioGroup(ctx) { Orientation = global::Android.Widget.Orientation.Vertical };
+        AddChoice(backgroundGroup, "Black", (int)SurfaceBackground.Black, (int)settings.SurfaceBackground);
+        AddChoice(backgroundGroup, "Dark grey", (int)SurfaceBackground.DarkGrey, (int)settings.SurfaceBackground);
+        AddChoice(backgroundGroup, "Light", (int)SurfaceBackground.Light, (int)settings.SurfaceBackground);
+        backgroundGroup.CheckedChange += (_, e) =>
+        {
+            if (backgroundGroup.FindViewById(e.CheckedId) is RadioButton { Tag: Java.Lang.Integer value })
+            {
+                settings.SurfaceBackground = (SurfaceBackground)value.IntValue();
+            }
+        };
+        content.AddView(backgroundGroup, Ui.FullWidthLp(ctx, 0));
+        content.AddView(Ui.Text(ctx, "Marker opacity: the corner ticks and the centre cross."), Ui.FullWidthLp(ctx, 8));
+        content.AddView(SliderRow(
+            (int)MathF.Round(SurfaceLook.MinMarkerOpacity * 100),
+            100,
+            (int)MathF.Round(settings.MarkerOpacity * 100),
+            FormatPercent,
+            step => settings.MarkerOpacity = step / 100f), Ui.FullWidthLp(ctx, 8));
+        content.AddView(SwitchRow("Centre marker", settings.CentreMarker, on => settings.CentreMarker = on), Ui.FullWidthLp(ctx, 8));
+#if DEBUG
+        content.AddView(
+            Ui.TextButton(ctx, "Preview pad (debug)", () => Activity.Screens.Push(new PadScreen(Activity, preview: true))),
+            Ui.WrapLp());
+#endif
 
         // Finger mode (ADR-0022): what one finger does when no stylus is present.
         content.AddView(Ui.Text(ctx, "One finger", TextRole.Label));
@@ -87,12 +118,9 @@ internal sealed class SettingsScreen : Screen
             settings.PalmSizeThreshold > 1f ? PalmOffStep : (int)MathF.Round(settings.PalmSizeThreshold * 100),
             static step => step >= PalmOffStep ? "Off" : (step / 100.0).ToString("0.00", CultureInfo.InvariantCulture),
             step => settings.PalmSizeThreshold = step >= PalmOffStep ? SettingsStore.PalmSizeThresholdOff : step / 100f), Ui.FullWidthLp(ctx, 8));
-        var readout = new Switch(ctx) { Text = "Show touch size on the pad (for tuning)", Checked = settings.ShowTouchSize };
-        readout.SetTextColor(Ui.ColorOf(ctx, Resource.Color.pb_on_surface));
-        readout.SetTextSize(global::Android.Util.ComplexUnitType.Sp, 15);
-        readout.SetMinHeight(Ui.Dp(ctx, 48));
-        readout.CheckedChange += (_, e) => settings.ShowTouchSize = e.IsChecked;
-        content.AddView(readout, Ui.FullWidthLp(ctx, 8));
+        content.AddView(
+            SwitchRow("Show touch size on the pad (for tuning)", settings.ShowTouchSize, on => settings.ShowTouchSize = on),
+            Ui.FullWidthLp(ctx, 8));
 
         // Default orientation of the pad (also changeable from the pad's menu).
         content.AddView(Ui.Text(ctx, "Pad orientation", TextRole.Label));
@@ -140,6 +168,18 @@ internal sealed class SettingsScreen : Screen
         row.AddView(seek, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
         row.AddView(label, new LinearLayout.LayoutParams(Ui.Dp(ctx, 72), ViewGroup.LayoutParams.WrapContent));
         return row;
+    }
+
+    /// <summary>A labelled switch; <paramref name="changed"/> runs on every toggle.</summary>
+    private Switch SwitchRow(string text, bool on, Action<bool> changed)
+    {
+        var ctx = Activity;
+        var toggle = new Switch(ctx) { Text = text, Checked = on };
+        toggle.SetTextColor(Ui.ColorOf(ctx, Resource.Color.pb_on_surface));
+        toggle.SetTextSize(global::Android.Util.ComplexUnitType.Sp, 15);
+        toggle.SetMinHeight(Ui.Dp(ctx, 48));
+        toggle.CheckedChange += (_, e) => changed(e.IsChecked);
+        return toggle;
     }
 
     /// <summary>Adds a radio choice tagged with <paramref name="value"/>; checked when it equals <paramref name="current"/>.</summary>
@@ -204,7 +244,15 @@ internal sealed class SettingsScreen : Screen
             .SetNegativeButton("Cancel", (_, _) => { })!
             .SetPositiveButton("Forget", (_, _) =>
             {
+                bool current = Host.CurrentMac is { } now && now.Id == mac.Id;
                 Host.Forget(mac.Fingerprint);
+                if (current && Activity.Screens.HasSessionPad)
+                {
+                    // Opened over the pad: that session just ended for good, so leave the dead pad for the Mac list.
+                    Activity.Screens.PopToRoot();
+                    return;
+                }
+
                 RebuildPaired();
             })!
             .Show();

@@ -67,8 +67,7 @@ internal sealed class DrawSurfaceView : View
         _penLeaveRunnable = new Java.Lang.Runnable(OnPenLeaveTimeout);
         _armRunnable = new Java.Lang.Runnable(OnArmTimeout);
         Focusable = true;
-        FocusableInTouchMode = true;
-        SetBackgroundColor(Color.Rgb(16, 16, 18));
+        FocusableInTouchMode = true; // no background: the SurfaceLookView underneath draws it
     }
 
     /// <summary>Raised when input switches between active (pen contact or touches sent) and idle.</summary>

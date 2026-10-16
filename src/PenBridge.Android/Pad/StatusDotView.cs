@@ -18,10 +18,15 @@ internal sealed class StatusDotView : View
     private static readonly Color Amber = Color.Rgb(240, 170, 40);
     private static readonly Color Red = Color.Rgb(230, 60, 50);
 
+    /// <summary>Dim on dark backgrounds; stronger on the light one, where a faint dot washes out.</summary>
+    private const int DarkAlpha = 140;
+    private const int LightAlpha = 230;
+
     private readonly DrawSurfaceView _surface;
     private readonly Paint _paint = new(PaintFlags.AntiAlias);
     private readonly float _radius;
     private PadConnectionState _state;
+    private int _alpha = DarkAlpha;
     private bool _tracking;
 
     public StatusDotView(Context context, DrawSurfaceView surface)
@@ -44,6 +49,17 @@ internal sealed class StatusDotView : View
 
         _state = state;
         Invalidate();
+    }
+
+    /// <summary>Adapts the dot's opacity to a light or dark background.</summary>
+    public void SetLightBackground(bool light)
+    {
+        int alpha = light ? LightAlpha : DarkAlpha;
+        if (alpha != _alpha)
+        {
+            _alpha = alpha;
+            Invalidate();
+        }
     }
 
     public override bool OnTouchEvent(MotionEvent? e)
@@ -87,7 +103,7 @@ internal sealed class StatusDotView : View
             PadConnectionKind.Connecting or PadConnectionKind.Reconnecting => Amber,
             _ => Red,
         };
-        _paint.Alpha = 140;
+        _paint.Alpha = _alpha;
         canvas.DrawCircle(Width / 2f, Height / 2f, _radius, _paint);
     }
 

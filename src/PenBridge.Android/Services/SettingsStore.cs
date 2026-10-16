@@ -1,5 +1,6 @@
 using System.Globalization;
 using Android.Content;
+using PenBridge.Android.Pad;
 using PenBridge.Core.Input;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
@@ -27,7 +28,7 @@ public sealed record KnownMac(byte[] Fingerprint, string Name, string Host, int 
 
 /// <summary>
 /// Non-secret preferences in SharedPreferences (<c>penbridge.settings</c>): last-used Mac, known Macs, orientation
-/// mode, finger mode, synthetic finger pressure, finger arming delay, palm threshold, touch-size readout. Secrets (device id, device keys) live in <see cref="AndroidKeystoreSecretStore"/>.
+/// mode, finger mode, synthetic finger pressure, finger arming delay, palm threshold, touch-size readout, surface look (background, marker opacity, centre marker). Secrets (device id, device keys) live in <see cref="AndroidKeystoreSecretStore"/>.
 /// </summary>
 /// <remarks>Safe to call from any thread (SharedPreferences is thread-safe; writes use <c>Apply</c>, which never blocks).</remarks>
 public sealed class SettingsStore
@@ -44,7 +45,12 @@ public sealed class SettingsStore
     private const string PalmThresholdKey = "pad.palm-size-threshold";
     private const string ShowTouchSizeKey = "pad.show-touch-size";
     private const string FingerModeKey = "pad.finger-mode";
+    private const string SurfaceBackgroundKey = "pad.surface.background";
+    private const string MarkerOpacityKey = "pad.surface.marker-opacity";
+    private const string CentreMarkerKey = "pad.surface.centre-marker";
     private const string MacPrefix = "mac.";
+
+    private static readonly SurfaceLook LookDefaults = new();
 
     /// <summary>Longest selectable finger arming delay (Settings range 0..this).</summary>
     public const int MaxFingerArmDelayMs = 250;
@@ -129,6 +135,40 @@ public sealed class SettingsStore
         get => _prefs.GetBoolean(ShowTouchSizeKey, false);
         set => Edit().PutBoolean(ShowTouchSizeKey, value)!.Apply();
     }
+
+    /// <summary>Pad background (ADR-0031).</summary>
+    public SurfaceBackground SurfaceBackground
+    {
+        get => _prefs.GetInt(SurfaceBackgroundKey, (int)LookDefaults.Background) switch
+        {
+            0 => SurfaceBackground.Black,
+            2 => SurfaceBackground.Light,
+            _ => SurfaceBackground.DarkGrey,
+        };
+        set => Edit().PutInt(SurfaceBackgroundKey, (int)value)!.Apply();
+    }
+
+    /// <summary>Opacity of the pad's corner ticks and centre cross, <see cref="SurfaceLook.MinMarkerOpacity"/>..1.</summary>
+    public float MarkerOpacity
+    {
+        get => NormalizeOpacity(_prefs.GetFloat(MarkerOpacityKey, LookDefaults.MarkerOpacity));
+        set => Edit().PutFloat(MarkerOpacityKey, NormalizeOpacity(value))!.Apply();
+    }
+
+    /// <summary>Show the centre cross on the pad.</summary>
+    public bool CentreMarker
+    {
+        get => _prefs.GetBoolean(CentreMarkerKey, LookDefaults.CentreMarker);
+        set => Edit().PutBoolean(CentreMarkerKey, value)!.Apply();
+    }
+
+    /// <summary>The stored surface settings as one value for the pad.</summary>
+    public SurfaceLook SurfaceLook => new()
+    {
+        Background = SurfaceBackground,
+        MarkerOpacity = MarkerOpacity,
+        CentreMarker = CentreMarker,
+    };
 
     /// <summary>All Macs connected to before, most recent first.</summary>
     public IReadOnlyList<KnownMac> GetKnownMacs()
@@ -217,6 +257,9 @@ public sealed class SettingsStore
         float.IsNaN(threshold) ? FilterDefaults.PalmSizeThreshold
         : threshold > 1f ? PalmSizeThresholdOff
         : Math.Max(threshold, MinPalmSizeThreshold);
+
+    private static float NormalizeOpacity(float opacity) =>
+        float.IsNaN(opacity) ? LookDefaults.MarkerOpacity : Math.Clamp(opacity, SurfaceLook.MinMarkerOpacity, 1f);
 
     private ISharedPreferencesEditor Edit() =>
         _prefs.Edit() ?? throw new InvalidOperationException("SharedPreferences editor unavailable.");

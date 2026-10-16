@@ -31,6 +31,23 @@ internal sealed class ScreenStack : Java.Lang.Object, View.IOnApplyWindowInsetsL
 
     public int Count => _stack.Count;
 
+    /// <summary>True when a session pad (<see cref="PadScreen.IsSession"/>) is anywhere on the stack (top or below).</summary>
+    public bool HasSessionPad
+    {
+        get
+        {
+            foreach (Screen screen in _stack)
+            {
+                if (screen is PadScreen { IsSession: true })
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
     public void Push(Screen screen)
     {
         ArgumentNullException.ThrowIfNull(screen);

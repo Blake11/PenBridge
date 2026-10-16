@@ -27,12 +27,17 @@ public sealed class PadController : IDisposable
     private const int MenuAuto = 5;
     private const int MenuDisconnect = 6;
     private const int MenuChangeMac = 7;
+    private const int MenuSettings = 8;
+#if DEBUG
+    private const int MenuDebugArea = 9;
+#endif
     private const int OrientationGroup = 1;
 
     private readonly Activity _activity;
     private readonly IPadOutput _output;
     private readonly PadSendQueue _queue;
     private readonly FrameLayout _root;
+    private readonly SurfaceLookView _look;
     private readonly DrawSurfaceView _surface;
     private readonly InkEchoView? _ink;
     private readonly StatusDotView _dot;
@@ -44,11 +49,15 @@ public sealed class PadController : IDisposable
     private PadOrientationMode _orientation;
     private PadOrientationMode? _pendingOrientation;
     private bool _fingerFallbackEnabled;
-    private readonly FingerFallbackMode _fingerMode;
+    private FingerFallbackMode _fingerMode;
     private ushort _fingerFallbackPressure;
-    private readonly TimeSpan _armDelay;
-    private readonly float _palmSizeThreshold;
-    private readonly TouchSizeReadoutView? _readout;
+    private TimeSpan _armDelay;
+    private float _palmSizeThreshold;
+    private TouchSizeReadoutView? _readout;
+    private NormalizedRect _activeArea = NormalizedRect.Full;
+#if DEBUG
+    private bool _debugArea;
+#endif
     private ScreenOrientation _hostOrientation;
     private bool _started;
     private volatile bool _disposed;
@@ -66,13 +75,12 @@ public sealed class PadController : IDisposable
         _fingerFallbackPressure = options.FingerFallbackPressure;
         _armDelay = options.FingerFallbackArmDelay;
         _palmSizeThreshold = options.PalmSizeThreshold;
-        _readout = options.ShowTouchSize ? new TouchSizeReadoutView(activity, options.PalmSizeThreshold) : null;
 
         _queue = new PadSendQueue(output);
+        _look = new SurfaceLookView(activity);
         _ink = options.InkEcho ? new InkEchoView(activity) : null;
         _surface = new DrawSurfaceView(activity, _queue, _ink, CreateFilterOptions())
         {
-            TouchSizeReadout = _readout,
             ActiveChanged = OnActiveChanged,
             SurfaceSizeChanged = OnSurfaceSizeChanged,
             WindowFocusRegained = OnWindowFocusRegained,
@@ -85,6 +93,9 @@ public sealed class PadController : IDisposable
         _root = new FrameLayout(activity) { MotionEventSplittingEnabled = false };
         _root.SetBackgroundColor(global::Android.Graphics.Color.Black);
         var match = ViewGroup.LayoutParams.MatchParent;
+
+        // Background, margins and markers under the (transparent) input surface; it takes no input.
+        _root.AddView(_look, new FrameLayout.LayoutParams(match, match));
         _root.AddView(_surface, new FrameLayout.LayoutParams(match, match));
         if (_ink is not null)
         {
@@ -92,15 +103,14 @@ public sealed class PadController : IDisposable
             _root.AddView(_ink, new FrameLayout.LayoutParams(match, match));
         }
 
-        if (_readout is not null)
+        if (options.ShowTouchSize)
         {
-            // Drawing only, like the ink layer: never takes input.
-            _root.AddView(_readout, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent, GravityFlags.Bottom | GravityFlags.Start));
+            AttachReadout();
         }
 
         int dotSize = Dp(40);
         _root.AddView(_dot, new FrameLayout.LayoutParams(dotSize, dotSize, GravityFlags.Top | GravityFlags.End));
+        SetSurfaceLook(options.Look);
 
         _stateRunnable = new Java.Lang.Runnable(RefreshConnectionState);
         _output.ConnectionStateChanged += OnConnectionStateChanged;
@@ -126,6 +136,15 @@ public sealed class PadController : IDisposable
             _surface.SetFilterOptions(CreateFilterOptions());
         }
     }
+
+    /// <summary>
+    /// The active area in the current surface orientation (ADR-0031): the corner ticks, dimmed margins and centre cross
+    /// follow it. The whole surface until the Mac sends one.
+    /// </summary>
+    public NormalizedRect ActiveArea => _activeArea;
+
+    /// <summary>The user chose Settings in the pad menu (show the Settings screen; call <see cref="ApplyOptions"/> on return).</summary>
+    public event EventHandler? SettingsRequested;
 
     /// <summary>The user chose Disconnect in the pad menu.</summary>
     public event EventHandler? DisconnectRequested;
@@ -179,6 +198,57 @@ public sealed class PadController : IDisposable
         }
     }
 
+    /// <summary>Sets the active area (normalized to the current surface orientation); redraws the markers.</summary>
+    public void SetActiveArea(NormalizedRect area)
+    {
+        _activeArea = area;
+#if DEBUG
+        if (_debugArea)
+        {
+            return;
+        }
+#endif
+        _look.SetActiveArea(area);
+    }
+
+    /// <summary>Applies the surface look: background, marker opacity, centre marker, and matching ink and dot colours.</summary>
+    public void SetSurfaceLook(SurfaceLook look)
+    {
+        ArgumentNullException.ThrowIfNull(look);
+        _look.SetLook(look);
+        _ink?.SetColor(look.InkColor);
+        _dot.SetLightBackground(look.IsLight);
+    }
+
+    /// <summary>
+    /// Re-applies settings changed while the pad was hidden (e.g. from the Settings screen): look, finger and palm
+    /// options (swapped in when input is idle), the touch-size readout and the orientation.
+    /// </summary>
+    public void ApplyOptions(PadOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        SetSurfaceLook(options.Look);
+        bool readoutChanged = options.ShowTouchSize != (_readout is not null) || options.PalmSizeThreshold != _palmSizeThreshold;
+        _fingerMode = options.FingerMode;
+        _fingerFallbackPressure = options.FingerFallbackPressure;
+        _armDelay = options.FingerFallbackArmDelay;
+        _palmSizeThreshold = options.PalmSizeThreshold;
+        _surface.SetFilterOptions(CreateFilterOptions());
+        if (readoutChanged)
+        {
+            DetachReadout();
+            if (options.ShowTouchSize)
+            {
+                AttachReadout();
+            }
+        }
+
+        if (options.Orientation != OrientationMode)
+        {
+            SetOrientationMode(options.Orientation);
+        }
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -208,6 +278,28 @@ public sealed class PadController : IDisposable
         FingerFallbackArmDelay = _armDelay,
         PalmSizeThreshold = _palmSizeThreshold,
     };
+
+    /// <summary>Creates and adds the touch-size readout: drawing only, like the ink layer, it never takes input.</summary>
+    private void AttachReadout()
+    {
+        _readout = new TouchSizeReadoutView(_activity, _palmSizeThreshold);
+        _surface.TouchSizeReadout = _readout;
+        _root.AddView(_readout, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent, GravityFlags.Bottom | GravityFlags.Start));
+    }
+
+    private void DetachReadout()
+    {
+        if (_readout is null)
+        {
+            return;
+        }
+
+        _surface.TouchSizeReadout = null;
+        _root.RemoveView(_readout);
+        _readout.Dispose();
+        _readout = null;
+    }
 
     private int Dp(float dp) => (int)((dp * (_activity.Resources?.DisplayMetrics?.Density ?? 1f)) + 0.5f);
 
@@ -298,7 +390,45 @@ public sealed class PadController : IDisposable
             _fingerFallbackEnabled ? SurfaceCapabilities.FingerFallback : SurfaceCapabilities.None);
         Surface = surface;
         _output.UpdateSurface(surface);
+#if DEBUG
+        if (_debugArea)
+        {
+            _look.SetActiveArea(DebugSampleArea(width, height));
+        }
+#endif
     }
+
+#if DEBUG
+
+    /// <summary>
+    /// Debug-only preview of a non-full active area (screenshots before the Mac sends one): the largest centred 4:3
+    /// rectangle, as a 4:3 display would give per ADR-0031. Not 16:10, which fills the tablet AVD in landscape.
+    /// </summary>
+    private static NormalizedRect DebugSampleArea(int width, int height)
+    {
+        const double Aspect = 4.0 / 3.0;
+        if (width <= 0 || height <= 0)
+        {
+            return NormalizedRect.Full;
+        }
+
+        double surface = (double)width / height;
+        if (surface > Aspect)
+        {
+            double w = Aspect / surface;
+            return new NormalizedRect((1 - w) / 2, 0, w, 1);
+        }
+
+        double h = surface / Aspect;
+        return new NormalizedRect(0, (1 - h) / 2, 1, h);
+    }
+
+    private void ToggleDebugArea()
+    {
+        _debugArea = !_debugArea;
+        _look.SetActiveArea(_debugArea ? DebugSampleArea(_surface.Width, _surface.Height) : _activeArea);
+    }
+#endif
 
     private void OnWindowFocusRegained()
     {
@@ -403,8 +533,14 @@ public sealed class PadController : IDisposable
             orientation.SetGroupCheckable(OrientationGroup, true, true);
         }
 
-        menu.Add(0, MenuDisconnect, 3, "Disconnect");
-        menu.Add(0, MenuChangeMac, 4, "Change Mac");
+        menu.Add(0, MenuSettings, 3, "Settings…");
+        menu.Add(0, MenuDisconnect, 4, "Disconnect");
+        menu.Add(0, MenuChangeMac, 5, "Change Mac");
+#if DEBUG
+        IMenuItem? debugArea = menu.Add(0, MenuDebugArea, 6, "Debug: sample active area");
+        debugArea?.SetCheckable(true);
+        debugArea?.SetChecked(_debugArea);
+#endif
         popup.MenuItemClick += OnMenuItemClick;
         popup.DismissEvent += (_, _) => popup.MenuItemClick -= OnMenuItemClick;
         popup.Show();
@@ -423,6 +559,14 @@ public sealed class PadController : IDisposable
             case MenuAuto:
                 PickOrientation(PadOrientationMode.Auto);
                 break;
+            case MenuSettings:
+                SettingsRequested?.Invoke(this, EventArgs.Empty);
+                break;
+#if DEBUG
+            case MenuDebugArea:
+                ToggleDebugArea();
+                break;
+#endif
             case MenuDisconnect:
                 DisconnectRequested?.Invoke(this, EventArgs.Empty);
                 break;

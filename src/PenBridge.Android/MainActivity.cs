@@ -152,12 +152,13 @@ public sealed class MainActivity : ComponentActivity
     private void OnHostStateChanged(object? sender, ClientHostStateChangedEventArgs e)
     {
         ClientHostState state = e.State;
-        if (state.IsConnected && Screens.Top is not PadScreen)
+        // The pad may sit under Settings (opened from its menu): a reconnect must not replace that with a new pad.
+        if (state.IsConnected && !Screens.HasSessionPad)
         {
             EndStartupWindow();
             Screens.ReplaceAboveRoot(new PadScreen(this));
         }
-        else if (state.Status == ClientHostStatus.Error && Screens.Top is PadScreen)
+        else if (state.Status == ClientHostStatus.Error && Screens.HasSessionPad)
         {
             Screens.PopToRoot(); // the session ended for good (takeover, unpaired, …): the list shows why
         }
