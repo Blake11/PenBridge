@@ -30,7 +30,7 @@ Pass the absolute path in the prompt. Don't use the Agent tool's `isolation: "wo
 - Tell agents to keep tool calls short and background long app/SimClient runs.
 
 ## Merge back
-`scripts/ship-pr.sh <worktree> <title> <body-file>` (after the user approves pushing) does it end to end: rebase onto origin/main, refuse AI-attribution lines, `scripts/test.sh`, push (refusing a stale remote branch), `gh pr create`, wait for every check, squash-merge (with `--merge`, only when the user approved merging), copy `.claude/progress/**/ws-*.md` into the main tree, remove the worktree and its local branches. `--help` for flags.
+`scripts/ship-pr.sh <worktree> --title … --body-file … [--merge] [--no-test] [--dry-run]` (after the user approves pushing) does it end to end: rebase onto origin/main, refuse AI-attribution lines, `scripts/test.sh`, push (refusing a stale remote branch), `gh pr create`, wait for every check, squash-merge (with `--merge`, only when the user approved merging), copy `.claude/progress/**/ws-*.md` into the main tree, remove the worktree and its local branches. `--help` for flags.
 
 By hand:
 1. In the worktree: `scripts/test.sh`, `dotnet build PenBridge.slnx`.

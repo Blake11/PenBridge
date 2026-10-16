@@ -34,7 +34,9 @@ git diff <reviewed-sha> HEAD          # must be empty: the pushed tree is the re
 
 ## Ship with `scripts/ship-pr.sh` (worktree workstreams)
 ```bash
-scripts/ship-pr.sh <worktree> "<type>(scope): subject" <body-file>   # after the user approves pushing
+scripts/ship-pr.sh <worktree> --title "<type>(scope): subject" --body-file <f> [--merge] [--no-test] [--dry-run]   # after the user approves pushing
+# The body must contain Closes #N or Refs #N. It never rebases a branch that's already pushed (that would need a force-push).
+# With --merge it copies ws-*.md, removes the worktree, then runs gh pr merge (gh can't delete a branch checked out in a worktree).
 ```
 Rebases onto origin/main, refuses AI-attribution lines, runs `scripts/test.sh`, pushes (refusing a stale remote branch, see above), `gh pr create`, waits for every check, squash-merges only with `--merge` (only when the user approved merging), copies `.claude/progress/**/ws-*.md` into the main tree and removes the worktree and its local branches. The manual steps below are the fallback.
 
@@ -64,7 +66,8 @@ A `Detect changes` job (`dorny/paths-filter@v4`) gates the jobs with job-level `
 
 | Changed paths | Jobs |
 |---|---|
-| `.github/workflows/**`, `.github/actions/**`, `scripts/**`, `.githooks/**` | all except iOS (iOS: workflows/actions and `scripts/check-bundle.sh` only) |
+| `.github/workflows/**`, `.github/actions/**`, `scripts/check-bundle.sh` | all |
+| other `scripts/**`, `.githooks/**` | all except iOS |
 | `src/PenBridge.Core/**`, `tests/**`, `tools/**`, `build/**`, `**/Directory.Build.*`, `**/Directory.Packages.props`, `global.json`, `PenBridge.slnx`, `.editorconfig` | all except iOS (iOS: `global.json` only) |
 | `src/PenBridge.Mac/**` | macOS build |
 | `src/PenBridge.Android/**` | Android build |

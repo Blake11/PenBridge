@@ -49,7 +49,8 @@ A `Detect changes` job (`dorny/paths-filter@v4`) gates the jobs with job-level `
 
 | Changed paths | Jobs |
 |---|---|
-| `.github/workflows/**`, `.github/actions/**`, `scripts/**`, `.githooks/**` | all except iOS (iOS: workflows/actions and `scripts/check-bundle.sh` only) |
+| `.github/workflows/**`, `.github/actions/**`, `scripts/check-bundle.sh` | all |
+| other `scripts/**`, `.githooks/**` | all except iOS |
 | `src/PenBridge.Core/**`, `tests/**`, `tools/**`, `build/**`, `**/Directory.Build.*`, `**/Directory.Packages.props`, `global.json`, `PenBridge.slnx`, `.editorconfig` | all except iOS (iOS: `global.json` only) |
 | `src/PenBridge.Mac/**` | macOS build |
 | `src/PenBridge.Android/**` | Android build |
