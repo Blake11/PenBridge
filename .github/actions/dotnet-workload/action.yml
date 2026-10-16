@@ -1,0 +1,140 @@
+name: Install .NET workloads (cached)
+description: >
+  Installs .NET workloads with a cache. Run it after actions/setup-dotnet (and
+  select-xcode on macOS). The cache holds only the files that
+  `dotnet workload install` added under DOTNET_ROOT (packs, manifests, the
+  workload set, install records), captured by listing DOTNET_ROOT before and
+  after the install. The key covers the runner OS and arch, the selected Xcode,
+  the exact SDK version and the latest workload set for its band, so a new SDK,
+  workload set or Xcode is a cache miss. The install pins that same workload
+  set (`--version`), so a hit and a miss give the same packs. If the workload
+  set lookup fails, it installs without the cache. After a restore it checks
+  `dotnet workload list` and installs normally if anything is missing.
+
+inputs:
+  workloads:
+    description: Space-separated workload IDs (for example "macos" or "android")
+    required: true
+  save:
+    description: >
+      "true" saves the cache after a miss. Pass false on pull_request: caches
+      saved on a PR ref are visible only to that PR, so they would only use
+      storage. Runs on main (push, schedule) refresh the cache for every PR.
+    required: false
+    default: "true"
+
+outputs:
+  cache-hit:
+    description: '"true" when the workloads came from the cache'
+    value: ${{ steps.restore.outputs.cache-hit == 'true' && steps.extract.outputs.ok == 'true' }}
+
+runs:
+  using: composite
+  steps:
+    - name: Plan workload cache
+      id: plan
+      shell: bash
+      env:
+        WORKLOADS: ${{ inputs.workloads }}
+      run: |
+        set -euo pipefail
+        if [ -z "${DOTNET_ROOT:-}" ] || [ ! -d "$DOTNET_ROOT" ]; then
+          echo "::error::DOTNET_ROOT is not set or missing; run actions/setup-dotnet before this action."
+          exit 1
+        fi
+        sdk=$(dotnet --version)
+        # Latest workload set for this SDK's feature band; empty (no cache) if the lookup fails.
+        ws=$(dotnet workload search version --take 1 2>/dev/null | tail -n 1 | tr -d '[:space:]' || true)
+        if ! printf '%s' "$ws" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+          echo "::warning::Could not resolve the workload set version (got '${ws}'); installing without the workload cache."
+          ws=""
+        fi
+        xcode=none
+        if command -v xcodebuild >/dev/null 2>&1; then
+          xcode=$(xcodebuild -version 2>/dev/null | awk 'NR==1 {print $2}')
+          xcode=${xcode:-none}
+        fi
+        ids=$(printf '%s' "$WORKLOADS" | tr -s ' ' '+')
+        {
+          echo "workload-set=$ws"
+          echo "key=dotnet-workloads-v1-${RUNNER_OS}-${RUNNER_ARCH}-xcode${xcode}-sdk${sdk}-ws${ws:-none}-${ids}"
+          echo "archive=${RUNNER_TEMP}/dotnet-workloads.tar"
+        } >> "$GITHUB_OUTPUT"
+        echo "SDK ${sdk}, workload set ${ws:-unknown}, Xcode ${xcode}"
+
+    - name: Restore workload cache
+      id: restore
+      if: steps.plan.outputs.workload-set != ''
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ steps.plan.outputs.archive }}
+        key: ${{ steps.plan.outputs.key }}
+
+    - name: Unpack cached workloads
+      id: extract
+      if: steps.restore.outputs.cache-hit == 'true'
+      shell: bash
+      env:
+        WORKLOADS: ${{ inputs.workloads }}
+        ARCHIVE: ${{ steps.plan.outputs.archive }}
+        WORKLOAD_SET: ${{ steps.plan.outputs.workload-set }}
+      run: |
+        set -euo pipefail
+        if ! tar -xpf "$ARCHIVE" -C "$DOTNET_ROOT"; then
+          echo "::warning::Could not unpack the workload cache; installing instead."
+          exit 0
+        fi
+        installed=$(dotnet workload list 2>/dev/null || true)
+        if ! printf '%s\n' "$installed" | grep -Fq "Workload version: ${WORKLOAD_SET}"; then
+          echo "::warning::The restored workload set is not ${WORKLOAD_SET}; installing instead."
+          exit 0
+        fi
+        for id in $WORKLOADS; do
+          if ! printf '%s\n' "$installed" | grep -Eq "^${id}[[:space:]]"; then
+            echo "::warning::Workload '${id}' is missing after the cache restore; installing instead."
+            exit 0
+          fi
+        done
+        echo "ok=true" >> "$GITHUB_OUTPUT"
+
+    - name: Install workloads
+      id: install
+      if: steps.extract.outputs.ok != 'true'
+      shell: bash
+      env:
+        WORKLOADS: ${{ inputs.workloads }}
+        WORKLOAD_SET: ${{ steps.plan.outputs.workload-set }}
+        ARCHIVE: ${{ steps.plan.outputs.archive }}
+        # Snapshot only on a cache miss we may save; a hit whose unpack failed already has the key.
+        SNAPSHOT: ${{ inputs.save == 'true' && steps.plan.outputs.workload-set != '' && steps.restore.outputs.cache-hit != 'true' }}
+      run: |
+        set -euo pipefail
+        list_files() { (cd "$DOTNET_ROOT" && find . \( -type f -o -type l \) | LC_ALL=C sort); }
+        before="${RUNNER_TEMP}/dotnet-files-before.txt"
+        if [ "$SNAPSHOT" = "true" ]; then list_files > "$before"; fi
+        # shellcheck disable=SC2086 # WORKLOADS is a space-separated list of IDs
+        if [ -n "$WORKLOAD_SET" ]; then
+          dotnet workload install $WORKLOADS --version "$WORKLOAD_SET"
+        else
+          dotnet workload install $WORKLOADS
+        fi
+        if [ "$SNAPSHOT" = "true" ]; then
+          # New files, plus all install records (some may exist already and only change).
+          added="${RUNNER_TEMP}/dotnet-files-added.txt"
+          {
+            list_files | LC_ALL=C comm -13 "$before" -
+            if [ -d "$DOTNET_ROOT/metadata/workloads" ]; then
+              (cd "$DOTNET_ROOT" && find ./metadata/workloads \( -type f -o -type l \))
+            fi
+          } | LC_ALL=C sort -u > "$added"
+          tar -cf "$ARCHIVE" -C "$DOTNET_ROOT" -T "$added"
+          echo "Workload cache: $(wc -l < "$added" | tr -d ' ') files, $(du -h "$ARCHIVE" | cut -f1)"
+          echo "archived=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Save workload cache
+      if: steps.install.outputs.archived == 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ steps.plan.outputs.archive }}
+        key: ${{ steps.plan.outputs.key }}

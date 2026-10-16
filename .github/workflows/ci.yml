@@ -4,14 +4,22 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Full runs (issue #146): every night all jobs except the iOS placeholder; Sundays everything.
+  # The iOS job keys off the Sunday cron string, so keep both strings in sync with `changes`.
+  schedule:
+    - cron: "23 3 * * 1-6"
+    - cron: "23 3 * * 0"
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# A new push to a PR cancels its older run. Runs on main (push, schedule, manual) are never
+# cancelled: each gets its own group (run_id), because even with cancel-in-progress false a
+# shared group cancels a run still waiting behind another one.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   DOTNET_NOLOGO: "true"
@@ -20,11 +28,12 @@ env:
   NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
 
 jobs:
-  # Decides which jobs a PR can affect (issue #52). The build jobs below skip via job-level
-  # `if:` rather than workflow-level `paths:`: a skipped job still reports its check name
-  # and branch protection treats "skipped" as passing, whereas a check that never reports
-  # blocks the PR forever. Pushes to main and manual runs always run everything. The path
-  # -> job table lives in CONTRIBUTING.md ("CI jobs"); keep both in sync.
+  # Decides which jobs a PR or a push to main can affect (issues #52, #146). The build jobs
+  # below skip via job-level `if:` rather than workflow-level `paths:`: a skipped job still
+  # reports its check name and branch protection treats "skipped" as passing, whereas a check
+  # that never reports blocks the PR forever. Scheduled and manual runs run every job (the
+  # weekday nightly skips only the iOS placeholder). The path -> job table lives in
+  # CONTRIBUTING.md ("CI jobs"); keep both in sync.
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
@@ -32,19 +41,30 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+    env:
+      FILTERED: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+    # Unfiltered events (schedule, workflow_dispatch) run every job; the weekday cron skips iOS.
     outputs:
-      core: ${{ github.event_name != 'pull_request' || steps.filter.outputs.core == 'true' }}
-      mac: ${{ github.event_name != 'pull_request' || steps.filter.outputs.mac == 'true' }}
-      android: ${{ github.event_name != 'pull_request' || steps.filter.outputs.android == 'true' }}
-      ios: ${{ github.event_name != 'pull_request' || steps.filter.outputs.ios == 'true' }}
+      core: ${{ (github.event_name != 'pull_request' && github.event_name != 'push') || steps.filter.outputs.core == 'true' }}
+      mac: ${{ (github.event_name != 'pull_request' && github.event_name != 'push') || steps.filter.outputs.mac == 'true' }}
+      android: ${{ (github.event_name != 'pull_request' && github.event_name != 'push') || steps.filter.outputs.android == 'true' }}
+      ios: ${{ (github.event_name != 'pull_request' && github.event_name != 'push' && github.event.schedule != '23 3 * * 1-6') || steps.filter.outputs.ios == 'true' }}
     steps:
-      # On pull_request the filter lists the PR's files through the API: no checkout needed.
-      # Each filter is the full trigger set of one job: infra and core changes run every job,
-      # since every head depends on Core. Paths matching no filter (docs, .claude, LICENSE,
-      # issue/PR templates) skip every build job.
+      # On pull_request the filter lists the PR's files through the API, so it needs no
+      # checkout. On push it diffs against the commit before the push with git, so it needs the
+      # history (small repo: full clone). A force push whose "before" is gone fails this job,
+      # and then every job runs.
+      - uses: actions/checkout@v7
+        if: github.event_name == 'push'
+        with:
+          fetch-depth: 0
+
+      # Each filter is the full trigger set of one job: infra and core changes run every job
+      # except iOS, since every head depends on Core. Paths matching no filter (docs, .claude,
+      # LICENSE, issue/PR templates) skip every build job.
       - uses: dorny/paths-filter@v4
         id: filter
-        if: github.event_name == 'pull_request'
+        if: env.FILTERED == 'true'
         with:
           filters: |
             infra: &infra
@@ -74,8 +94,11 @@ jobs:
             android:
               - *core
               - 'src/PenBridge.Android/**'
+            # The iOS placeholder is never released: only its own sources and the CI definition
+            # run it on a PR or push. Core-side breakage still surfaces in the Sunday full run.
             ios:
-              - *core
+              - '.github/workflows/**'
+              - '.github/actions/**'
               - 'src/PenBridge.iOS/**'
 
   core-tests:
@@ -154,7 +177,10 @@ jobs:
           fi
 
       - name: Install macOS workload
-        run: dotnet workload install macos
+        uses: ./.github/actions/dotnet-workload
+        with:
+          workloads: macos
+          save: ${{ github.event_name != 'pull_request' }}
 
       - name: Toolchain versions
         run: |
@@ -170,7 +196,10 @@ jobs:
           -c Release
           -p:CreatePackage=false
 
-      # Debug runs ILLink too (copy mode) and once dropped BouncyCastle from the bundle (issue #46).
+      # Kept on purpose (issue #146): the Release publish never compiles the `#if DEBUG` code
+      # (development secret store, debug logging), and warnings are errors, so this is the only CI
+      # compile of it. Debug also runs ILLink (copy mode), which once dropped BouncyCastle from
+      # the bundle (issue #46); the Debug app is what scripts/mac-run.sh runs by default.
       - name: Build (Debug)
         run: dotnet build src/PenBridge.Mac/PenBridge.Mac.csproj -c Debug
 
@@ -206,7 +235,10 @@ jobs:
           restore-keys: nuget-${{ runner.os }}-android-
 
       - name: Install Android workload
-        run: dotnet workload install android
+        uses: ./.github/actions/dotnet-workload
+        with:
+          workloads: android
+          save: ${{ github.event_name != 'pull_request' }}
 
       - name: Install Android SDK dependencies
         run: >
@@ -235,7 +267,8 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 30
     # The iOS head is a placeholder that is never released, but it is a required
-    # check: a broken trim/build here once slipped onto main unnoticed.
+    # check: a broken trim/build here once slipped onto main unnoticed. It runs only for
+    # iOS/CI changes, on Sundays and manually; when skipped it still reports (as passing).
     steps:
       - uses: actions/checkout@v7
 
@@ -252,7 +285,10 @@ jobs:
           restore-keys: nuget-${{ runner.os }}-ios-
 
       - name: Install iOS workload
-        run: dotnet workload install ios
+        uses: ./.github/actions/dotnet-workload
+        with:
+          workloads: ios
+          save: ${{ github.event_name != 'pull_request' }}
 
       - name: Toolchain versions
         run: |
