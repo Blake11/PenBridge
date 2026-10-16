@@ -66,7 +66,7 @@ public sealed partial class AppDelegate : NSApplicationDelegate
         _hotkey.Pressed += OnHotkeyPressed;
         _hotkey.Register();
 
-        _settingsWindow = new SettingsWindowController(_settings, _resolver, _host);
+        _settingsWindow = new SettingsWindowController(_settings, _resolver, _host, () => _host.PhoneSurfaceAspect);
         _statusItem = new StatusItemController(_host, _injector, _resolver, _settings, _pairing, _hotkey, _settingsWindow, _loggers.CreateLogger<StatusItemController>());
         Log.Launched(_log, NSBundle.MainBundle.ObjectForInfoDictionary("CFBundleShortVersionString")?.ToString() ?? "?");
 

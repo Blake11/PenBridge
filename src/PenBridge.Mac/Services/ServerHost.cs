@@ -160,6 +160,19 @@ public sealed partial class ServerHost : IAsyncDisposable
     /// </summary>
     public event EventHandler<SettingsUpdateRequestedEventArgs>? SettingsUpdateRequested;
 
+    /// <summary>Raised on the main thread when the connected phone's surface size changed (or it left); read <see cref="PhoneSurfaceAspect"/>.</summary>
+    public event EventHandler? PhoneSurfaceChanged;
+
+    /// <summary>The connected phone surface's width / height in its current orientation, or null when no phone is connected.</summary>
+    public double? PhoneSurfaceAspect
+    {
+        get
+        {
+            double aspect = _server?.PhoneSurface?.AspectRatio ?? 0d;
+            return aspect > 0 && double.IsFinite(aspect) ? aspect : null;
+        }
+    }
+
     /// <summary>The current snapshot.</summary>
     public ServerHostState State { get; private set; }
 
@@ -568,6 +581,7 @@ public sealed partial class ServerHost : IAsyncDisposable
         server.DevicePaired += OnDevicePaired;
         server.PairingWindowChanged += OnPairingWindowChanged;
         server.SettingsUpdateRequested += OnSettingsUpdateRequested;
+        server.PhoneSurfaceChanged += OnPhoneSurfaceChanged;
         try
         {
             server.Start();
@@ -623,6 +637,7 @@ public sealed partial class ServerHost : IAsyncDisposable
         server.DevicePaired -= OnDevicePaired;
         server.PairingWindowChanged -= OnPairingWindowChanged;
         server.SettingsUpdateRequested -= OnSettingsUpdateRequested;
+        server.PhoneSurfaceChanged -= OnPhoneSurfaceChanged;
     }
 
     // Server events: thread pool → main queue; events from a server that was replaced meanwhile are ignored.
@@ -675,6 +690,9 @@ public sealed partial class ServerHost : IAsyncDisposable
     // a session that has ended meanwhile is still applied: it was authenticated, and the Mac settings are global.
     private void OnSettingsUpdateRequested(object? sender, SettingsUpdateRequestedEventArgs e) => OnMain(sender, () =>
         Raise(SettingsUpdateRequested, e, nameof(SettingsUpdateRequested)));
+
+    private void OnPhoneSurfaceChanged(object? sender, EventArgs e) => OnMain(sender, () =>
+        Raise(PhoneSurfaceChanged, nameof(PhoneSurfaceChanged)));
 
     private void OnMain(object? sender, Action action) => DispatchQueue.MainQueue.DispatchAsync(() =>
     {

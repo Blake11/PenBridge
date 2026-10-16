@@ -80,8 +80,8 @@ public sealed class SettingsWindowController : IDisposable
     /// <param name="host">For "Allow takeover", which the host applies and persists.</param>
     /// <param name="phoneSurfaceAspect">
     /// The connected phone surface's width / height in its current orientation, or null when unknown; the region
-    /// aspect lock uses it, else the display's ratio. Not wired yet: Core's server doesn't expose the session's
-    /// surface size to the head.
+    /// aspect lock uses it, else the display's ratio. Read when the overlay opens: an overlay that is already open
+    /// keeps its aspect until the next "Set region".
     /// </param>
     public SettingsWindowController(SettingsStore store, DisplayTargetResolver resolver, ServerHost host, Func<double?>? phoneSurfaceAspect = null)
     {
