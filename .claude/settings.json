@@ -75,8 +75,6 @@
       "mcp__rider__get_file_problems",
       "Bash(scripts/device-preflight.sh *)",
       "Bash(./scripts/device-preflight.sh *)",
-      "Bash(scripts/device-test-setup.sh *)",
-      "Bash(./scripts/device-test-setup.sh *)",
       "Bash(footprint *)"
     ],
     "ask": [
@@ -131,23 +129,15 @@
       "scripts/mac-run.sh *",
       "./scripts/mac-run.sh",
       "./scripts/mac-run.sh *",
-      "*/scripts/mac-run.sh *",
       "scripts/mac-sign.sh *",
       "./scripts/mac-sign.sh *",
-      "*/scripts/mac-sign.sh *",
       "scripts/device-test-setup.sh",
       "scripts/device-test-setup.sh *",
       "./scripts/device-test-setup.sh *",
-      "*/scripts/device-test-setup.sh *",
       "scripts/check-bundle.sh --mac *",
       "./scripts/check-bundle.sh --mac *",
       "dotnet build src/PenBridge.Mac*",
-      "dotnet publish src/PenBridge.Mac*",
-      "dotnet build PenBridge.slnx *",
-      "codesign --force *",
-      "codesign -f *",
-      "codesign -s *",
-      "codesign --sign *"
+      "dotnet publish src/PenBridge.Mac*"
     ]
   }
 }
