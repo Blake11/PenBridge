@@ -26,7 +26,12 @@ while !argv.isEmpty {
     case "--raw": rawDump = true
     case "--types":
         guard !argv.isEmpty else { fputs("--types needs a list\n", stderr); exit(2) }
-        onlyTypes = Set(argv.removeFirst().split(separator: ",").compactMap { UInt32($0) })
+        var set = Set<UInt32>()
+        for part in argv.removeFirst().split(separator: ",", omittingEmptySubsequences: false) {
+            guard let t = UInt32(part), t <= 1000 else { fputs("bad --types value '\(part)' (comma-separated event type numbers)\n", stderr); exit(2) }
+            set.insert(t)
+        }
+        onlyTypes = set
     case "-h", "--help":
         print("usage: record [--moves] [--all] [--hid] [--raw] [--types 22,29,...]"); exit(0)
     default: fputs("unknown option \(a)\n", stderr); exit(2)

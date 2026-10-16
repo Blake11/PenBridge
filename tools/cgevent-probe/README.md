@@ -1,5 +1,7 @@
 # cgevent-probe
 
+> **Warning:** `post` injects real mouse, scroll and gesture input into whatever app is frontmost. Use `post --check` (validate only) or `-n` (dry run) first, and keep the script small.
+
 Two small Swift command-line tools for investigating CGEvent injection (skill `mac-build-run`, "mac-gesture-events"):
 
 - `record`: a listen-only CGEventTap that prints one line per event (ns timestamps, the NSEvent view, every non-zero

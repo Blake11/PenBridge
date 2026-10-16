@@ -8,7 +8,7 @@
 #
 # record: [--moves] [--all] [--hid] [--raw] [--types 22,29]; needs Input Monitoring for the terminal.
 # post:   [-n] [script-file | -e 'cmd; cmd']; needs Accessibility for the terminal. Script syntax: tools/cgevent-probe/README.md.
-# The binaries are plain arm64 executables with no repo dependencies: copy them to another Mac (README, "MacBook over LAN").
+# The binaries are plain executables for this Mac's architecture (uname -m) with no repo dependencies: copy them to another Mac (README, "MacBook over LAN").
 set -euo pipefail
 source "$(dirname "$0")/lib/common.sh"
 
