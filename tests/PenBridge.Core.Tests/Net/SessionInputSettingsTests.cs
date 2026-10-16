@@ -195,6 +195,30 @@ public sealed class SessionInputSettingsTests : IDisposable
         Assert.Equal(new NormalizedRect(0.25, 0, 0.5, 1), _input.ActiveArea);
     }
 
+    [Fact]
+    public void A_throwing_handler_faults_the_session_and_a_newer_queued_area_is_still_raised()
+    {
+        var faults = new List<Exception>();
+        using var input = new SessionInput(new Lock(), _sink, _time, null, Key, 8, new DisplayRect(0, 0, 1920, 1080), NormalizedRect.Full, 16, null, faults.Add);
+        var seen = new List<NormalizedRect>();
+        input.ActiveAreaChanged += area =>
+        {
+            seen.Add(area);
+            if (seen.Count == 1)
+            {
+                input.SetTarget(new DisplayRect(0, 0, 1000, 1000), NormalizedRect.Full); // queued behind this call
+                throw new InvalidOperationException("handler bug");
+            }
+        };
+
+        input.ConfigureSurface(2000, 1000); // must not throw
+        Assert.Equal([CoordinateMapper.ActiveAreaFor(2000, 1000, 1920, 1080), new NormalizedRect(0.25, 0, 0.5, 1)], seen, AreaComparer);
+        Assert.Equal("handler bug", Assert.Single(faults).Message);
+        int n = InputPayload.Write(_payload, 1_000, Pens.Hover(100, 100), [], []);
+        input.ProcessInputFrame(_payload.AsSpan(0, n));
+        Assert.Empty(_sink.Pen); // faulted like a sink failure: the session takes no more input
+    }
+
     private static readonly IEqualityComparer<NormalizedRect> AreaComparer = EqualityComparer<NormalizedRect>.Create(
         (a, b) => Math.Abs(a.X - b.X) < 1e-9 && Math.Abs(a.Y - b.Y) < 1e-9 && Math.Abs(a.Width - b.Width) < 1e-9 && Math.Abs(a.Height - b.Height) < 1e-9,
         _ => 0);

@@ -310,7 +310,8 @@ internal sealed class SessionInput : IDisposable
     /// Raised outside every lock, one call at a time, latest value last: a value superseded before it was raised is
     /// skipped, and a raise that arrives while another thread is raising is handed to that thread (so the handler may
     /// run on any of the calling threads, after the triggering call returned). Handlers must only queue work (e.g. post
-    /// a 0x43 message to a send queue): no locks the callers may hold, no blocking sends, no throwing. Calls into this
+    /// a 0x43 message to a send queue): no locks the callers may hold, no blocking sends. A handler that throws faults
+    /// the session (the fault callback, as for a sink failure); areas queued meanwhile are still raised. Calls into this
     /// instance from a handler are allowed.
     /// </remarks>
     public event Action<NormalizedRect>? ActiveAreaChanged;
@@ -723,7 +724,7 @@ internal sealed class SessionInput : IDisposable
     /// <summary>
     /// Raises <see cref="ActiveAreaChanged"/> outside every lock, one handler call at a time and latest value last: a
     /// version older than one already queued is dropped; if another thread is raising, it raises this one after its
-    /// own call returns.
+    /// own call returns. A handler exception faults the session (reported once, as for the sink) and the drain goes on.
     /// </summary>
     private void RaiseActiveArea(NormalizedRect area, long version)
     {
@@ -763,14 +764,17 @@ internal sealed class SessionInput : IDisposable
             {
                 ActiveAreaChanged?.Invoke(next);
             }
-            catch
+#pragma warning disable CA1031 // A faulty handler faults the session like a faulty sink; the drain must go on.
+            catch (Exception ex)
+#pragma warning restore CA1031
             {
-                lock (_areaGate)
+                Exception? fault;
+                lock (_lock)
                 {
-                    _raisingArea = false;
+                    fault = FaultLocked(ex);
                 }
 
-                throw;
+                Report(fault); // a newer queued area is still raised by the next loop pass
             }
         }
     }
