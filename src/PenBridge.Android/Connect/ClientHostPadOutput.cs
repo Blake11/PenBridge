@@ -24,6 +24,7 @@ internal sealed class ClientHostPadOutput : IPadOutput, IDisposable
         _state = Map(host.State);
         _fingerTouches = HasFingerTouches(host);
         host.StateChanged += OnHostStateChanged;
+        host.ActiveAreaChanged += OnHostActiveAreaChanged;
     }
 
     /// <summary>Read and written on the UI thread only (the host raises state changes there).</summary>
@@ -33,6 +34,12 @@ internal sealed class ClientHostPadOutput : IPadOutput, IDisposable
     public bool FingerTouches => _fingerTouches;
 
     public event EventHandler? ConnectionStateChanged;
+
+    /// <summary>The host's <see cref="ClientHost.ActiveArea"/> (UI thread only).</summary>
+    public NormalizedRect ActiveArea => _host.ActiveArea;
+
+    /// <summary>Raised on the UI thread (the host raises area changes there).</summary>
+    public event EventHandler? ActiveAreaChanged;
 
     public bool SendState(in PenSample? pen, ReadOnlySpan<TouchSample> touches, ReadOnlySpan<PenSample> history) =>
         _host.SendState(pen, touches, history);
@@ -54,6 +61,7 @@ internal sealed class ClientHostPadOutput : IPadOutput, IDisposable
 
         _disposed = true;
         _host.StateChanged -= OnHostStateChanged;
+        _host.ActiveAreaChanged -= OnHostActiveAreaChanged;
     }
 
     /// <summary>Host phase → pad overlay phase (pairing counts as connecting; errors and idle as disconnected).</summary>
@@ -69,6 +77,14 @@ internal sealed class ClientHostPadOutput : IPadOutput, IDisposable
 
     private static bool HasFingerTouches(ClientHost host) =>
         (host.NegotiatedCapabilities & ProtocolCapabilities.FingerTouches) != 0;
+
+    private void OnHostActiveAreaChanged(object? sender, EventArgs e)
+    {
+        if (!_disposed)
+        {
+            ActiveAreaChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
 
     private void OnHostStateChanged(object? sender, ClientHostStateChangedEventArgs e)
     {

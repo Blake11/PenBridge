@@ -23,6 +23,15 @@ public interface IPadOutput
     bool FingerTouches { get; }
 
     /// <summary>
+    /// The part of the surface that maps onto the Mac's whole target (ADR-0031), in the current surface orientation;
+    /// the whole surface without one. Read on the UI thread.
+    /// </summary>
+    NormalizedRect ActiveArea { get; }
+
+    /// <summary>Raised on the UI thread after <see cref="ActiveArea"/> changed. The pad re-reads the property.</summary>
+    event EventHandler? ActiveAreaChanged;
+
+    /// <summary>
     /// Sends the complete current input state. Same contract as <c>PenBridgeClient.SendState</c>: earlier batched pen
     /// samples in <paramref name="history"/> (oldest first, at most 8). Called from the pad's sender thread only: never
     /// on the UI thread and never concurrently. Returns false when not connected (the pad keeps going).

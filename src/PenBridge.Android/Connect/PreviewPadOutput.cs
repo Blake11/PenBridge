@@ -15,6 +15,14 @@ internal sealed class PreviewPadOutput : IPadOutput
 
     public bool FingerTouches => false;
 
+    public NormalizedRect ActiveArea => NormalizedRect.Full;
+
+    public event EventHandler? ActiveAreaChanged
+    {
+        add { }
+        remove { }
+    }
+
     public event EventHandler? ConnectionStateChanged
     {
         add { }

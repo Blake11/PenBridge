@@ -10,9 +10,9 @@ using PenBridge.Core.Input;
 namespace PenBridge.Android.Connect;
 
 /// <summary>
-/// About + settings: the pad surface look (ADR-0031), finger mode and drawing pressure, default pad orientation, and
-/// the paired Macs (forget removes this
-/// phone's key for that Mac; the Mac keeps its own record until it's removed there too).
+/// About + settings: the connected Mac's settings (<see cref="MacSettingsSection"/>, ADR-0030; only with a Mac that
+/// offers them), the pad surface look (ADR-0031), finger mode and drawing pressure, default pad orientation, and the
+/// paired Macs (forget removes this phone's key for that Mac; the Mac keeps its own record until it's removed there too).
 /// </summary>
 internal sealed class SettingsScreen : Screen
 {
@@ -24,6 +24,8 @@ internal sealed class SettingsScreen : Screen
     private const int PalmOffStep = 101;
 
     private LinearLayout? _paired;
+    private MacSettingsSection? _mac;
+    private bool _listening;
     private TextView? _pressureValue;
 
     public SettingsScreen(MainActivity activity)
@@ -31,7 +33,29 @@ internal sealed class SettingsScreen : Screen
     {
     }
 
-    public override void Resume() => RebuildPaired();
+    public override void Resume()
+    {
+        RebuildPaired();
+        if (!_listening)
+        {
+            _listening = true;
+            Host.MacSettingsChanged += OnMacSettingsChanged;
+        }
+
+        _mac?.Refresh();
+    }
+
+    public override void Pause() => StopListening();
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            StopListening();
+        }
+
+        base.Dispose(disposing);
+    }
 
     protected override View CreateView()
     {
@@ -39,6 +63,10 @@ internal sealed class SettingsScreen : Screen
         SettingsStore settings = Host.Settings;
         ScrollView page = Ui.Page(ctx, out LinearLayout content);
         content.AddView(Ui.Header(ctx, "Settings", () => Activity.Screens.Pop()));
+
+        // The connected Mac's settings (ADR-0030): hidden unless the session offers them.
+        _mac = new MacSettingsSection(ctx, Host);
+        content.AddView(_mac.View, Ui.FullWidthLp(ctx, 0));
 
         // Surface look (ADR-0031, phone-only): applied when the pad is shown again.
         content.AddView(Ui.Text(ctx, "Surface", TextRole.Label));
@@ -148,6 +176,17 @@ internal sealed class SettingsScreen : Screen
                 + "\nTurns this phone into a pressure-sensitive drawing tablet for your Mac. Input is encrypted and only paired Macs receive it."));
         return page;
     }
+
+    private void StopListening()
+    {
+        if (_listening)
+        {
+            _listening = false;
+            Host.MacSettingsChanged -= OnMacSettingsChanged;
+        }
+    }
+
+    private void OnMacSettingsChanged(object? sender, EventArgs e) => _mac?.Refresh();
 
     /// <summary>A slider with a value label; <paramref name="changed"/> runs on user changes only.</summary>
     private LinearLayout SliderRow(int min, int max, int value, Func<int, string> format, Action<int> changed)

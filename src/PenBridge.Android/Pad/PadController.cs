@@ -114,7 +114,9 @@ public sealed class PadController : IDisposable
 
         _stateRunnable = new Java.Lang.Runnable(RefreshConnectionState);
         _output.ConnectionStateChanged += OnConnectionStateChanged;
+        _output.ActiveAreaChanged += OnOutputActiveAreaChanged;
         RefreshConnectionState();
+        SetActiveArea(_output.ActiveArea);
     }
 
     /// <summary>The pad's root view.</summary>
@@ -198,7 +200,10 @@ public sealed class PadController : IDisposable
         }
     }
 
-    /// <summary>Sets the active area (normalized to the current surface orientation); redraws the markers.</summary>
+    /// <summary>
+    /// Sets the active area (normalized to the current surface orientation); redraws the markers. UI thread. The pad
+    /// follows <see cref="IPadOutput.ActiveArea"/> by itself.
+    /// </summary>
     public void SetActiveArea(NormalizedRect area)
     {
         _activeArea = area;
@@ -258,6 +263,7 @@ public sealed class PadController : IDisposable
 
         Stop();
         _output.ConnectionStateChanged -= OnConnectionStateChanged;
+        _output.ActiveAreaChanged -= OnOutputActiveAreaChanged;
         lock (_postLock)
         {
             _disposed = true; // a concurrent ConnectionStateChanged can no longer post the runnable
@@ -311,6 +317,15 @@ public sealed class PadController : IDisposable
             {
                 _handler.Post(_stateRunnable);
             }
+        }
+    }
+
+    /// <summary>UI thread (the output's contract). A rotation's reset to the whole surface comes through here too.</summary>
+    private void OnOutputActiveAreaChanged(object? sender, EventArgs e)
+    {
+        if (!_disposed)
+        {
+            SetActiveArea(_output.ActiveArea);
         }
     }
 
