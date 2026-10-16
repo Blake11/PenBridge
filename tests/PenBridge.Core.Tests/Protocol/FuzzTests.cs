@@ -46,6 +46,10 @@ public class FuzzTests
             _ = BusyMessage.TryRead(input, out _);
             _ = ErrorMessage.TryRead(input, out _);
             _ = ByeMessage.TryRead(input, out _);
+            _ = SettingsSnapshotMessage.TryRead(input, out _);
+            _ = SettingsUpdateMessage.TryRead(input, out _);
+            _ = DisplayListMessage.TryRead(input, out _);
+            _ = ActiveAreaMessage.TryRead(input, out _);
             _ = InputDatagram.TrySplit(input, out _, out _, out _, out _);
         }
     }
@@ -75,6 +79,51 @@ public class FuzzTests
         }
 
         Assert.True(accepted > 0, "fuzzer never produced a valid payload; bias is wrong");
+    }
+
+    [Fact]
+    public void Settings_parsers_never_throw_on_structured_garbage()
+    {
+        var random = new Random(0x5E77);
+        var buffer = new byte[600];
+        int accepted = 0;
+        for (int i = 0; i < Iterations; i++)
+        {
+            // count, then entries with plausible types and lengths and random values.
+            int count = random.Next(0, 8);
+            buffer[0] = (byte)count;
+            int at = 1;
+            for (int e = 0; e < count && at + 5 < buffer.Length - 40; e++)
+            {
+                int type = random.Next(0, 7);
+                int length = random.Next(4) == 0 ? random.Next(0, 30) : type switch { 1 => 1, 2 or 3 => 4, 5 => 16, _ => random.Next(0, 30) };
+                buffer[at] = 0;
+                buffer[at + 1] = (byte)random.Next(0, 30);
+                buffer[at + 2] = (byte)type;
+                buffer[at + 3] = 0;
+                buffer[at + 4] = (byte)length;
+                random.NextBytes(buffer.AsSpan(at + 5, length));
+                at += 5 + length;
+            }
+
+            int cut = random.Next(3) == 0 ? random.Next(0, at + 1) : at;
+            ReadOnlySpan<byte> input = buffer.AsSpan(0, cut);
+            if (SettingsSnapshotMessage.TryRead(input, out SettingsSnapshotMessage snapshot))
+            {
+                accepted++;
+                Assert.InRange(snapshot.Entries.Count, 0, count);
+                foreach (SettingEntry entry in snapshot.Entries)
+                {
+                    Assert.InRange((int)entry.Type, 1, 5);
+                    Assert.True(entry.Size >= SettingEntry.HeaderSize);
+                }
+            }
+
+            _ = SettingsUpdateMessage.TryRead(input, out _);
+            _ = DisplayListMessage.TryRead(input, out _);
+        }
+
+        Assert.True(accepted > 0, "fuzzer never produced a valid snapshot; bias is wrong");
     }
 
     [Fact]

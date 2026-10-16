@@ -4,7 +4,7 @@ namespace PenBridge.Core.Protocol;
 
 /// <summary>
 /// Protocol version as <c>major.minor</c>. On the wire it is two bytes (<c>u8 major ‖ u8 minor</c>);
-/// in text (Bonjour TXT <c>v=</c>, QR <c>v=</c>) it is <c>"major.minor"</c>, e.g. <c>"1.1"</c>.
+/// in text (Bonjour TXT <c>v=</c>, QR <c>v=</c>) it is <c>"major.minor"</c>, e.g. <c>"1.2"</c>.
 /// </summary>
 public readonly record struct ProtocolVersion(byte Major, byte Minor)
 {
@@ -12,7 +12,7 @@ public readonly record struct ProtocolVersion(byte Major, byte Minor)
     public const int Size = 2;
 
     /// <summary>Version spoken by this build.</summary>
-    public static ProtocolVersion Current { get; } = new(1, 1);
+    public static ProtocolVersion Current { get; } = new(1, 2);
 
     /// <summary>Peers are compatible when the majors match; minors only gate optional features.</summary>
     public bool IsCompatibleWith(ProtocolVersion other) => Major == other.Major;

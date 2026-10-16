@@ -54,6 +54,18 @@ public enum ControlMessageType : byte
     /// <summary>Both: heartbeat reply.</summary>
     Pong = 0x31,
 
+    /// <summary>S (1.2, RemoteSettings): every Mac setting.</summary>
+    SettingsSnapshot = 0x40,
+
+    /// <summary>C (1.2, RemoteSettings): Mac settings to change.</summary>
+    SettingsUpdate = 0x41,
+
+    /// <summary>S (1.2, RemoteSettings): the displays the user can target.</summary>
+    DisplayList = 0x42,
+
+    /// <summary>S (1.2, ActiveArea): the phone surface's active area.</summary>
+    ActiveArea = 0x43,
+
     /// <summary>Both: orderly close.</summary>
     Bye = 0x70,
 
@@ -76,7 +88,7 @@ public static class ControlMessageTypes
     /// <summary>True when <paramref name="type"/> is a message this build understands.</summary>
     public static bool IsKnown(byte type) => type switch
     {
-        0x01 or 0x02 or (>= 0x10 and <= 0x16) or (>= 0x20 and <= 0x24) or 0x30 or 0x31 or 0x70 or 0x7E or 0x7F => true,
+        0x01 or 0x02 or (>= 0x10 and <= 0x16) or (>= 0x20 and <= 0x24) or 0x30 or 0x31 or (>= 0x40 and <= 0x43) or 0x70 or 0x7E or 0x7F => true,
         _ => false,
     };
 }
