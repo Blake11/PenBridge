@@ -18,7 +18,7 @@ Details: `docs/releasing.md`, `.github/workflows/release-please.yml`, `.github/w
 ## Flow
 1. PRs squash-merge into `main` with Conventional titles. From 1.0: `feat:` → minor, `fix:`/`perf:` → patch, `!` → major. `docs/ci/chore/test/refactor/build/style` don't bump.
 2. `release-please.yml` (on push to main) maintains a release PR (version bump + CHANGELOG). The user holds it until the phase/fix is verified.
-3. Without `RELEASE_PLEASE_TOKEN` (#23), the bot's release PR starts no CI. Trigger it with a user-token event: `gh pr close <N> && gh pr reopen <N>` (worked for 1.0.0), or set up the #23 PAT. Required checks must pass before merging.
+3. `RELEASE_PLEASE_TOKEN` is set (2026-10-16: a fine-grained PAT, this repo only, Contents and Pull requests read/write, **expires 2027-10-15**: regenerate before then). Release PRs updated by it should start CI by themselves. **Not yet confirmed:** on the first release PR updated after that date, check that `gh pr checks <N>` shows runs. If it doesn't, the secret is empty or wrong, so fall back to `gh pr close <N> && gh pr reopen <N>` and ask the user to set the secret again (paste through a real terminal prompt or `pbpaste |`, never on the command line). Once confirmed, drop this note. Required checks must pass before merging.
 4. Merging the release PR (user) creates tag `vX.Y.Z` + GitHub Release and calls `build-release.yml` (`dry_run: false`).
 5. `build-release.yml` builds the macOS `.zip` + `.dmg` (ad-hoc) and the release-signed APK (checked with `apksigner`: debug-key APKs fail), writes `SHA256SUMS`, uploads to the release.
 
@@ -40,7 +40,7 @@ lipo -archs PenBridge.app/Contents/MacOS/PenBridge   # x86_64 arm64 (universal)
 - Locally the same steps pass: `dotnet publish` (Mac, `-p:EnableCodeSigning=false`) → `scripts/mac-sign.sh --no-entitlements <app> -` → `ditto`/`hdiutil`; Android `dotnet publish -o <dir> -p:AndroidKeyStore=true …` emits `<id>.apk` (unsigned) and `<id>-Signed.apk`. `apksigner` needs a JDK on `PATH`.
 
 ## Secrets / vars (GitHub repo settings — never commit, never echo)
-- `RELEASE_PLEASE_TOKEN` (optional PAT so release PRs trigger CI; falls back to `GITHUB_TOKEN`).
+- `RELEASE_PLEASE_TOKEN` (fine-grained PAT so release PRs trigger CI; falls back to `GITHUB_TOKEN`; expires 2027-10-15).
 - Android: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. Missing keystore → unsigned/debug-signed APK path. Losing the keystore means users must uninstall to update — keep a backup.
 - macOS (disabled until a paid Apple account): `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`, toggled by repo variable `MACOS_NOTARIZE=true`.
 
