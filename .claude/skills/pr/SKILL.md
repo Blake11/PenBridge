@@ -64,11 +64,11 @@ A `Detect changes` job (`dorny/paths-filter@v4`) gates the jobs with job-level `
 
 | Changed paths | Jobs |
 |---|---|
-| `.github/workflows/**`, `.github/actions/**`, `scripts/**`, `.githooks/**` | all |
-| `src/PenBridge.Core/**`, `tests/**`, `tools/**`, `build/**`, `**/Directory.Build.*`, `**/Directory.Packages.props`, `global.json`, `PenBridge.slnx`, `.editorconfig` | all |
+| `.github/workflows/**`, `.github/actions/**`, `scripts/**`, `.githooks/**` | all except iOS (iOS: workflows/actions and `scripts/check-bundle.sh` only) |
+| `src/PenBridge.Core/**`, `tests/**`, `tools/**`, `build/**`, `**/Directory.Build.*`, `**/Directory.Packages.props`, `global.json`, `PenBridge.slnx`, `.editorconfig` | all except iOS (iOS: `global.json` only) |
 | `src/PenBridge.Mac/**` | macOS build |
 | `src/PenBridge.Android/**` | Android build |
-| `src/PenBridge.iOS/**`, `.github/workflows/**`, `.github/actions/**`, `global.json`, `scripts/check-bundle.sh` | iOS build (placeholder), only these (not Core/tests) |
+| `src/PenBridge.iOS/**` | iOS build (placeholder) |
 | docs, `.claude/**`, `LICENSE`, issue/PR templates | none (only Conventional Commit title) |
 
 Keep required check names (`name:`) unchanged when editing jobs, and add new projects or build-affecting root files to the filters.
