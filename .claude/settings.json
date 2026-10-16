@@ -72,7 +72,10 @@
       "Bash(lsappinfo info *)",
       "mcp__plugin_serena_serena__search_for_pattern",
       "mcp__plugin_serena_serena__find_symbol",
-      "mcp__rider__get_file_problems"
+      "mcp__rider__get_file_problems",
+      "Bash(scripts/device-preflight.sh *)",
+      "Bash(./scripts/device-preflight.sh *)",
+      "Bash(footprint *)"
     ],
     "ask": [
       "Bash(tccutil reset *)",
@@ -106,6 +109,35 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/warn-cd-worktree.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "sandbox": {
+    "excludedCommands": [
+      "scripts/mac-run.sh",
+      "scripts/mac-run.sh *",
+      "./scripts/mac-run.sh",
+      "./scripts/mac-run.sh *",
+      "scripts/mac-sign.sh *",
+      "./scripts/mac-sign.sh *",
+      "scripts/device-test-setup.sh",
+      "scripts/device-test-setup.sh *",
+      "./scripts/device-test-setup.sh *",
+      "scripts/check-bundle.sh --mac *",
+      "./scripts/check-bundle.sh --mac *",
+      "dotnet build src/PenBridge.Mac*",
+      "dotnet publish src/PenBridge.Mac*"
     ]
   }
 }

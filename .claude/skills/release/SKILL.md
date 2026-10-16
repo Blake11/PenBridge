@@ -30,6 +30,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 $ANDROID_HOME/build-tools/36.0.0/apksigne
 codesign -dv PenBridge.app           # from the .zip/.dmg: ad-hoc, identifier com.blake11.penbridge
 lipo -archs PenBridge.app/Contents/MacOS/PenBridge   # x86_64 arm64 (universal)
 ```
+- **Idle budget figures** (release checklist): `scripts/latency-report.sh --disable`, restart the Mac app, wait for "Server listening" + 30 s, then record idle CPU (`ps -o %cpu= -p <pid>`, expect 0.0), footprint (`footprint <pid>`, Activity Monitor's Memory) and RSS — always with the capture off (skill `mac-build-run`, "How to measure memory").
 - A locally built Release APK is signed with the same release keystore, so the published APK installs over it in place (`adb install -r`) and keeps the pairing.
 
 ## Dry run and rebuilds (ask the user before running workflows)
@@ -44,12 +45,13 @@ lipo -archs PenBridge.app/Contents/MacOS/PenBridge   # x86_64 arm64 (universal)
 - macOS (disabled until a paid Apple account): `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`, toggled by repo variable `MACOS_NOTARIZE=true`.
 
 ## CI path filters (`ci.yml`, issue #52)
-A `Detect changes` job (`dorny/paths-filter@v3`) gates the jobs with job-level `if:`. Never use workflow-level `paths:`: a required check that never reports blocks the PR, while a job skipped by `if:` reports "skipped" (passing). Pushes to `main`, `workflow_dispatch`, and a failed `Detect changes` run everything. Full table: CONTRIBUTING.md "CI jobs".
+A `Detect changes` job (`dorny/paths-filter@v4`) gates the jobs with job-level `if:`. Never use workflow-level `paths:`: a required check that never reports blocks the PR, while a job skipped by `if:` reports "skipped" (passing). PRs and pushes to `main` use the same filters; the nightly `schedule` (iOS only on Sundays), `workflow_dispatch` and a failed `Detect changes` run everything. Runs on `main` are never cancelled; PR runs cancel older ones. Full table: CONTRIBUTING.md "CI jobs".
 
 | Changed paths | Jobs |
 |---|---|
-| `.github/workflows/**`, `.github/actions/**`, `scripts/**`, `.githooks/**` | all |
-| `src/PenBridge.Core/**`, `tests/**`, `tools/**`, `build/**`, `**/Directory.Build.*`, `**/Directory.Packages.props`, `global.json`, `PenBridge.slnx`, `.editorconfig` | all |
+| `.github/workflows/**`, `.github/actions/**`, `scripts/check-bundle.sh` | all |
+| other `scripts/**`, `.githooks/**` | all except iOS |
+| `src/PenBridge.Core/**`, `tests/**`, `tools/**`, `build/**`, `**/Directory.Build.*`, `**/Directory.Packages.props`, `global.json`, `PenBridge.slnx`, `.editorconfig` | all except iOS (iOS: `global.json` only) |
 | `src/PenBridge.Mac/**` | macOS build |
 | `src/PenBridge.Android/**` | Android build |
 | `src/PenBridge.iOS/**` | iOS build (placeholder) |

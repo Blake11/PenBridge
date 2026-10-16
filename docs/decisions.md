@@ -1,6 +1,42 @@
 # Architecture Decision Records
 
-Append new ADRs at the bottom. Never rewrite an accepted ADR; supersede it with a new one.
+Add new ADRs at the bottom and a line to the index below (skill `adr`). Until the release that contains an ADR ships, it may be amended in place with a `**Amended YYYY-MM-DD (#n):** …` line under its status. Once released it is append-only: never rewrite it, supersede it with a new ADR.
+
+Cite ADRs by number (and section) rather than reading this whole file.
+
+## Index
+
+| ADR | Title | Status |
+|---|---|---|
+| 0001 | .NET 10 LTS, native platform heads + shared Core | accepted |
+| 0002 | Phone shows a blank pad; mirroring later | accepted |
+| 0003 | Mac input via CGEvent tablet events behind IInputInjector | accepted |
+| 0004 | Bonjour discovery, PIN/QR pairing, TLS control + encrypted UDP input | accepted; TLS version refined by 0013 |
+| 0005 | Absolute mapping to one configurable display | accepted |
+| 0006 | Input feature scope for MVP | accepted; finger fallback amended by 0022 |
+| 0007 | Distribution and repo conventions | accepted; versioning refined by 0021 |
+| 0008 | Manual host:port + PIN connection as a user-facing fallback | accepted |
+| 0009 | PIN/QR pairing via J-PAKE (BouncyCastle), bound to the Mac's TLS certificate | accepted |
+| 0010 | Many paired devices, one active session | accepted |
+| 0011 | Fixed default port 47820 with fallback | accepted |
+| 0012 | Phase 1 Core includes the cross-platform network engine | accepted |
+| 0013 | Control channel accepts TLS 1.2+ | accepted; supersedes part of 0004 |
+| 0014 | Issue-driven planning and bug tracking | accepted |
+| 0015 | Windows host app as a later phase | accepted (scope only) |
+| 0016 | Mac server UX defaults for Phase 2 | accepted; amended by 0018, 0022, 0023 |
+| 0017 | Debug builds store secrets in a local file, not the Keychain | accepted |
+| 0018 | NativeAOT Mac Release with a guarded SDK trimming substitution | accepted |
+| 0019 | Android client UX defaults for Phase 3 | accepted |
+| 0020 | No third-party telemetry: strip ML Kit datatransport | accepted |
+| 0021 | Release at the end of every phase; 1.0.0 = Phase 3 | accepted |
+| 0022 | Finger move/tap-click and side-button right-drag | accepted; one-finger cursor superseded by 0026 (fallback) |
+| 0023 | Trackpad-parity gestures on the Mac | accepted; refined by 0024, 0029 |
+| 0024 | A suppressed finger stays on the wire as "not in contact" until it lifts | accepted |
+| 0025 | Recover a lost finger tap by resending its frame (protocol 1.1, `SampleDedupe`) | accepted |
+| 0026 | One finger moves the cursor relatively, like a trackpad (`FingerTouches`, protocol 1.1) | accepted; refined by 0027, 0028 |
+| 0027 | One-finger pointer slop and settle time | accepted; refined by 0028 |
+| 0028 | Separate tap windows for one and two fingers | accepted; refined by 0029 |
+| 0029 | The two-finger tap follows the macOS Smart Zoom setting | accepted |
 
 ## ADR-0001 — .NET 10 LTS, native platform heads + shared Core
 **Status:** accepted (2026-10-13)

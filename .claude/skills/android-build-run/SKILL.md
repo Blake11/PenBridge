@@ -38,6 +38,10 @@ scripts/android-device.sh disconnect [ip:port]
 Pairing persists; the connect port changes after a reboot or a Wireless debugging/Wi-Fi toggle → `connect --auto` finds it (`_adb-tls-connect._tcp`; it never uses `_adb-tls-pairing._tcp`, whose port is only valid while the pairing dialog is open). With no service found or several phones advertising, it fails and lists them; pass `<ip:port>` then. Pairing needs the user to read the code off the phone.
 - Turning the phone's Wi-Fi off also turns Wireless debugging off; afterwards the user re-enables it, then `connect --auto`.
 
+## Device test rounds
+- Before any S23 step: `scripts/device-preflight.sh` (adb device connected, plus the Mac side: screen unlocked, Accessibility, server listening, gh scopes). Non-zero exit → hand its hint to the user; don't work around it.
+- Interactive rounds: `scripts/device-test-setup.sh` runs the preflight, builds and launches the Mac Release app, installs the Android build, checks the session reconnects (pairing kept), enables the latency capture and starts filtered captures (logcat by app pid/tag, Mac `log stream` by subsystem) under `.claude/progress/<feature>/<round>/`; it prints the PIDs and the stop command. It replaces a device-prep agent.
+
 ## S23 adb gotchas
 - `pm list packages` needs `--user 0` (Secure Folder blocks the default user query).
 - `adb shell dumpsys servicediscovery` shows NSD discovery results even while the screen is locked.

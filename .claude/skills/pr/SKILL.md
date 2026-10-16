@@ -23,7 +23,7 @@ scripts/test.sh && dotnet build PenBridge.slnx
 git log --oneline origin/main..HEAD
 git diff origin/main...HEAD --stat
 ```
-Run the `reviewer` agent before every PR.
+Review before every PR: `reviewer-quick` (sonnet) for diffs under ~50 lines that touch no protocol, security, pairing/crypto or input injection; the full `reviewer` (opus) otherwise or when the quick one escalates.
 
 **Stale remote branch:** check `git ls-remote --heads origin <branch>` first. If one is left from an earlier attempt, the push is rejected while `gh pr create` still opens a PR against the old remote commit. Force-push is denied, so reconcile without rewriting:
 ```bash
@@ -31,6 +31,14 @@ git fetch origin <branch>
 git merge -s ours origin/<branch> -m "chore: reconcile with stale remote branch"   # keeps our tree
 git diff <reviewed-sha> HEAD          # must be empty: the pushed tree is the reviewed one
 ```
+
+## Ship with `scripts/ship-pr.sh` (worktree workstreams)
+```bash
+scripts/ship-pr.sh <worktree> --title "<type>(scope): subject" --body-file <f> [--merge] [--no-test] [--dry-run]   # after the user approves pushing
+# The body must contain Closes #N or Refs #N. It never rebases a branch that's already pushed (that would need a force-push).
+# With --merge it copies ws-*.md, removes the worktree, then runs gh pr merge (gh can't delete a branch checked out in a worktree).
+```
+Rebases onto origin/main, refuses AI-attribution lines, runs `scripts/test.sh`, pushes (refusing a stale remote branch, see above), `gh pr create`, waits for every check, squash-merges only with `--merge` (only when the user approved merging), copies `.claude/progress/**/ws-*.md` into the main tree and removes the worktree and its local branches. The manual steps below are the fallback.
 
 ## Create
 ```bash
@@ -54,12 +62,13 @@ Closes #N
 Editing an existing PR: `gh pr view <n> --json body --jq .body > /tmp/body.md`, append the line, `gh pr edit <n> --body-file /tmp/body.md`.
 
 ## CI path filters (`ci.yml`, issue #52)
-A `Detect changes` job (`dorny/paths-filter@v3`) gates the jobs with job-level `if:`. Never use workflow-level `paths:`: a required check that never reports blocks the PR, while a job skipped by `if:` reports "skipped" (passing). Pushes to `main`, `workflow_dispatch`, and a failed `Detect changes` run everything. Full table: CONTRIBUTING.md "CI jobs".
+A `Detect changes` job (`dorny/paths-filter@v4`) gates the jobs with job-level `if:`. Never use workflow-level `paths:`: a required check that never reports blocks the PR, while a job skipped by `if:` reports "skipped" (passing). PRs and pushes to `main` use the same filters; the nightly `schedule` (iOS only on Sundays), `workflow_dispatch` and a failed `Detect changes` run everything. Runs on `main` are never cancelled; PR runs cancel older ones. Full table: CONTRIBUTING.md "CI jobs".
 
 | Changed paths | Jobs |
 |---|---|
-| `.github/workflows/**`, `.github/actions/**`, `scripts/**`, `.githooks/**` | all |
-| `src/PenBridge.Core/**`, `tests/**`, `tools/**`, `build/**`, `**/Directory.Build.*`, `**/Directory.Packages.props`, `global.json`, `PenBridge.slnx`, `.editorconfig` | all |
+| `.github/workflows/**`, `.github/actions/**`, `scripts/check-bundle.sh` | all |
+| other `scripts/**`, `.githooks/**` | all except iOS |
+| `src/PenBridge.Core/**`, `tests/**`, `tools/**`, `build/**`, `**/Directory.Build.*`, `**/Directory.Packages.props`, `global.json`, `PenBridge.slnx`, `.editorconfig` | all except iOS (iOS: `global.json` only) |
 | `src/PenBridge.Mac/**` | macOS build |
 | `src/PenBridge.Android/**` | Android build |
 | `src/PenBridge.iOS/**` | iOS build (placeholder) |

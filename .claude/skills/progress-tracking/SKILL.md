@@ -7,7 +7,7 @@ description: Template and update rules for .claude/progress/<feature>/ — the a
 
 Every feature keeps a folder `.claude/progress/<feature>/` in the **main worktree** (untracked, gitignored — never commit it).
 
-**Agents in an isolated worktree can't write the main tree** (writes outside their worktree are denied). They write `ws-<id>.md` in their own worktree's `.claude/progress/<feature>/` and put its content in their report; the architect copies it to the main tree if needed. Every delegation prompt gives the exact `ws` path.
+Agents working in a worktree write `ws-<id>.md` in that worktree's `.claude/progress/<feature>/` and put its content in their report; the architect copies it to the main tree before removing the worktree (`scripts/ship-pr.sh` does it). Every delegation prompt gives the exact `ws` path.
 
 GitHub issues are the plan of record (ADR-0014, skill `issues`); these files are local session state for resuming, and link the issues.
 
@@ -21,6 +21,8 @@ GitHub issues are the plan of record (ADR-0014, skill `issues`); these files are
 **Agents never edit `progress.md`.** Concurrent agents editing one shared file lost each other's sections several times; separate files remove the race. The architect reads the `ws-*.md` files and copies status into the table.
 
 A SessionStart hook lists existing progress files. On resume, read `progress.md` and the `ws-*.md` files first.
+
+**Handoffs.** Each phase starts in a fresh architect session: `progress.md` + the epic issue are the whole handoff, so keep "Next steps" and "Open questions" resumable without the old conversation. Each fix round starts a fresh agent: the previous `ws-<id>.md` is its brief (branch head, uncommitted files, done, to fix) — keep it accurate.
 
 ## `progress.md` template
 
