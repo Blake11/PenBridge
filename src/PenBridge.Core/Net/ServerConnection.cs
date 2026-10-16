@@ -482,6 +482,7 @@ internal sealed class ServerConnection
                 case ControlMessageType.SurfaceInfo:
                     SurfaceInfoMessage surface = frame.Read<SurfaceInfoMessage>();
                     input.ConfigureSurface(surface.WidthPx, surface.HeightPx, surface.Capabilities, surface.XDpi, surface.YDpi);
+                    _server.SetPhoneSurface(this, surface.WidthPx, surface.HeightPx);
                     if ((_negotiated & ProtocolCapabilities.ActiveArea) != 0)
                     {
                         // The phone resets its outline on every surface change and waits for the area, even an unchanged one.

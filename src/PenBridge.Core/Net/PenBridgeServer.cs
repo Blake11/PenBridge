@@ -54,6 +54,7 @@ public sealed class PenBridgeServer : IAsyncDisposable
     private SettingsSnapshotMessage? _settingsSnapshot; // guarded by _gate
     private DisplayListMessage? _displayList; // guarded by _gate
     private readonly Lock _applyLock = new(); // orders target/settings applications to the input; see ApplyToInput
+    private PhoneSurfaceSize? _phoneSurface; // guarded by _gate
     private MappingTarget _target; // guarded by _gate
     private InputSettings _inputSettings; // guarded by _gate
     private SessionInput? _ppsInput;
@@ -117,6 +118,28 @@ public sealed class PenBridgeServer : IAsyncDisposable
     /// excess is dropped (and logged), so a reply isn't guaranteed for every update the phone sent.
     /// </summary>
     public event EventHandler<SettingsUpdateRequestedEventArgs>? SettingsUpdateRequested;
+
+    /// <summary>
+    /// Raised after <see cref="PhoneSurface"/> changed (a SurfaceInfo arrived, or the session ended or was taken over).
+    /// Raised outside the server's locks from whichever thread caused it; handlers must be quick and only queue (read
+    /// <see cref="PhoneSurface"/> for the current value, which may be newer than the one that triggered the call).
+    /// </summary>
+    public event EventHandler? PhoneSurfaceChanged;
+
+    /// <summary>
+    /// The active session's phone surface in pixels (from its latest SurfaceInfo), or null before the first
+    /// SurfaceInfo and when no session is active. Thread-safe.
+    /// </summary>
+    public PhoneSurfaceSize? PhoneSurface
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _phoneSurface;
+            }
+        }
+    }
 
     /// <summary>The bound TCP/UDP port (0 before <see cref="Start"/>).</summary>
     public int Port { get; private set; }
@@ -529,6 +552,8 @@ public sealed class PenBridgeServer : IAsyncDisposable
     internal ActivationResult TryActivate(ServerConnection connection, out ServerConnection? previous)
     {
         Span<byte> key = stackalloc byte[KeySchedule.KeyLength];
+        bool surfaceCleared;
+        ActivationResult result;
         lock (_gate)
         {
             previous = null;
@@ -548,7 +573,51 @@ public sealed class PenBridgeServer : IAsyncDisposable
             previous = current;
             _active = connection;
             Volatile.Write(ref _activeInput, null);
-            return ActivationResult.Activated;
+            surfaceCleared = _phoneSurface is not null;
+            _phoneSurface = null;
+            result = ActivationResult.Activated;
+        }
+
+        if (surfaceCleared)
+        {
+            Raise(PhoneSurfaceChanged);
+        }
+
+        return result;
+    }
+
+    /// <summary>Records the surface a SurfaceInfo declared, if <paramref name="connection"/> is still the active one.</summary>
+    internal void SetPhoneSurface(ServerConnection connection, int widthPx, int heightPx)
+    {
+        var size = new PhoneSurfaceSize(widthPx, heightPx);
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_active, connection) || _phoneSurface == size)
+            {
+                return;
+            }
+
+            _phoneSurface = size;
+        }
+
+        Raise(PhoneSurfaceChanged);
+    }
+
+    private void Raise(EventHandler? handler)
+    {
+        if (handler is null)
+        {
+            return;
+        }
+
+        try
+        {
+            handler(this, EventArgs.Empty);
+        }
+#pragma warning disable CA1031 // A faulty UI handler must not take down the network engine.
+        catch (Exception)
+#pragma warning restore CA1031
+        {
         }
     }
 
@@ -623,6 +692,7 @@ public sealed class PenBridgeServer : IAsyncDisposable
             }
         }
 
+        bool surfaceCleared = false;
         lock (_gate)
         {
             _connections.Remove(connection);
@@ -630,7 +700,14 @@ public sealed class PenBridgeServer : IAsyncDisposable
             {
                 _active = null;
                 Volatile.Write(ref _activeInput, null);
+                surfaceCleared = _phoneSurface is not null;
+                _phoneSurface = null;
             }
+        }
+
+        if (surfaceCleared)
+        {
+            Raise(PhoneSurfaceChanged);
         }
     }
 
