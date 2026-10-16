@@ -94,11 +94,14 @@ jobs:
             android:
               - *core
               - 'src/PenBridge.Android/**'
-            # The iOS placeholder is never released: only its own sources and the CI definition
-            # run it on a PR or push. Core-side breakage still surfaces in the Sunday full run.
+            # The iOS placeholder is never released: only its own sources, the CI definition, the
+            # SDK pin and the bundle check it runs trigger it on a PR or push. Other Core-side
+            # breakage still surfaces in the Sunday full run.
             ios:
               - '.github/workflows/**'
               - '.github/actions/**'
+              - 'global.json'
+              - 'scripts/check-bundle.sh'
               - 'src/PenBridge.iOS/**'
 
   core-tests:

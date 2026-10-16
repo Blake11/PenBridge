@@ -79,15 +79,16 @@ All five are required checks. Which paths trigger which jobs:
 | Changed paths | Core tests | macOS | Android | iOS |
 |---|---|---|---|---|
 | `.github/workflows/**`, `.github/actions/**` | yes | yes | yes | yes |
-| `scripts/**`, `.githooks/**` | yes | yes | yes | |
-| core: `src/PenBridge.Core/**`, `tests/**`, `tools/**`, `build/**`, `**/Directory.Build.*`, `**/Directory.Packages.props`, `global.json`, `PenBridge.slnx`, `.editorconfig` | yes | yes | yes | |
+| `global.json`, `scripts/check-bundle.sh` | yes | yes | yes | yes |
+| other `scripts/**`, `.githooks/**` | yes | yes | yes | |
+| other core: `src/PenBridge.Core/**`, `tests/**`, `tools/**`, `build/**`, `**/Directory.Build.*`, `**/Directory.Packages.props`, `PenBridge.slnx`, `.editorconfig` | yes | yes | yes | |
 | `src/PenBridge.Mac/**` | | yes | | |
 | `assets/icon/**`, generated Android icons (`src/PenBridge.Android/Resources/drawable/ic_launcher_*.xml`, `.../mipmap-anydpi-v26/ic_launcher*.xml`) | | yes | | |
 | `src/PenBridge.Android/**` | | | yes | |
 | `src/PenBridge.iOS/**` | | | | yes |
 | anything else (`docs/**`, root `*.md`, `.claude/**`, `LICENSE`, issue/PR templates, `dependabot.yml`) | | | | |
 
-Core changes skip iOS on purpose: the Sunday run catches anything that breaks the placeholder. A release PR changes `Directory.Build.props`, so Core tests, macOS and Android run on it, and iOS reports "skipped".
+Most Core changes skip iOS on purpose: the Sunday run catches anything that breaks the placeholder. SDK pin (`global.json`) and bundle check changes still build it. A release PR changes `Directory.Build.props`, so Core tests, macOS and Android run on it, and iOS reports "skipped".
 
 Markdown files under a matched path (for example `src/PenBridge.Mac/README.md`) still trigger that path's jobs. When you add a project or a build-affecting root file, add it to the filters in `ci.yml` and to this table.
 
