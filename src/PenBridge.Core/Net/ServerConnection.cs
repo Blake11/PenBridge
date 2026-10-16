@@ -22,6 +22,20 @@ internal sealed class ServerConnection
 {
     private static readonly TimerCallback PingCallback = static state => _ = ((ServerConnection)state!).PingAsync();
 
+    /// <summary>SettingsUpdate messages a session may send per second, sustained (ADR-0030; a slider sends far fewer).</summary>
+    internal const int SettingsUpdatesPerSecond = 20;
+
+    /// <summary>SettingsUpdate messages a session may send in a burst.</summary>
+    internal const int SettingsUpdateBurst = 20;
+
+    /// <summary>Dropped SettingsUpdate messages are logged at most this often.</summary>
+    private static readonly TimeSpan ThrottleLogInterval = TimeSpan.FromSeconds(10);
+
+    // Push bits, drained in this order: the display list before the snapshot that may name one of its displays.
+    internal const int PushDisplays = 1;
+    internal const int PushSnapshot = 2;
+    internal const int PushActiveArea = 4;
+
     private readonly PenBridgeServer _server;
     private readonly PenBridgeServerOptions _options;
     private readonly ILogger _log;
@@ -31,11 +45,13 @@ internal sealed class ServerConnection
     private readonly IPAddress _address;
     private readonly long _epoch;
     private readonly TaskCompletionSource _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly SemaphoreSlim _settingsWrite = new(1, 1); // orders settings and active-area writes, latest value wins
+    private readonly CoalescingWriter _pushes; // server → phone settings, display list and active area; latest state wins
+    private readonly TokenBucket _settingsUpdates; // read loop only
     private readonly Lock _areaLock = new();
     private NormalizedRect? _activeArea; // latest requested; guarded by _areaLock
-    private NormalizedRect? _activeAreaSent; // guarded by _settingsWrite
-    private volatile bool _sessionReady; // SessionStart written: session-only messages may follow
+    private NormalizedRect? _activeAreaSent; // only touched by the push writer
+    private long _settingsUpdatesDropped;
+    private long _throttleLoggedAt = -1; // read loop only: when dropped updates were last logged
     private byte[] _deviceIdBytes = [];
     private ProtocolCapabilities _negotiated; // advertised by both sides (set from Hello)
     private ITimer? _handshake;
@@ -59,6 +75,8 @@ internal sealed class ServerConnection
         socket.SendTimeout = (int)ControlChannel.SyncSendTimeout.TotalMilliseconds;
         _channel = new ControlChannel(socket, _time);
         _epoch = _time.GetTimestamp();
+        _pushes = new CoalescingWriter(DrainPushesAsync);
+        _settingsUpdates = new TokenBucket(_time, SettingsUpdatesPerSecond, SettingsUpdateBurst);
 
         // Armed at accept: the whole pre-session phase is bounded from the first byte.
         _handshake = _channel.StartDeadline(_options.HandshakeTimeout);
@@ -69,6 +87,12 @@ internal sealed class ServerConnection
     public string DeviceName { get; private set; } = string.Empty;
 
     public SessionInput? Input { get; private set; }
+
+    /// <summary>SettingsUpdate messages dropped by the per-session rate cap.</summary>
+    internal long SettingsUpdatesDropped => Interlocked.Read(ref _settingsUpdatesDropped);
+
+    /// <summary>The server → phone push writer (for tests).</summary>
+    internal CoalescingWriter Pushes => _pushes;
 
     public TimeSpan? RoundTripTime
     {
@@ -94,6 +118,7 @@ internal sealed class ServerConnection
         {
             // Release the input first so the next session starts from a clean state.
             Input?.Shutdown();
+            _pushes.Stop();
 
             // No more pings: a write after the half-close would fail and abort, cutting the linger short.
             Volatile.Read(ref _pingTimer)?.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
@@ -178,6 +203,7 @@ internal sealed class ServerConnection
             }
 
             Input?.Shutdown();
+            _pushes.Stop();
             if (!_authenticated)
             {
                 _server.ReleasePending(_address);
@@ -410,10 +436,10 @@ internal sealed class ServerConnection
                 Volatile.Write(ref _pingTimer, _time.CreateTimer(PingCallback, this, _options.PingInterval, _options.PingInterval));
             }
 
-            // From here on the server's sends reach this session; the pushes below send whatever was set before.
-            _sessionReady = true;
-            await PushSettingsAsync(snapshot: true, displays: true).ConfigureAwait(false);
-            await PushActiveAreaAsync().ConfigureAwait(false);
+            // From here on the server's pushes reach this session: everything negotiated goes out once with the latest
+            // state (display list, snapshot, active area), then whatever changes. Not awaited: the read loop starts now.
+            _ = _pushes.Enable();
+            _ = RequestPush(PushDisplays | PushSnapshot | PushActiveArea);
 
             return true;
         }
@@ -464,13 +490,7 @@ internal sealed class ServerConnection
                     UpdateRtt(frame.Read<PongMessage>().TimestampUs, input.SessionId);
                     break;
                 case ControlMessageType.SettingsUpdate when (_negotiated & ProtocolCapabilities.RemoteSettings) != 0:
-                    SettingsUpdateMessage update = frame.Read<SettingsUpdateMessage>();
-                    NetLog.SettingsUpdateReceived(_log, DeviceId, update.Entries.Count);
-                    if (update.Entries.Count > 0)
-                    {
-                        _server.RaiseSettingsUpdateRequested(_info!, update.Entries);
-                    }
-
+                    OnSettingsUpdate(frame);
                     break;
                 case ControlMessageType.Bye:
                     return SessionEndReason.PeerClosed;
@@ -510,42 +530,53 @@ internal sealed class ServerConnection
     }
 
     /// <summary>
-    /// Sends the server's latest DisplayList and/or SettingsSnapshot if this session negotiated
-    /// <see cref="ProtocolCapabilities.RemoteSettings"/> and SessionStart went out. The values are read under the
-    /// settings write lock, so concurrent pushes can't leave an older value last on the wire. Never throws.
+    /// Hands a SettingsUpdate to the server, at most <see cref="SettingsUpdatesPerSecond"/> per second (burst
+    /// <see cref="SettingsUpdateBurst"/>). Excess updates are dropped unparsed and counted, not answered, and don't end
+    /// the session: the phone's settings UI recovers with the next snapshot, and the session's cost stays bounded
+    /// either way (one handler call per token, and the replies coalesce in <see cref="_pushes"/>).
     /// </summary>
-    internal async Task PushSettingsAsync(bool snapshot, bool displays)
+    private void OnSettingsUpdate(ReceivedControlFrame frame)
     {
-        if (!_sessionReady || (_negotiated & ProtocolCapabilities.RemoteSettings) == 0 || RequestedReason is not null)
+        if (!_settingsUpdates.TryTake())
         {
+            long dropped = Interlocked.Increment(ref _settingsUpdatesDropped);
+            long now = _time.GetTimestamp();
+            if (_throttleLoggedAt < 0 || _time.GetElapsedTime(_throttleLoggedAt, now) >= ThrottleLogInterval)
+            {
+                _throttleLoggedAt = now;
+                NetLog.SettingsUpdatesThrottled(_log, DeviceId, SettingsUpdatesPerSecond, dropped);
+            }
+
             return;
         }
 
-        try
+        SettingsUpdateMessage update = frame.Read<SettingsUpdateMessage>();
+        NetLog.SettingsUpdateReceived(_log, DeviceId, update.Entries.Count);
+        if (update.Entries.Count > 0)
         {
-            await _settingsWrite.WaitAsync(_channel.Token).ConfigureAwait(false);
-            try
-            {
-                (SettingsSnapshotMessage? latest, DisplayListMessage? list) = _server.SettingsState;
-                if (displays && list is { } d)
-                {
-                    await _channel.WriteAsync(d).ConfigureAwait(false);
-                }
+            _server.RaiseSettingsUpdateRequested(_info!, update.Entries);
+        }
+    }
 
-                if (snapshot && latest is { } s)
-                {
-                    await _channel.WriteAsync(s).ConfigureAwait(false);
-                }
-            }
-            finally
-            {
-                _settingsWrite.Release();
-            }
-        }
-        catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException or SocketException or InvalidOperationException or NotSupportedException)
+    /// <summary>
+    /// Marks server → phone state dirty (<see cref="PushDisplays"/>, <see cref="PushSnapshot"/>,
+    /// <see cref="PushActiveArea"/>); bits the session didn't negotiate are ignored. Only queues: one writer sends the
+    /// latest state once SessionStart went out, so any number of calls costs at most one write per bit in flight.
+    /// Never throws; the task completes when that state is written or the connection failed.
+    /// </summary>
+    internal Task RequestPush(int bits)
+    {
+        if ((_negotiated & ProtocolCapabilities.RemoteSettings) == 0)
         {
-            _channel.Abort();
+            bits &= ~(PushDisplays | PushSnapshot);
         }
+
+        if ((_negotiated & ProtocolCapabilities.ActiveArea) == 0)
+        {
+            bits &= ~PushActiveArea;
+        }
+
+        return bits == 0 ? Task.CompletedTask : _pushes.Request(bits);
     }
 
     /// <summary>Queues the active area for this session (ADR-0031); only the latest one is sent, and only with <see cref="ProtocolCapabilities.ActiveArea"/>.</summary>
@@ -563,20 +594,31 @@ internal sealed class ServerConnection
             _activeArea = area;
         }
 
-        _ = PushActiveAreaAsync();
+        _ = RequestPush(PushActiveArea);
     }
 
-    private async Task PushActiveAreaAsync()
+    /// <summary>The push writer's drain: the latest display list, snapshot and active area, in that order. False after a failed write (the connection is aborted).</summary>
+    private async Task<bool> DrainPushesAsync(int bits)
     {
-        if (!_sessionReady || (_negotiated & ProtocolCapabilities.ActiveArea) == 0 || RequestedReason is not null)
+        if (RequestedReason is not null)
         {
-            return;
+            return false;
         }
 
         try
         {
-            await _settingsWrite.WaitAsync(_channel.Token).ConfigureAwait(false);
-            try
+            (SettingsSnapshotMessage? snapshot, DisplayListMessage? displays) = _server.SettingsState;
+            if ((bits & PushDisplays) != 0 && displays is { } d)
+            {
+                await _channel.WriteAsync(d).ConfigureAwait(false);
+            }
+
+            if ((bits & PushSnapshot) != 0 && snapshot is { } s)
+            {
+                await _channel.WriteAsync(s).ConfigureAwait(false);
+            }
+
+            if ((bits & PushActiveArea) != 0)
             {
                 NormalizedRect? area;
                 lock (_areaLock)
@@ -590,14 +632,13 @@ internal sealed class ServerConnection
                     _activeAreaSent = a;
                 }
             }
-            finally
-            {
-                _settingsWrite.Release();
-            }
+
+            return true;
         }
         catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException or SocketException or InvalidOperationException or NotSupportedException)
         {
             _channel.Abort();
+            return false;
         }
     }
 

@@ -245,6 +245,74 @@ public class SettingsSyncTests
     }
 
     [Fact]
+    public async Task A_phone_spamming_updates_is_capped_and_gets_the_latest_snapshot()
+    {
+        await using NetHarness h = Harness();
+        int handled = 0;
+        h.Server.SettingsUpdateRequested += (_, e) =>
+        {
+            int n = Interlocked.Increment(ref handled);
+            _ = h.Server.SendSettingsSnapshotAsync([SettingEntry.Int(MacSettingKey.SideButton, n)]);
+        };
+        var snapshots = new ConcurrentQueue<IReadOnlyList<SettingEntry>>();
+        PenBridgeClient client = await PairAsync(h, c => c.SettingsSnapshotReceived += (_, e) => snapshots.Enqueue(e.Entries));
+
+        // Time stands still: the burst passes, the rest is dropped without ending the session.
+        for (int i = 0; i < 100; i++)
+        {
+            Assert.True(await client.UpdateSettingsAsync([SettingEntry.Bool(MacSettingKey.Zoom, i % 2 == 0)]));
+        }
+
+        ServerConnection connection = h.Server.ActiveConnection!;
+        await Wait.Until(() => Volatile.Read(ref handled) + connection.SettingsUpdatesDropped == 100, "every update read");
+        Assert.Equal(ServerConnection.SettingsUpdateBurst, Volatile.Read(ref handled));
+        Assert.Equal(100 - ServerConnection.SettingsUpdateBurst, connection.SettingsUpdatesDropped);
+        await Wait.Until(
+            () => client.LastSettingsSnapshot is [{ } last] && last == SettingEntry.Int(MacSettingKey.SideButton, ServerConnection.SettingsUpdateBurst),
+            "the latest snapshot");
+        Assert.InRange(snapshots.Count, 1, ServerConnection.SettingsUpdateBurst); // replies coalesce, never multiply
+        Assert.Equal(0, connection.Pushes.Pending);
+
+        // The bucket refills with time.
+        await Wait.Step(h.Time, TimeSpan.FromSeconds(1));
+        Assert.True(await client.UpdateSettingsAsync([SettingEntry.Bool(MacSettingKey.Zoom, true)]));
+        await Wait.Until(() => Volatile.Read(ref handled) == ServerConnection.SettingsUpdateBurst + 1, "an update after the refill");
+        Assert.True(client.IsConnected);
+    }
+
+    [Fact]
+    public async Task Rapid_server_sends_coalesce_and_the_latest_state_wins()
+    {
+        await using NetHarness h = Harness();
+        var snapshots = new ConcurrentQueue<IReadOnlyList<SettingEntry>>();
+        var areas = new ConcurrentQueue<NormalizedRect>();
+        PenBridgeClient client = await PairAsync(h, c =>
+        {
+            c.SettingsSnapshotReceived += (_, e) => snapshots.Enqueue(e.Entries);
+            c.ActiveAreaReceived += (_, e) => areas.Enqueue(e.Area);
+        });
+
+        const int Count = 2_000;
+        Task last = Task.CompletedTask;
+        for (int i = 1; i <= Count; i++)
+        {
+            last = h.Server.SendSettingsSnapshotAsync([SettingEntry.Int(MacSettingKey.SideButton, i)]);
+            h.Server.SendActiveArea(new NormalizedRect(0, 0, 0.5 + (0.5 * i / Count), 1));
+        }
+
+        await last.Bounded();
+        await PingRoundTripAsync(h);
+
+        Assert.Equal([SettingEntry.Int(MacSettingKey.SideButton, Count)], client.LastSettingsSnapshot);
+        Assert.Equal(NormalizedRect.Full, client.LastActiveArea);
+        Assert.InRange(snapshots.Count, 1, Count);
+        Assert.InRange(areas.Count, 1, Count);
+        Assert.Equal(0, h.Server.ActiveConnection!.Pushes.Pending);
+
+        Assert.True(client.IsConnected);
+    }
+
+    [Fact]
     public async Task Server_sends_validate_their_arguments()
     {
         await using NetHarness h = Harness();

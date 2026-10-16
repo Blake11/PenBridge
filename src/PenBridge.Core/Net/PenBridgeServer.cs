@@ -110,7 +110,8 @@ public sealed class PenBridgeServer : IAsyncDisposable
     /// Raised when the phone sends a SettingsUpdate (needs <see cref="PenBridgeServerOptions.RemoteSettings"/>), on the
     /// session's control-read task, in arrival order, never under the input lock. Validate and apply the entries, then
     /// reply with <see cref="SendSettingsSnapshotAsync"/> (the snapshot is the acknowledgement, ADR-0030). Handlers must
-    /// be quick and marshal to the UI themselves.
+    /// be quick and marshal to the UI themselves. At most 20 updates per second (burst 20) per session reach it; the
+    /// excess is dropped (and logged), so a reply isn't guaranteed for every update the phone sent.
     /// </summary>
     public event EventHandler<SettingsUpdateRequestedEventArgs>? SettingsUpdateRequested;
 
@@ -282,7 +283,9 @@ public sealed class PenBridgeServer : IAsyncDisposable
     /// Sets the Mac settings snapshot (ADR-0030) and sends it to the active session if it negotiated
     /// <see cref="ProtocolCapabilities.RemoteSettings"/>; otherwise only stores it. Every new session gets the latest
     /// one right after SessionStart, so call this at startup, after every change and in reply to every
-    /// <see cref="SettingsUpdateRequested"/>. Never throws for network failures (a failed write closes the session).
+    /// <see cref="SettingsUpdateRequested"/>. Only queues the send: calls in quick succession coalesce and the phone
+    /// gets the latest snapshot. The task completes when it went out (or the session failed). Never throws for network
+    /// failures (a failed write closes the session).
     /// </summary>
     /// <exception cref="ArgumentException">More than <see cref="SettingsWire.MaxEntries"/> entries.</exception>
     public Task SendSettingsSnapshotAsync(IReadOnlyList<SettingEntry> entries)
@@ -295,12 +298,13 @@ public sealed class PenBridgeServer : IAsyncDisposable
             target = _active;
         }
 
-        return target is null ? Task.CompletedTask : target.PushSettingsAsync(snapshot: true, displays: false);
+        return target is null ? Task.CompletedTask : target.RequestPush(ServerConnection.PushSnapshot);
     }
 
     /// <summary>
     /// Sets the targetable displays (ADR-0031; "All displays" is implied) and sends them to the active session like
-    /// <see cref="SendSettingsSnapshotAsync"/>. New sessions get the list before their first snapshot.
+    /// <see cref="SendSettingsSnapshotAsync"/> (coalesced, latest wins). The list always goes out before a snapshot
+    /// queued with it, and new sessions get it before their first snapshot.
     /// </summary>
     /// <exception cref="ArgumentException">More than <see cref="SettingsWire.MaxDisplays"/> displays.</exception>
     public Task SendDisplayListAsync(IReadOnlyList<DisplayListEntry> displays)
@@ -313,7 +317,7 @@ public sealed class PenBridgeServer : IAsyncDisposable
             target = _active;
         }
 
-        return target is null ? Task.CompletedTask : target.PushSettingsAsync(snapshot: false, displays: true);
+        return target is null ? Task.CompletedTask : target.RequestPush(ServerConnection.PushDisplays);
     }
 
     /// <summary>The latest settings snapshot and display list (null until set).</summary>
@@ -328,8 +332,15 @@ public sealed class PenBridgeServer : IAsyncDisposable
         }
     }
 
-    /// <summary>Sends the active area to the active session if it negotiated <see cref="ProtocolCapabilities.ActiveArea"/> (latest wins).</summary>
+    /// <summary>
+    /// Queues the active area for the active session if it negotiated <see cref="ProtocolCapabilities.ActiveArea"/>
+    /// (coalesced, latest wins, unchanged areas aren't resent). Only takes a short lock and queues, so it may be called
+    /// from input callbacks.
+    /// </summary>
     internal void SendActiveArea(NormalizedRect area) => Volatile.Read(ref _active)?.SendActiveArea(area);
+
+    /// <summary>The active session's connection (for tests).</summary>
+    internal ServerConnection? ActiveConnection => Volatile.Read(ref _active);
 
     /// <summary>A snapshot for the menu: active device, transport, RTT, packets/s and input counters.</summary>
     public PenBridgeServerStats GetStats()
