@@ -311,7 +311,7 @@ public sealed class ClientHost : IAsyncDisposable
         if (rotated)
         {
             // The area is for the old orientation: show the whole surface until the Mac answers the new SurfaceInfo.
-            // Its new area differs unless it is the whole surface again, so the Mac's dedupe never leaves this stale.
+            // The phone relies on the Mac answering every SurfaceInfo with an ActiveArea, even an unchanged one (#197).
             SetActiveArea(NormalizedRect.Full);
         }
 

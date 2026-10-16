@@ -25,6 +25,9 @@ internal sealed class MacSettingsSection
     /// <summary>While a slider is dragged, at most one update per this interval (the Mac caps updates at 20/s).</summary>
     private const long DragSendIntervalMs = 100;
 
+    /// <summary>After a slider is released, how long older snapshot values are ignored while waiting for the reply.</summary>
+    private const long ReleaseHoldMs = 1000;
+
     /// <summary>Speed sliders: log2 steps of a twentieth of an octave, so 1× sits in the middle of 0.25×..4×.</summary>
     private const double SpeedStepsPerOctave = 20;
 
@@ -154,7 +157,8 @@ internal sealed class MacSettingsSection
                 name = "Display";
             }
 
-            AddTargetChoice(display.IsMain ? name + " (main)" : name, display.Id);
+            // The main display's choice is "follow the main display" (the default), not its id: the user can always return to it.
+            AddTargetChoice(display.IsMain ? name + " (main)" : name, display.IsMain ? MacSettings.MainDisplay : display.Id);
         }
 
         AddTargetChoice("All displays", MacSettings.AllDisplays);
@@ -167,18 +171,18 @@ internal sealed class MacSettingsSection
         _targets.AddView(button);
     }
 
-    /// <summary>Checks the target's button: "" (main display) is the display marked main.</summary>
+    /// <summary>
+    /// Checks the target's button. The "(main)" button stands for "" (follow the main display); a target set to the
+    /// main display's own id (e.g. on the Mac) checks it too.
+    /// </summary>
     private void CheckTarget(string target, IReadOnlyList<DisplayListEntry> displays)
     {
-        if (target == MacSettings.MainDisplay)
+        foreach (DisplayListEntry display in displays)
         {
-            foreach (DisplayListEntry display in displays)
+            if (display.IsMain && display.Id == target)
             {
-                if (display.IsMain)
-                {
-                    target = display.Id;
-                    break;
-                }
+                target = MacSettings.MainDisplay;
+                break;
             }
         }
 
@@ -299,6 +303,18 @@ internal sealed class MacSettingsSection
         bool tracking = false;
         long lastSent = 0;
 
+        // After a release, snapshots that still carry an older (mid-drag) value are ignored until the reply with the
+        // released value arrives or the hold times out; then the latest snapshot is applied.
+        long holdUntil = 0;
+        float heldValue = 0;
+
+        void Apply(MacSettingValues v)
+        {
+            float value = v.Get(key).FloatValue;
+            seek.Progress = Math.Clamp(toStep(value), 0, steps);
+            label.Text = format(value);
+        }
+
         int Valid(int step)
         {
             if (_values is not { } v)
@@ -327,7 +343,27 @@ internal sealed class MacSettingsSection
         void SendStep(int step)
         {
             lastSent = SystemClock.UptimeMillis();
-            Send(SettingEntry.Float(key, toValue(step)));
+            float value = toValue(step);
+            if (!tracking)
+            {
+                heldValue = value;
+                holdUntil = lastSent + ReleaseHoldMs;
+                seek.PostDelayed(
+                    () =>
+                    {
+                        if (!tracking && holdUntil != 0 && SystemClock.UptimeMillis() >= holdUntil)
+                        {
+                            holdUntil = 0;
+                            if (_values is { } latest)
+                            {
+                                Apply(latest);
+                            }
+                        }
+                    },
+                    ReleaseHoldMs);
+            }
+
+            Send(SettingEntry.Float(key, value));
         }
 
         seek.ProgressChanged += (_, e) =>
@@ -358,12 +394,22 @@ internal sealed class MacSettingsSection
         };
         _binders.Add(v =>
         {
-            if (!tracking)
+            if (tracking)
             {
-                float value = v.Get(key).FloatValue;
-                seek.Progress = Math.Clamp(toStep(value), 0, steps);
-                label.Text = format(value);
+                return;
             }
+
+            if (holdUntil != 0)
+            {
+                if (v.Get(key).FloatValue != heldValue && SystemClock.UptimeMillis() < holdUntil)
+                {
+                    return; // a reply to an update sent before the release
+                }
+
+                holdUntil = 0;
+            }
+
+            Apply(v);
         });
         row.AddView(seek, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
         row.AddView(label, new LinearLayout.LayoutParams(Ui.Dp(_ctx, 96), ViewGroup.LayoutParams.WrapContent));
