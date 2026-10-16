@@ -11,8 +11,9 @@
 #   --release          also build the Android app in Release (the Mac app is always the Release build)
 #   --no-build         don't build: relaunch the last Mac Release build (scripts/mac-run.sh --release --no-build)
 #                      and launch the app already installed on the phone
-#   --stop <dir>       ask the Mac app for a latency dump (scripts/latency-report.sh --dump-now, saved to
-#                      <dir>/latency.txt), then stop the captures listed in <dir>/pids
+#   --stop <dir>       ask the Mac app for a latency dump when its capture is on (scripts/latency-report.sh
+#                      --dump-now, saved to <dir>/latency.txt), stop the captures listed in <dir>/pids, and turn the
+#                      latency capture off again if this round turned it on (<dir>/latency-enabled)
 #
 # Steps: device-preflight checks (screen unlocked, display awake, Accessibility, phone online); latency capture on
 # (scripts/latency-report.sh --enable — the Mac app is restarted anyway); captures started; scripts/mac-run.sh
@@ -25,12 +26,13 @@
 #   phone-tags.log    adb logcat AndroidRuntime:E DOTNET:V monodroid:V mono-rt:V PenBridge:V ActivityTaskManager:I *:S
 #   mac-run.txt, android-run.txt   build/launch output
 #   pids              "<pid> <capture>" per line; read by --stop
+#   latency-enabled   present when setup turned the latency capture on (--stop turns it off)
 #
 # Exit status: 0 ready (session started), 3 ready but no session within 60 s (pairing needed: pair from the phone,
 # then watch mac.log for "Session started"), 1 on any failure.
 #
 # Run it unsandboxed: the Mac build signs with the "PenBridge Dev" certificate, which a sandboxed shell can't use.
-# After the round: scripts/latency-report.sh --disable turns the latency capture off again.
+# If the capture was already on before setup, --stop leaves it on (scripts/latency-report.sh --disable).
 set -euo pipefail
 source "$(dirname "$0")/lib/common.sh"
 source "$(dirname "$0")/lib/device.sh"
@@ -90,7 +92,13 @@ if [[ -n "$STOP" ]]; then
     done <<<"$live"
   fi
   rm -f "$DIR/pids"
-  info "captures kept in $DIR; turn latency capture off when done: scripts/latency-report.sh --disable"
+  step "Latency capture"
+  if [[ -f "$DIR/latency-enabled" ]]; then
+    "$SCRIPTS/latency-report.sh" --disable >/dev/null && rm -f "$DIR/latency-enabled" && ok "turned off (this round turned it on; restart the Mac app to apply)"
+  else
+    info "left as it was before setup (scripts/latency-report.sh --disable turns it off)"
+  fi
+  info "captures kept in $DIR"
   exit 0
 fi
 
@@ -125,7 +133,9 @@ step "Latency capture"
 if [[ "$(defaults read "$APP_ID" PenBridgeLatencyLog 2>/dev/null || true)" == 1 ]]; then
   ok "already on"
 else
-  "$SCRIPTS/latency-report.sh" --enable >/dev/null; ok "enabled (takes effect with the restart below)"
+  "$SCRIPTS/latency-report.sh" --enable >/dev/null
+  date "+%Y-%m-%d %H:%M:%S" >"$DIR/latency-enabled"   # --stop turns it off again
+  ok "enabled (takes effect with the restart below; --stop turns it off)"
 fi
 
 # Start a capture detached into its own session, so it outlives this script and its caller's shell.
