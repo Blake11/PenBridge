@@ -51,7 +51,7 @@ scripts/device-test-setup.sh       # device-test round: preflight, Release app, 
 - Idle: 0.0% CPU. Memory: section "Memory and startup" below.
 
 ## App icon
-- Put an Icon Composer `.icon` folder in `src/PenBridge.Mac/Resources/` and set `<AppIcon>AppIcon</AppIcon>` in the csproj. The SDK picks up `**/*.icon` and `**/*.xcassets`; actool emits `Assets.car` (macOS 26+) and `AppIcon.icns` (macOS 14/15) plus both Info.plist keys.
+- Put an Icon Composer `.icon` folder in `src/PenBridge.Mac/Resources/` and set `<AppIcon>AppIcon</AppIcon>` in the csproj. The SDK picks up `**/*.icon` and `**/*.xcassets`; actool emits `Assets.car` (macOS 26+) and `AppIcon.icns` (macOS 14/15) plus both Info.plist keys. actool's `AppIcon.icns` stops at 256 px, so the csproj target `PenBridgeUseFullSizeLegacyIcon` swaps in the committed `Resources/AppIconLegacy.icns` (16..1024 px, rendered from `Assets.car` by `scripts/lib/car-to-iconset.swift` via `gen-icons.sh`; `--check` asserts a 1024 px representation). Commit it after any icon change (#109).
 - Menu-bar template SVGs must not use `<mask>` (CoreSVG renders masks blurry at native size); use clip paths.
 - Regenerate icons with `scripts/gen-icons.sh [--check|--preview]`.
 

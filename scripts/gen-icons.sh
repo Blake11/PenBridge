@@ -6,11 +6,12 @@
 #   scripts/gen-icons.sh --check          # regenerate into a scratch dir and fail if the committed files differ
 #   scripts/gen-icons.sh --preview /tmp/i # also render PNG previews (app icon sizes, menu-bar glyphs) into /tmp/i
 #
-# Outputs are vector/text only, so no bitmaps are committed:
+# Outputs are vector/text only, except the legacy .icns:
 #   Android  src/PenBridge.Android/Resources/drawable/ic_launcher_{foreground,background,monochrome}.xml
 #            src/PenBridge.Android/Resources/mipmap-anydpi-v26/ic_launcher{,_round}.xml   (adaptive + themed icon)
 #   macOS    src/PenBridge.Mac/Resources/AppIcon.icon            (Icon Composer; actool renders it at build time)
 #            src/PenBridge.Mac/Resources/Assets.xcassets/MenuBar*.imageset   (template SVGs for the status item)
+#            src/PenBridge.Mac/Resources/AppIconLegacy.icns      (macOS 14/15 fallback, 16..1024 px, rendered from Assets.car)
 # The conversion runs in scripts/lib/gen-icons.cs (a .NET file-based app). Validation and previews need Xcode's
 # actool; previews also use iconutil and qlmanage (all part of macOS + Xcode).
 set -euo pipefail
@@ -110,6 +111,36 @@ for f in Assets.car AppIcon.icns; do
   [[ -f "$compiled/$f" ]] || { cat "$actool_log" >&2; die "actool produced no $f"; }
 done
 ok "actool: Assets.car + AppIcon.icns (macOS 14+ fallback)"
+
+# actool's own AppIcon.icns (macOS 14/15 fallback) tops out at 256 px for an Icon Composer .icon (issue #109), but
+# Assets.car carries renditions up to 1024 px. Render those into a full iconset and ship the result as the
+# committed AppIconLegacy.icns; PenBridge.Mac.csproj swaps it in for actool's file.
+step "Building the full-size legacy icon (AppIconLegacy.icns)"
+have iconutil || die "iconutil not found (part of macOS)"
+have sips || die "sips not found (part of macOS)"
+xcrun swift "$REPO_ROOT/scripts/lib/car-to-iconset.swift" "$compiled/Assets.car" "$scratch/AppIconLegacy.iconset" \
+  || die "rendering Assets.car into an iconset failed"
+iconutil -c icns -o "$scratch/AppIconLegacy.icns" "$scratch/AppIconLegacy.iconset" || die "iconutil could not build the icns"
+
+# The largest representation of an icns must be 1024 px (512@2x): extract it again and measure.
+icns_max_px() {
+  local icns="$1" d
+  d="$(mktemp -d "$scratch/icnscheck.XXXXXX")"
+  iconutil -c iconset -o "$d/x.iconset" "$icns" >/dev/null 2>&1 || { echo 0; return; }
+  [[ -f "$d/x.iconset/icon_512x512@2x.png" ]] || { echo 0; return; }
+  sips -g pixelWidth "$d/x.iconset/icon_512x512@2x.png" 2>/dev/null | awk '/pixelWidth/ {print $2}'
+}
+[[ "$(icns_max_px "$scratch/AppIconLegacy.icns")" == 1024 ]] || die "the rendered legacy icns has no 1024 px representation"
+committed_icns="$REPO_ROOT/src/PenBridge.Mac/Resources/AppIconLegacy.icns"
+if $check; then
+  [[ -f "$committed_icns" ]] || die "${committed_icns#"$REPO_ROOT"/} is missing: run scripts/gen-icons.sh and commit the result"
+  [[ "$(icns_max_px "$committed_icns")" == 1024 ]] \
+    || die "${committed_icns#"$REPO_ROOT"/} has no 1024 px representation: run scripts/gen-icons.sh and commit the result"
+  ok "AppIconLegacy.icns carries the full size set up to 1024 px"
+else
+  cp "$scratch/AppIconLegacy.icns" "$committed_icns"
+  ok "wrote ${committed_icns#"$REPO_ROOT"/} (1024 px max)"
+fi
 
 if [[ -n "$preview" ]]; then
   step "Rendering previews into $preview"

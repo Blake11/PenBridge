@@ -25,6 +25,22 @@
   </PropertyGroup>
 
   <!--
+    actool's AppIcon.icns for an Icon Composer .icon stops at 256 px (issue #109). Swap in the committed
+    full-size set (16..1024 px, rendered from Assets.car by scripts/gen-icons.sh) for the actool output; the
+    Assets.car and both Info.plist keys stay as actool wrote them.
+  -->
+  <ItemGroup>
+    <BundleResource Remove="Resources/AppIconLegacy.icns" />
+  </ItemGroup>
+  <Target Name="PenBridgeUseFullSizeLegacyIcon" AfterTargets="_CompileImageAssets">
+    <ItemGroup>
+      <_PenBridgeActoolIcns Include="@(_BundleResourceWithLogicalName)" Condition="'%(LogicalName)' == 'AppIcon.icns'" />
+      <_BundleResourceWithLogicalName Remove="@(_PenBridgeActoolIcns)" />
+      <_BundleResourceWithLogicalName Include="$(MSBuildThisFileDirectory)Resources/AppIconLegacy.icns" LogicalName="AppIcon.icns" />
+    </ItemGroup>
+  </Target>
+
+  <!--
     NativeAOT + full trimming for Release (issue #42, ADR-0016). The macOS SDK applies PublishAot only
     to `dotnet publish` (`_UseNativeAot` = PublishAot and _IsPublishing), and then defaults to full
     trimming of every assembly (don't set LinkMode/TrimMode: the SDK warns under NativeAOT).
