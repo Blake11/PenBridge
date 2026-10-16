@@ -37,7 +37,7 @@ Rule: platform apps contain only platform glue; anything testable without a devi
 - **Resource budget**: idle ≈ 0% CPU and a small RSS (goal < 40 MB). No polling; everything is socket/event-driven. Trim the app; evaluate NativeAOT for the macOS head.
 - **Input injection** (`IInputInjector`, ADR-0003):
   - MVP: `CGEventTabletInjector` posts a `kCGEventTabletProximity` event (pen/eraser enter and leave), then mouse down/drag/up/move events with the `TabletPoint` subtype carrying pressure, tilt X/Y and rotation. It needs the **Accessibility** permission (check `AXIsProcessTrusted`, then guide the user to grant it).
-  - Later (only if compatibility gaps appear): a DriverKit virtual HID digitizer (C++ dext, Apple entitlements, paid account).
+  - Later, in the Publishing milestone ([#17](https://github.com/Blake11/PenBridge/issues/17)): a DriverKit virtual HID digitizer for apps that ignore CGEvent tablet events (C++ dext, Apple entitlements, paid account).
 - **Mapping** (ADR-0031): the target is one display (`CGDisplayBounds`) or all displays, optionally a dragged sub-region of a display. The phone's **active area** is the largest rectangle with the target's aspect ratio, centred on the phone surface; it maps onto the whole target, and a pen outside it is pinned to the nearest edge. The Mac sends the active area to the phone (`ActiveArea`). The math lives in Core.
 - **Pen settings** (ADR-0032), applied in Core before injection: Pen (absolute) or Mouse (relative, own speed and acceleration) stylus mode, the side-button action (right, middle, eraser while held, double click, none; latched at contact-down) and the pressure curve (tip feel, click threshold, full pressure).
 - **Gestures** (ADR-0023): trackpad parity, with three-finger drag on. Core recognizes the gestures and the Mac only posts them, at the current cursor position, which stays put. 2 fingers: scroll with acceleration and momentum (continuous phased scroll-wheel events, so swipe-between-pages works; direction follows the natural-scrolling setting). Pinch and rotate combine into one transform (magnify/rotate gesture events, undocumented CGEvent fields, frontmost app only). Tap = secondary click, double tap = smart zoom. 3 fingers: drag. 4 fingers: Mission Control / App Exposé / Spaces / Launchpad / show desktop, interactive through Dock gesture events if feasible, otherwise the system shortcuts. Pen in range, the watchdog, pause or disconnect cancel a gesture and its momentum.
@@ -86,7 +86,17 @@ Rule: platform apps contain only platform glue; anything testable without a devi
 | 3 | Android client: discovery, pairing (QR + PIN), drawing surface, S Pen pressure/tilt/hover/button, finger fallback *(done, released 1.0.0)* |
 | 4 | Gestures with trackpad parity (ADR-0023): 2-finger scroll/momentum/pinch/rotate/tap/smart zoom/swipe pages, 3-finger drag, 4-finger system gestures |
 | 5 | Settings (ADR-0030–0033): display/region/all-displays mapping with the aspect-fit active area, Pen/Mouse mode, side button, pressure curve, gesture settings, phone surface look; Mac settings editable from the phone (protocol 1.2) |
-| Later | **Android UX improvements** ([#95](https://github.com/Blake11/PenBridge/issues/95)): scope to be defined |
-| Later | **Windows host app** (tray app, `InjectSyntheticPointerInput` pen injection, ADR-0015), Mac screen mirroring onto the phone (video stream), DriverKit virtual digitizer, iOS client, S Pen Air Actions, Developer ID signing + notarization, Google Play |
+
+After the MVP, work runs as **standalone milestones** in no fixed order, each with an epic and ending with a release (ADR-0034):
+
+| Milestone | Epic | Scope |
+|---|---|---|
+| Windows host | [#28](https://github.com/Blake11/PenBridge/issues/28) | Tray server, `InjectSyntheticPointerInput` pen injection, gestures, mDNS, settings parity (ADR-0015) |
+| Publishing | [#177](https://github.com/Blake11/PenBridge/issues/177) | Google Play, Developer ID signing + notarization, DriverKit virtual HID digitizer |
+| Screen mirroring | [#16](https://github.com/Blake11/PenBridge/issues/16) | Stream the host screen (Mac and Windows) to the phone under the pad |
+| iOS client | [#18](https://github.com/Blake11/PenBridge/issues/18) | iPad/iPhone client with Apple Pencil, full parity with Android |
+| S Pen Air Actions | [#19](https://github.com/Blake11/PenBridge/issues/19) | Air Actions mapped to configurable host actions (Mac and Windows) |
+| Mac gestures | [#193](https://github.com/Blake11/PenBridge/issues/193) | Trackpad-parity polish, starting with interactive four-finger gestures |
+| Later | — | Loose ideas and small chores without a milestone of their own |
 
 MVP = phases 1–5. **Each phase ends with a release** (ADR-0021): an ad-hoc signed `.dmg`/`.zip` and a release-signed APK on GitHub Releases. Phase 3 is **1.0.0**; each later phase bumps the minor version (1.1.0, 1.2.0 …), and bug-fix releases between phases bump the patch.

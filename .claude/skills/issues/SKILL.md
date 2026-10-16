@@ -18,8 +18,8 @@ Issues are the plan of record: phases → epics, workstreams → issues before d
 Defaults `bug`, `enhancement`, `documentation` stay for issues filed from the public templates; triage adds the `type:`/`area:` labels.
 
 ## Milestones
-"Phase 1 — Core" … "Phase 5 — Settings", "Later" — one per roadmap phase (`docs/architecture.md#roadmap`). `gh api repos/Blake11/PenBridge/milestones --jq '.[].title'`. "Phase 6 — Release" is closed (superseded by ADR-0021); don't file into it.
-- **Every phase ends with a release** (ADR-0021, skill `release`): the epic's task list includes the release step (README update, release PR merged, published assets smoke-tested), and the epic closes only after it. Phase 3 = 1.0.0, later phases bump minor, fixes between phases bump patch.
+"Phase 1 — Core" … "Phase 5 — Settings" — one per MVP phase; after the MVP, standalone milestones (ADR-0034): "Windows host", "Publishing", "Screen mirroring", "iOS client", "S Pen Air Actions", "Mac gestures" — each with an epic titled like it, no fixed order; "Later" = loose ideas and small chores (`docs/architecture.md#roadmap`). `gh api repos/Blake11/PenBridge/milestones --jq '.[].title'`. "Phase 6 — Release" is closed (superseded by ADR-0021); don't file into it.
+- **Every phase and post-MVP milestone ends with a release** (ADR-0021, ADR-0034, skill `release`): the epic's task list includes the release step (README update, release PR merged, published assets smoke-tested), and the epic closes only after it. Phase 3 = 1.0.0, later phases bump minor, fixes between phases bump patch.
 
 ## Commands
 ```bash

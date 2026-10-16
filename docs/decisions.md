@@ -28,7 +28,7 @@ Cite ADRs by number (and section) rather than reading this whole file.
 | 0018 | NativeAOT Mac Release with a guarded SDK trimming substitution | accepted |
 | 0019 | Android client UX defaults for Phase 3 | accepted |
 | 0020 | No third-party telemetry: strip ML Kit datatransport | accepted |
-| 0021 | Release at the end of every phase; 1.0.0 = Phase 3 | accepted |
+| 0021 | Release at the end of every phase; 1.0.0 = Phase 3 | accepted; post-MVP milestones by 0034 |
 | 0022 | Finger move/tap-click and side-button right-drag | accepted; one-finger cursor superseded by 0026 (fallback) |
 | 0023 | Trackpad-parity gestures on the Mac | accepted; refined by 0024, 0029 |
 | 0024 | A suppressed finger stays on the wire as "not in contact" until it lifts | accepted |
@@ -41,6 +41,7 @@ Cite ADRs by number (and section) rather than reading this whole file.
 | 0031 | Target display or all displays, a dragged region, and the active area follows the target's aspect ratio | accepted |
 | 0032 | Pen settings: Pen/Mouse mode, side-button action and pressure curve, applied on the Mac | accepted |
 | 0033 | Gesture settings: Smart Zoom override, pointer and scroll speed, per-gesture toggles | accepted |
+| 0034 | Post-MVP work runs as standalone milestones, each ending with a release | accepted |
 
 ## ADR-0001 — .NET 10 LTS, native platform heads + shared Core
 **Status:** accepted (2026-10-13)
@@ -373,3 +374,14 @@ Cite ADRs by number (and section) rather than reading this whole file.
   - **Toggles**, all on by default: Zoom (pinch), Rotate, Three-finger drag, Four-finger gestures. Off drops that output in Core's `GestureRecognizer`: zoom off and rotate off each remove their part of the combined transform, and with both off two fingers only scroll, tap and smart-zoom; three or four fingers with their toggle off do nothing.
   - The tap windows (ADR-0028) stay fixed.
 - **Why:** these are the trackpad pane's settings, and they're the ones the device tests asked for.
+
+## ADR-0034 — Post-MVP work runs as standalone milestones, each ending with a release
+**Status:** accepted (2026-10-17). Extends ADR-0021 past the MVP; ADR-0021 still governs phases 1–5.
+- **Context:** after Phase 5 (MVP, 1.2.0) the remaining work is several independent bodies of work — Windows host, Publishing, Screen mirroring, iOS client, S Pen Air Actions, Mac gestures — with no fixed order, and some are blocked on hardware or paid accounts. Numbered phases imply a sequence that doesn't exist.
+- **Decision:**
+  - Each body of work is a **GitHub milestone with an epic issue** (title = milestone name): "Windows host" (#28), "Publishing" (#177), "Screen mirroring" (#16, Mac and Windows), "iOS client" (#18), "S Pen Air Actions" (#19), "Mac gestures" (#193). No phase numbers and no fixed order; the next one is picked when the current one ships.
+  - Each milestone **ends with a release** once it's verified on devices, like a phase (README update, release PR merged, assets smoke-tested). It bumps the **minor** version; fixes in between bump the patch; a major still needs the user (ADR-0021).
+  - Stories that need missing hardware or accounts carry `status: blocked` and say on what; the rest of the milestone can proceed.
+  - "Later" keeps only loose ideas and small chores without a milestone of their own.
+- **Why not more phases:** phases 6+ would force an order and make blocked work (no Windows PC, no iOS device, no Apple/Play accounts) hold up unrelated work.
+- **Consequences:** the roadmap lists the milestones after the phase table; the architect-session-per-phase rule applies per milestone.
