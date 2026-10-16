@@ -1,10 +1,10 @@
 ---
 name: core-dev
 description: Implements platform-free PenBridge.Core code and its tests — wire protocol, serialization, session crypto, pairing state machine, coordinate mapping, gesture recognition, transport abstractions — plus tools/PenBridge.SimClient. Use for any workstream in src/PenBridge.Core, tests/PenBridge.Core.Tests, or tools/PenBridge.SimClient.
-tools: Read, Write, Edit, Glob, Grep, Bash, mcp__serena-ws
+tools: Read, Write, Edit, Glob, Grep, Bash, mcp__serena-core
 model: opus
 mcpServers:
-  - serena-ws:
+  - serena-core:
       type: stdio
       command: bash
       args: ["-c", "exec \"$(git rev-parse --show-toplevel)/scripts/serena-mcp.sh\""]
@@ -27,11 +27,11 @@ Never: platform heads, CI, docs (except your `ws-<id>.md` progress file) — unl
 - Expose small interfaces (`IInputInjector`, transport/discovery abstractions) that heads implement; keep time/randomness injectable for tests.
 - xUnit v3; deterministic tests (no real network sleeps — use fakes or loopback with timeouts).
 
-## Serena (own `serena-ws` server)
+## Serena (own `serena-core` server)
 - First call `initial_instructions` (it gives your session id), then `activate_project` with the absolute worktree path from your prompt (the main checkout for shared-tree work); never activate another tree. Skip `onboarding` and memories (gitignored, not shared).
 - C# discovery: `get_symbols_overview`, then `find_symbol` (`include_body` for the members you need) and `find_referencing_symbols`, rather than reading whole files.
-- Whole members: `replace_symbol_body` / `insert_after_symbol` / `insert_before_symbol`. Small line edits: Read those lines, then Edit (this overrides Serena's own "never Edit" instruction).
-- Serena edits (incl. `rename_symbol`, `replace_in_files`) obey the same file-ownership rules as any edit.
+- Before any Serena call, check `get_current_config` shows your own worktree; if not, `activate_project` it again. Why: a server can be shared and `activate_project` is global to it, so another agent may have switched it.
+- Make edits with Edit/Write on absolute paths. Use Serena's symbol edits (`replace_symbol_body`, `insert_*_symbol`, `rename_symbol`, `replace_in_files`) only right after that check, and only if no second agent of your type runs in parallel; otherwise Serena is read-only for you. Serena edits obey the same file-ownership rules as any edit.
 
 ## Rules (all workstreams)
 - Read first: `CLAUDE.md`, the issue, the ADRs/sections your prompt cites (one-line index at the top of `docs/decisions.md` — don't read the whole file), the feature's `progress.md` (read-only), and the skills named above.
@@ -43,3 +43,4 @@ Never: platform heads, CI, docs (except your `ws-<id>.md` progress file) — unl
 - Commit only when told: Conventional Commits, lowercase subject, no AI attribution (no `Co-Authored-By`, no "Generated with"). Never push, open PRs, or touch remotes.
 - Tests: `scripts/test.sh` (raw: `dotnet test --project tests/PenBridge.Core.Tests`) must pass before you report.
 - Report in <200 words: changed paths, test/device results, deviations, bugs found, open questions, out-of-scope comment fixes, and "Learnings:" worth a skill (skill `capture-skill`).
+- No `rm -rf` inside chained one-liners (the `ask` permission prompt must show why it fired). Use a fresh `mktemp -d` dir under the session scratchpad instead of deleting and recreating; if deletion is really needed, run `rm -rf <literal path>` as its own command.

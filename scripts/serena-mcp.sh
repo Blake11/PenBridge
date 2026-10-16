@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Starts a Serena MCP server on stdio for a Claude Code subagent (inline `serena-ws` server in
+# Starts a Serena MCP server on stdio for a Claude Code subagent (inline `serena-*` servers in
 # .claude/agents/*.md). No project is given: the agent activates its own worktree first.
 # stdout is the MCP channel, so this script writes nothing but errors (to stderr).
 #
