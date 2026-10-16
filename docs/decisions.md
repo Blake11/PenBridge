@@ -366,7 +366,7 @@ Cite ADRs by number (and section) rather than reading this whole file.
 
 ## ADR-0033 — Gesture settings: Smart Zoom override, pointer and scroll speed, per-gesture toggles
 **Status:** accepted (2026-10-16). Delivers the Phase 5 items deferred by ADR-0026 (pointer speed) and ADR-0029 (Smart Zoom override).
-**Amended 2026-10-16 (#155):** gesture gain is independent of the pen's active area and region (the Phase 4 basis); the speed settings scale it.
+**Amended 2026-10-16 (#155):** gesture gain is independent of the pen's active area and region (the Phase 4 basis); the speed settings scale it; with All displays, gestures measure on the main display (the one at 0,0, else the first); Zoom/Rotate toggle changes apply from the next pinch.
 - **Decision (Mac settings, editable from the phone per ADR-0030):**
   - **Smart Zoom:** Follow macOS (default, ADR-0029) / On / Off.
   - **Pointer speed** scales the one-finger cursor and three-finger drag gain; **Scroll speed** scales two-finger scrolling and its momentum. Both 0.25 … 4, default 1.
