@@ -318,6 +318,12 @@ internal static class Program
                 if (updates.Count > 0)
                 {
                     Console.WriteLine("Sending: " + string.Join(", ", updates.Select(e => MacSettings.Format(e))));
+
+                    // Drop snapshots that arrived meanwhile (e.g. a change on the Mac), so the wait below is for the reply.
+                    while (snapshots.Wait(0, ct))
+                    {
+                    }
+
                     if (!await client.UpdateSettingsAsync(updates) || !await snapshots.WaitAsync(wait, ct))
                     {
                         return Fail("The Mac didn't answer the update.");
