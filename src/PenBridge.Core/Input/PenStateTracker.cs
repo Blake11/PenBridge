@@ -539,7 +539,7 @@ public sealed class PenStateTracker
         bool stylus = s.Tool is PenTool.Pen or PenTool.Eraser;
         if (stylus && (s.State & PenState.Contact) != 0 && !_curve.IsIdentity)
         {
-            s = _curve.TryApply(s.Pressure, out ushort pressure)
+            s = _curve.TryApply(s.Pressure, _contact, out ushort pressure)
                 ? s with { Pressure = pressure }
                 : s with { State = PenState.InRange, Pressure = 0 };
         }

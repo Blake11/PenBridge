@@ -62,6 +62,25 @@ public class PenSettingsTrackerTests
     }
 
     [Fact]
+    public void Click_threshold_has_a_release_hysteresis()
+    {
+        _tracker.ApplySettings(new InputSettings { ClickThreshold = 0.3, FullPressureAt = 0.9 });
+        Frame(Samples.Touch(Mm(10), Mm(10), P(0.31)));
+        Assert.Equal([ProximityEnter, Down], _sink.PenKinds());
+        Frame(Samples.Touch(Mm(11), Mm(10), P(0.29))); // flickers around the threshold: stays down
+        Frame(Samples.Touch(Mm(12), Mm(10), P(0.31)));
+        Frame(Samples.Touch(Mm(13), Mm(10), P(0.285)));
+        Assert.Equal([ProximityEnter, Down, Drag, Drag, Drag], _sink.PenKinds());
+        Assert.Equal(0, Last.Sample.Pressure);
+        Frame(Samples.Touch(Mm(13), Mm(10), P(0.27))); // below 0.28: lifts
+        Assert.Equal(Up, Last.Kind);
+        Frame(Samples.Touch(Mm(13), Mm(10), P(0.29))); // pressing again needs the threshold
+        Assert.False(_tracker.IsInContact);
+        Frame(Samples.Touch(Mm(13), Mm(10), P(0.301)));
+        Assert.Equal(Down, Last.Kind);
+    }
+
+    [Fact]
     public void Default_settings_pass_samples_through_unchanged()
     {
         PenSample s = Samples.Touch(Mm(10), Mm(20), 12345, buttons: PenButtons.Primary);

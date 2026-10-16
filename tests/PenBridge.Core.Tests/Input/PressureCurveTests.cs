@@ -71,13 +71,47 @@ public class PressureCurveTests
     }
 
     [Fact]
+    public void A_stroke_releases_only_below_the_threshold_minus_the_hysteresis()
+    {
+        var c = new PressureCurve(0, 0.3, 0.9);
+        Assert.False(c.TryApply(W(0.29), inContact: false, out _)); // pressing needs the threshold
+        Assert.True(c.TryApply(W(0.301), inContact: false, out _));
+        Assert.True(c.TryApply(W(0.29), inContact: true, out ushort held)); // in contact: down until 0.28
+        Assert.Equal(0, held);
+        Assert.True(c.TryApply(W(0.281), inContact: true, out _));
+        Assert.False(c.TryApply(W(0.279), inContact: true, out ushort lifted));
+        Assert.Equal(0, lifted);
+        Assert.Equal(0.5, c.TryApply(W(0.6), inContact: true, out ushort o) ? o / 65535.0 : -1, 4); // same curve above
+    }
+
+    [Fact]
+    public void Hysteresis_release_level_is_clamped_at_zero_and_off_without_a_threshold()
+    {
+        var low = new PressureCurve(0, 0.01, 0.5);
+        Assert.False(low.TryApply(0, inContact: false, out _));
+        Assert.True(low.TryApply(0, inContact: true, out _)); // release level clamped to 0: never below it
+        var none = new PressureCurve(1, 0, 0.5);
+        Assert.True(none.TryApply(0, inContact: false, out _));
+        Assert.True(none.TryApply(0, inContact: true, out _));
+    }
+
+    [Fact]
+    public void Apply_treats_nan_as_zero()
+    {
+        Assert.Equal(0, PressureCurve.Linear.Apply(double.NaN));
+        Assert.Equal(0, default(PressureCurve).Apply(double.NaN));
+        Assert.Equal(0, new PressureCurve(1, 0, 0.5).Apply(double.NaN));
+        Assert.Equal(0, new PressureCurve(-1, 0.2, 0.8).Apply(double.NaN));
+    }
+
+    [Fact]
     public void Try_apply_is_allocation_free()
     {
         var c = new PressureCurve(0.5, 0.1, 0.9);
         long ran = 0;
         Alloc.AssertZero(5_000, i =>
         {
-            c.TryApply((ushort)(i * 13), out _);
+            c.TryApply((ushort)(i * 13), (i & 1) == 0, out _);
             ran++;
         }, () => ran);
     }

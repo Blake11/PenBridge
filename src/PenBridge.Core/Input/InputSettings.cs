@@ -77,7 +77,10 @@ public sealed record InputSettings
     /// <summary>Pressure curve: −1 soft … 0 linear … +1 firm (γ = 2^TipFeel).</summary>
     public double TipFeel { get; init; }
 
-    /// <summary>Pressure below this (0..0.5) hovers instead of touching; 0 lets the phone's contact decide.</summary>
+    /// <summary>
+    /// Pressure below this (0..0.5) hovers instead of touching; 0 lets the phone's contact decide. A stroke releases only
+    /// below this − <see cref="Input.PressureCurve.ReleaseHysteresis"/> (at least 0).
+    /// </summary>
     public double ClickThreshold { get; init; }
 
     /// <summary>Pressure at or above this (0.5..1) is full pressure.</summary>
