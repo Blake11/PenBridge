@@ -111,6 +111,25 @@ public class SettingsSyncTests
     }
 
     [Fact]
+    public async Task A_surface_change_is_answered_with_the_active_area_even_when_unchanged()
+    {
+        await using NetHarness h = Harness();
+        var areas = new ConcurrentQueue<NormalizedRect>();
+        PenBridgeClient client = await PairAsync(h, c => c.ActiveAreaReceived += (_, e) => areas.Enqueue(e.Area));
+        await Wait.Until(() => !areas.IsEmpty, "the area after the first SurfaceInfo");
+        areas.Clear();
+
+        // The area is unchanged by the surface update, yet the phone is answered (exactly once).
+        await client.UpdateSurfaceAsync(NetHarness.Surface);
+        await Wait.Until(() => !areas.IsEmpty, "the area after the surface change");
+
+        // Without a SurfaceInfo the unchanged area stays deduped.
+        h.Server.SendActiveArea(client.LastActiveArea!.Value);
+        await PingRoundTripAsync(h);
+        Assert.Single(areas);
+    }
+
+    [Fact]
     public async Task The_active_area_reaches_the_phone_and_only_changes_are_sent()
     {
         await using NetHarness h = Harness();
