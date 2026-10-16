@@ -7,20 +7,42 @@ namespace PenBridge.Android.Connect;
 /// <summary>
 /// Hosts the pad (<see cref="PadController"/>) over the <see cref="ClientHost"/>. Back, Disconnect and Change Mac
 /// end the session and return to the Mac list; the orientation picked in the pad menu becomes the saved default.
+/// "Settings…" in the pad menu opens <see cref="SettingsScreen"/> on top (the session stays up); changes apply when
+/// the pad comes back.
 /// </summary>
 internal sealed class PadScreen : Screen
 {
-    private ClientHostPadOutput? _output;
+    private readonly bool _preview;
+    private IPadOutput? _output;
     private PadController? _controller;
 
     public PadScreen(MainActivity activity)
+        : this(activity, preview: false)
+    {
+    }
+
+    /// <param name="activity">The host activity.</param>
+    /// <param name="preview">
+    /// Debug builds: a pad without a session (sends nothing; leaving only closes it), to check the surface look.
+    /// </param>
+    internal PadScreen(MainActivity activity, bool preview)
         : base(activity)
     {
+        _preview = preview;
     }
 
     public override bool IsFullScreen => true;
 
-    public override void Resume() => _controller?.Start();
+    public override void Resume()
+    {
+        if (_controller is null)
+        {
+            return;
+        }
+
+        _controller.ApplyOptions(LoadOptions());
+        _controller.Start();
+    }
 
     public override void Pause() => _controller?.Stop();
 
@@ -46,17 +68,13 @@ internal sealed class PadScreen : Screen
 
     protected override View CreateView()
     {
+#if DEBUG
+        _output = _preview ? new PreviewPadOutput() : new ClientHostPadOutput(Host);
+#else
         _output = new ClientHostPadOutput(Host);
-        var options = new PadOptions
-        {
-            Orientation = ToPad(Host.Settings.Orientation),
-            FingerMode = Host.Settings.FingerMode,
-            FingerFallbackPressure = Host.Settings.FingerPressure,
-            FingerFallbackArmDelay = TimeSpan.FromMilliseconds(Host.Settings.FingerArmDelayMs),
-            PalmSizeThreshold = Host.Settings.PalmSizeThreshold,
-            ShowTouchSize = Host.Settings.ShowTouchSize,
-        };
-        _controller = new PadController(Activity, _output, options);
+#endif
+        _controller = new PadController(Activity, _output, LoadOptions());
+        _controller.SettingsRequested += OnSettingsRequested;
         _controller.DisconnectRequested += OnDisconnectRequested;
         _controller.ChangeMacRequested += OnChangeMacRequested;
         _controller.OrientationModeChanged += OnOrientationModeChanged;
@@ -67,17 +85,35 @@ internal sealed class PadScreen : Screen
     {
         if (disposing && _controller is not null)
         {
+            _controller.SettingsRequested -= OnSettingsRequested;
             _controller.DisconnectRequested -= OnDisconnectRequested;
             _controller.ChangeMacRequested -= OnChangeMacRequested;
             _controller.OrientationModeChanged -= OnOrientationModeChanged;
             _controller.Dispose();
             _controller = null;
-            _output?.Dispose();
+            (_output as IDisposable)?.Dispose();
             _output = null;
         }
 
         base.Dispose(disposing);
     }
+
+    private PadOptions LoadOptions()
+    {
+        SettingsStore settings = Host.Settings;
+        return new PadOptions
+        {
+            Orientation = ToPad(settings.Orientation),
+            FingerMode = settings.FingerMode,
+            FingerFallbackPressure = settings.FingerPressure,
+            FingerFallbackArmDelay = TimeSpan.FromMilliseconds(settings.FingerArmDelayMs),
+            PalmSizeThreshold = settings.PalmSizeThreshold,
+            ShowTouchSize = settings.ShowTouchSize,
+            Look = settings.SurfaceLook,
+        };
+    }
+
+    private void OnSettingsRequested(object? sender, EventArgs e) => Activity.Screens.Push(new SettingsScreen(Activity));
 
     private void OnDisconnectRequested(object? sender, EventArgs e) => Leave(forgetLastUsed: false);
 
@@ -90,6 +126,12 @@ internal sealed class PadScreen : Screen
     {
         // Stop first: releases any held pen/touch state on the Mac before the session closes.
         _controller?.Stop();
+        if (_preview)
+        {
+            Activity.Screens.Pop();
+            return;
+        }
+
         Host.Disconnect(forgetLastUsed);
         Activity.Screens.PopToRoot();
     }

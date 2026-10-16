@@ -31,6 +31,21 @@ internal sealed class ScreenStack : Java.Lang.Object, View.IOnApplyWindowInsetsL
 
     public int Count => _stack.Count;
 
+    /// <summary>True when a screen of type <typeparamref name="T"/> is anywhere on the stack (top or below).</summary>
+    public bool Contains<T>()
+        where T : Screen
+    {
+        foreach (Screen screen in _stack)
+        {
+            if (screen is T)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public void Push(Screen screen)
     {
         ArgumentNullException.ThrowIfNull(screen);
