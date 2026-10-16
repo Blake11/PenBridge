@@ -178,19 +178,26 @@ internal sealed class RegionOverlay : IDisposable
         public override void DrawRect(CGRect dirtyRect)
         {
             CGRect bounds = Bounds;
-            CGRect highlight = _selection ?? CurrentRegionRect();
 
+            // The whole display is dimmed except the rectangle being dragged; before the drag the current region is
+            // only outlined (dashed), so a full-display region still shows the dimming.
             using (NSBezierPath dim = NSBezierPath.FromRect(bounds))
             {
-                dim.AppendPath(NSBezierPath.FromRect(highlight));
-                dim.WindingRule = NSWindingRule.EvenOdd;
+                if (_selection is { } hole)
+                {
+                    using NSBezierPath holePath = NSBezierPath.FromRect(hole);
+                    dim.AppendPath(holePath);
+                    dim.WindingRule = NSWindingRule.EvenOdd;
+                }
+
                 NSColor.Black.ColorWithAlphaComponent(0.5f).SetFill();
                 dim.Fill();
             }
 
+            CGRect highlight = _selection ?? CurrentRegionRect().Inset(2, 2);
             if (highlight.Width > 0 && highlight.Height > 0)
             {
-                using NSBezierPath outline = NSBezierPath.FromRect(highlight.Inset(-1, -1));
+                using NSBezierPath outline = NSBezierPath.FromRect(highlight);
                 outline.LineWidth = 2;
                 if (_selection is null)
                 {
