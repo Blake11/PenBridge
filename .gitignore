@@ -56,11 +56,9 @@ local.properties
 .claude/settings.local.json
 .claude/worktrees/
 
-# Serena (project config + memories tracked; local overrides ignored).
+# Serena: only project.yml is tracked; .serena/.gitignore ignores cache, memories and local overrides.
 # The negation overrides a global excludesFile that ignores .serena/.
 !.serena/
-.serena/project.local.yml
-.serena/cache/
 
 # Probe/tool build output (scripts/cgevent-probe.sh)
 /.build/
