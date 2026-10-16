@@ -112,8 +112,13 @@ public sealed class SettingsWindowController : IDisposable
             _window!.Center();
         }
 
-        NSApplication.SharedApplication.Activate();
+        // An accessory app is never frontmost on its own, and the cooperative Activate() is ignored while another app
+        // holds focus; force the activation, then order the window front so it is key even if activation lags.
+#pragma warning disable CA1422 // Deprecated, but the cooperative form does not take focus from the frontmost app.
+        NSApplication.SharedApplication.ActivateIgnoringOtherApps(true);
+#pragma warning restore CA1422
         _window!.MakeKeyAndOrderFront(null);
+        _window.OrderFrontRegardless();
     }
 
     public void Dispose()
