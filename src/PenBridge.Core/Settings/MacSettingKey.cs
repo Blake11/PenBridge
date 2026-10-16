@@ -11,7 +11,7 @@ public enum MacSettingKey : ushort
     /// <summary>String: <c>""</c> main display, <c>"all"</c> all displays, else a display id from the DisplayList (ADR-0031).</summary>
     TargetDisplay = 1,
 
-    /// <summary>Rect: the region of the current target display (ignored for all displays). Default 0,0,1,1.</summary>
+    /// <summary>Rect: the region of the current target display (ignored for all displays), width and height at least <see cref="MacSettings.MinRegionSize"/>. Default 0,0,1,1.</summary>
     Region = 2,
 
     /// <summary>Bool: the dragged region keeps the phone surface's aspect ratio. Default false.</summary>

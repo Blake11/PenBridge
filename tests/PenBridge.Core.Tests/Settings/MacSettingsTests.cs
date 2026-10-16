@@ -148,6 +148,20 @@ public class MacSettingsTests
         Assert.True(r.Y + r.Height <= 1 + 1e-6);
     }
 
+    [Theory]
+    [InlineData(0, 0, 0.05f, 0.05f, true)]
+    [InlineData(0.95f, 0.95f, 0.05f, 0.05f, true)]
+    [InlineData(0, 0, 1, 0.05f, true)]
+    [InlineData(0, 0, 0.0499999f, 1, false)]
+    [InlineData(0, 0, 1, 0.0499999f, false)]
+    [InlineData(0.5f, 0.5f, 0.01f, 0.01f, false)]
+    public void Region_is_at_least_five_percent_wide_and_high(float x, float y, float w, float h, bool valid)
+    {
+        Assert.Equal(0.05f, MacSettings.MinRegionSize);
+        Assert.Equal(valid, Valid(SettingEntry.Rect(MacSettingKey.Region, new NormalizedRect(x, y, w, h))));
+        Assert.False(Valid(SettingEntry.Rect(MacSettingKey.Region, new NormalizedRect(0, 0, MathF.BitDecrement(MacSettings.MinRegionSize), 1))));
+    }
+
     [Fact]
     public void Unknown_keys_are_rejected() =>
         Assert.False(Valid(SettingEntry.Bool(99, true)));

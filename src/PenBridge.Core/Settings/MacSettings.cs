@@ -52,6 +52,9 @@ public static class MacSettings
     /// <summary><see cref="MacSettingKey.FullPressureAt"/> must exceed <see cref="MacSettingKey.ClickThreshold"/> by more than this.</summary>
     public const float MinPressureSpan = 0.1f;
 
+    /// <summary>Smallest width and height of <see cref="MacSettingKey.Region"/> (normalized; compared as the <c>f32</c> on the wire).</summary>
+    public const float MinRegionSize = 0.05f;
+
     private static readonly string[] StylusModes = ["Pen", "Mouse"];
     private static readonly string[] SideButtonActions = ["RightClick", "MiddleClick", "Eraser", "DoubleClick", "None"];
     private static readonly string[] SmartZoomModes = ["FollowSystem", "On", "Off"];
@@ -132,7 +135,8 @@ public static class MacSettings
     /// <summary>
     /// The Mac's (server-side) validation of one entry against the table, the <paramref name="current"/> values and
     /// the Mac's <paramref name="displays"/> (the list it sends in DisplayList): a known key, the key's type, a value in
-    /// range (Int: one of <see cref="MacSettingDescriptor.Values"/>), a TargetDisplay of main, all or one of the display ids, and for the pressure pair
+    /// range (Int: one of <see cref="MacSettingDescriptor.Values"/>; Region: inside 0..1 with width and height at least
+    /// <see cref="MinRegionSize"/>), a TargetDisplay of main, all or one of the display ids, and for the pressure pair
     /// <c>FullPressureAt &gt; ClickThreshold + 0.1</c> with the other one's current value. <paramref name="normalized"/>
     /// is the value to apply (a region pulled exactly inside 0..1). The phone reads snapshots with
     /// <see cref="MacSettingValues.FromEntries"/> instead, which trusts the Mac's TargetDisplay.
@@ -213,7 +217,7 @@ public static class MacSettings
                 NormalizedRect r = entry.RectValue;
                 double w = Math.Min(r.Width, 1 - r.X);
                 double h = Math.Min(r.Height, 1 - r.Y);
-                if (!(w > 0 && h > 0))
+                if (!(w >= MinRegionSize && h >= MinRegionSize))
                 {
                     return false;
                 }

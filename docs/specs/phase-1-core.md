@@ -68,7 +68,7 @@ Messages (C = phone → Mac, S = Mac → phone):
 | Key | Name | Type | Range / values | Default |
 |---|---|---|---|---|
 | 1 | TargetDisplay | String | `""` main, `"all"` all displays, else a display id from DisplayList | `""` |
-| 2 | Region | Rect | for the current target display; ignored for all displays | 0,0,1,1 |
+| 2 | Region | Rect | for the current target display, inside 0..1, w, h ≥ 0.05 (`MinRegionSize`); ignored for all displays | 0,0,1,1 |
 | 3 | RegionAspectLock | Bool | | false |
 | 10 | StylusMode | Int | 0 Pen, 1 Mouse | 0 |
 | 11 | MouseSpeed | Float | 0.25..4 | 1 |
