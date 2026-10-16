@@ -346,6 +346,7 @@ Cite ADRs by number (and section) rather than reading this whole file.
 
 ## ADR-0032 — Pen settings: Pen/Mouse mode, side-button action and pressure curve, applied on the Mac
 **Status:** accepted (2026-10-16). Makes ADR-0016's side-button mapping configurable; keeps ADR-0022's contact-down latch.
+**Amended 2026-10-16 (#155):** the click threshold has a 0.02 release hysteresis; a stylus-mode change applies after the current stroke; Mouse mode moves 8 pt per phone mm at speed 1.
 - **Context:** Wacom drivers offer a relative Mouse mode (#129), a side-switch action and a tip-feel curve. ADR-0006 and ADR-0016 deferred the button mapping to Phase 5, and the pressure curve was deferred from Phase 1.
 - **Decision:** all three live in Core on the Mac side and are applied before injection, so the input wire format doesn't change.
   - **Stylus mode** (`Pen` default, `Mouse`):
@@ -357,7 +358,7 @@ Cite ADRs by number (and section) rather than reading this whole file.
     - Held at contact-down (the ADR-0022 latch stays): Right and Middle make the stroke a drag with that button, Eraser makes it an eraser stroke, and Double click and None leave it a normal left stroke. Pressing or releasing the button during contact posts nothing.
   - **Pressure curve** (pen and eraser only; the finger fallback's synthetic pressure is not curved):
     - **Tip feel**, −1 (soft) … +1 (firm), default 0 = linear: output = input^γ with γ = 2^tipFeel (soft γ = 0.5, firm γ = 2).
-    - Advanced: **Click threshold** 0 … 0.5 (default 0: the phone's contact decides): below it the pen hovers. **Full pressure at** 0.5 … 1 (default 1).
+    - Advanced: **Click threshold** 0 … 0.5 (default 0: the phone's contact decides): below it the pen hovers; a stroke presses at the threshold and releases only below threshold − 0.02 (at least 0), so pressure near it doesn't flicker. **Full pressure at** 0.5 … 1 (default 1).
     - Output = curve((p − threshold) / (full − threshold)), clamped to 0..1, allocation-free per sample.
     - The Mac Settings window has a live test pad that draws with the curved pressure.
 - **Why on the Mac:** Wacom keeps these in the driver too. The Mac sees every sample before injection, and one place means the phone stays a pure sampler and older phones get the settings too.
@@ -365,6 +366,7 @@ Cite ADRs by number (and section) rather than reading this whole file.
 
 ## ADR-0033 — Gesture settings: Smart Zoom override, pointer and scroll speed, per-gesture toggles
 **Status:** accepted (2026-10-16). Delivers the Phase 5 items deferred by ADR-0026 (pointer speed) and ADR-0029 (Smart Zoom override).
+**Amended 2026-10-16 (#155):** gesture gain is independent of the pen's active area and region (the Phase 4 basis); the speed settings scale it.
 - **Decision (Mac settings, editable from the phone per ADR-0030):**
   - **Smart Zoom:** Follow macOS (default, ADR-0029) / On / Off.
   - **Pointer speed** scales the one-finger cursor and three-finger drag gain; **Scroll speed** scales two-finger scrolling and its momentum. Both 0.25 … 4, default 1.
