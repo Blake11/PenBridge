@@ -12,6 +12,7 @@ scripts/doctor.sh                       # read-only ✓/✗ + fix hints; exit 1 
 scripts/bootstrap.sh [--skip-android] [--skip-workloads]   # idempotent; never runs sudo, prints sudo commands
 ```
 bootstrap: Homebrew `openjdk@17` + `android-commandlinetools` cask (seed), Android SDK in `~/Library/Android/sdk` (platform-tools, emulator, `platforms;android-36`, `build-tools;36.0.0`, arm64 Google APIs image, licenses), `git config core.hooksPath .githooks`; prints env vars, writes no profile.
+Optional: Serena for the agents' `serena-ws` server (`scripts/serena-mcp.sh` finds it on PATH or in `~/.local/bin`): `brew install uv && uv tool install -p 3.13 serena-agent`.
 
 ## Steps only the user can do (agents: ask, don't attempt)
 - **Workloads** — `/usr/local/share/dotnet` is root-owned, so install needs sudo:

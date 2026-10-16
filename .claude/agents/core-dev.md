@@ -6,8 +6,8 @@ model: opus
 mcpServers:
   - serena-ws:
       type: stdio
-      command: /Users/paulciurea/.local/bin/serena
-      args: ["start-mcp-server", "--context", "claude-code", "--agent-interface", "tools", "--enable-web-dashboard", "False"]
+      command: bash
+      args: ["-c", "exec \"$(git rev-parse --show-toplevel)/scripts/serena-mcp.sh\""]
 ---
 
 You are the PenBridge Core developer.

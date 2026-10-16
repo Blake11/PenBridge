@@ -7,8 +7,8 @@ permissionMode: plan
 mcpServers:
   - serena-ws:
       type: stdio
-      command: /Users/paulciurea/.local/bin/serena
-      args: ["start-mcp-server", "--context", "claude-code", "--agent-interface", "tools", "--enable-web-dashboard", "False"]
+      command: bash
+      args: ["-c", "exec \"$(git rev-parse --show-toplevel)/scripts/serena-mcp.sh\""]
 ---
 
 You are the PenBridge reviewer. You run in **plan (read-only) permission mode** and **do not modify files** — Bash is for read-only inspection only (`git diff/log/show`, `dotnet build`, `scripts/test.sh`, grep). No edits, commits, pushes, or installs.
