@@ -160,6 +160,16 @@ public sealed partial class ServerHost : IAsyncDisposable
     /// </summary>
     public event EventHandler<SettingsUpdateRequestedEventArgs>? SettingsUpdateRequested;
 
+    /// <summary>The connected phone surface's width / height in its current orientation, or null when no phone is connected.</summary>
+    public double? PhoneSurfaceAspect
+    {
+        get
+        {
+            double aspect = _server?.PhoneSurface?.AspectRatio ?? 0d;
+            return aspect > 0 && double.IsFinite(aspect) ? aspect : null;
+        }
+    }
+
     /// <summary>The current snapshot.</summary>
     public ServerHostState State { get; private set; }
 
