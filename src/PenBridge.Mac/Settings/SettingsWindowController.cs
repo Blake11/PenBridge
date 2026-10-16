@@ -218,14 +218,14 @@ public sealed class SettingsWindowController : IDisposable
             }
         });
         _stylusMode.ToolTip = "Pen: the phone maps onto the display. Mouse: the hovering pen moves the cursor from where it is.";
-        _mouseSpeed = SpeedSlider(v => _store.MouseSpeed = v);
+        _mouseSpeed = SpeedSlider(v => Commit(() => _store.MouseSpeed = v));
         _mouseAcceleration = Checkbox("Acceleration", v => _store.MouseAcceleration = v);
         _sideButton = Popup(() => _store.SideButton = (SideButtonAction)(int)_sideButton.IndexOfSelectedItem, SideButtonTitles);
 
-        _tipFeel = new SliderRow(SettingLimits.MinTipFeel, SettingLimits.MaxTipFeel, v => _store.TipFeel = (float)v, OnCurveSliding, v => v.ToString("+0.00;−0.00;0", CultureInfo.CurrentCulture), "Soft", "Firm");
-        _clickThreshold = new SliderRow(SettingLimits.MinClickThreshold, SettingLimits.MaxClickThreshold, v => _store.ClickThreshold = (float)v, OnCurveSliding, Percent);
+        _tipFeel = new SliderRow(SettingLimits.MinTipFeel, SettingLimits.MaxTipFeel, v => Commit(() => _store.TipFeel = (float)v), OnCurveSliding, v => v.ToString("+0.00;−0.00;0", CultureInfo.CurrentCulture), "Soft", "Firm");
+        _clickThreshold = new SliderRow(SettingLimits.MinClickThreshold, SettingLimits.MaxClickThreshold, v => Commit(() => _store.ClickThreshold = (float)v), OnCurveSliding, Percent);
         _clickThreshold.Slider.ToolTip = "Below this pressure the pen hovers instead of touching (0: the phone decides).";
-        _fullPressureAt = new SliderRow(SettingLimits.MinFullPressureAt, SettingLimits.MaxFullPressureAt, v => _store.FullPressureAt = (float)v, OnCurveSliding, Percent);
+        _fullPressureAt = new SliderRow(SettingLimits.MinFullPressureAt, SettingLimits.MaxFullPressureAt, v => Commit(() => _store.FullPressureAt = (float)v), OnCurveSliding, Percent);
         _fullPressureAt.Slider.ToolTip = "Pressing this hard already gives full pressure.";
 
         _pad = new PressureTestPad();
@@ -283,8 +283,8 @@ public sealed class SettingsWindowController : IDisposable
     {
         _smartZoom = Popup(() => _store.SmartZoom = (SmartZoomMode)(int)_smartZoom.IndexOfSelectedItem, SmartZoomTitles);
         _smartZoom.ToolTip = "Two-finger double tap. Follow macOS uses the trackpad's Smart zoom setting.";
-        _pointerSpeed = SpeedSlider(v => _store.PointerSpeed = v);
-        _scrollSpeed = SpeedSlider(v => _store.ScrollSpeed = v);
+        _pointerSpeed = SpeedSlider(v => Commit(() => _store.PointerSpeed = v));
+        _scrollSpeed = SpeedSlider(v => Commit(() => _store.ScrollSpeed = v));
         _zoom = Checkbox("Zoom (pinch)", v => _store.Zoom = v);
         _rotate = Checkbox("Rotate", v => _store.Rotate = v);
         _threeFingerDrag = Checkbox("Three-finger drag", v => _store.ThreeFingerDrag = v);
@@ -302,8 +302,11 @@ public sealed class SettingsWindowController : IDisposable
 
     private NSGridView BuildGeneralTab()
     {
-        _runAtStartup = Checkbox("Run at startup", _ => StatusItemController.ToggleRunAtStartup());
-        _runAtStartup.AllowsMixedState = true;
+        _runAtStartup = Checkbox("Run at startup", _ =>
+        {
+            StatusItemController.ToggleRunAtStartup();
+            RefreshGeneralOnly();
+        });
         _allowTakeover = Checkbox("Allow takeover", v => _host.SetAllowTakeover(v));
         _allowTakeover.ToolTip = "A newly connecting paired device replaces the active one instead of being refused.";
 
@@ -317,7 +320,19 @@ public sealed class SettingsWindowController : IDisposable
 
     private void OnStoreChanged(object? sender, SettingChangedEventArgs e) => Refresh();
 
-    private void OnDisplaysChanged(object? sender, EventArgs e) => Refresh();
+    // A reconfiguration (display unplugged, resolution change) invalidates an open overlay's screen: cancel it.
+    private void OnDisplaysChanged(object? sender, EventArgs e)
+    {
+        _overlay?.Close();
+        Refresh();
+    }
+
+    // The store may clamp a committed value (e.g. the pressure pair rule) without a change to raise; show what it kept.
+    private void Commit(Action set)
+    {
+        set();
+        Refresh();
+    }
 
     private void Refresh()
     {
@@ -405,13 +420,16 @@ public sealed class SettingsWindowController : IDisposable
 
     private void RefreshGeneral()
     {
-        _runAtStartup.State = LoginItem.Status switch
+        // Mixed ("waiting for approval") is set only from here: a click never cycles into it.
+        SMAppServiceStatus status = LoginItem.Status;
+        _runAtStartup.AllowsMixedState = status == SMAppServiceStatus.RequiresApproval;
+        _runAtStartup.State = status switch
         {
             SMAppServiceStatus.Enabled => NSCellStateValue.On,
             SMAppServiceStatus.RequiresApproval => NSCellStateValue.Mixed,
             _ => NSCellStateValue.Off,
         };
-        _runAtStartup.ToolTip = LoginItem.Status == SMAppServiceStatus.RequiresApproval
+        _runAtStartup.ToolTip = status == SMAppServiceStatus.RequiresApproval
             ? "Waiting for approval in System Settings ▸ General ▸ Login Items. Click to open it."
             : null;
         SetCheck(_allowTakeover, _host.State.AllowTakeover);
@@ -573,9 +591,11 @@ public sealed class SettingsWindowController : IDisposable
         });
     }
 
-    private void OnWindowBecameKey()
+    // Run at startup can change in System Settings while the window is open; pull it when the user comes back.
+    private void OnWindowBecameKey() => RefreshGeneralOnly();
+
+    private void RefreshGeneralOnly()
     {
-        // Run at startup can change in System Settings while the window is open; pull it when the user comes back.
         if (_window is not null)
         {
             _refreshing = true;

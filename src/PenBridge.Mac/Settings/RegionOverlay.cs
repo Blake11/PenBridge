@@ -42,7 +42,7 @@ internal sealed class RegionOverlay : IDisposable
             CollectionBehavior = NSWindowCollectionBehavior.CanJoinAllSpaces | NSWindowCollectionBehavior.FullScreenAuxiliary,
         };
         _window.SetFrame(frame, display: true);
-        _view = new OverlayView(this, current, aspect is > 0 && double.IsFinite(aspect.Value) ? aspect : null);
+        _view = new OverlayView(this, new CGRect(CGPoint.Empty, frame.Size), current, aspect is > 0 && double.IsFinite(aspect.Value) ? aspect : null);
         _window.ContentView = _view;
         _window.InitialFirstResponder = _view;
     }
@@ -116,20 +116,37 @@ internal sealed class RegionOverlay : IDisposable
         }
     }
 
+    private sealed class FirstMouseButton : NSButton
+    {
+        public override bool AcceptsFirstMouse(NSEvent? theEvent) => true;
+    }
+
     private sealed class OverlayView : NSView
     {
         private const ushort EscapeKeyCode = 53;
+        private const double HintHeightFraction = 0.12;
         private readonly RegionOverlay _owner;
         private readonly NormalizedRect _current;
         private readonly double? _aspect;
         private CGPoint _anchor;
         private CGRect? _selection;
 
-        public OverlayView(RegionOverlay owner, NormalizedRect current, double? aspect)
+        public OverlayView(RegionOverlay owner, CGRect frame, NormalizedRect current, double? aspect)
+            : base(frame)
         {
             _owner = owner;
             _current = current;
             _aspect = aspect;
+
+            // A visible way out that works even if the app could not be activated (no key window, so no Esc): its
+            // first click is accepted on the inactive overlay.
+            var cancel = new FirstMouseButton { Title = "Cancel", BezelStyle = NSBezelStyle.Push };
+            cancel.Activated += (_, _) => _owner.Close();
+            cancel.SizeToFit();
+            CGSize size = cancel.Frame.Size;
+            cancel.Frame = new CGRect((frame.Width - size.Width) / 2, (frame.Height * HintHeightFraction) - size.Height - 16, size.Width, size.Height);
+            cancel.AutoresizingMask = NSViewResizingMask.MinXMargin | NSViewResizingMask.MaxXMargin;
+            AddSubview(cancel);
         }
 
         public override bool AcceptsFirstResponder() => true;
@@ -215,7 +232,7 @@ internal sealed class RegionOverlay : IDisposable
         {
             string text = _selection is { } s
                 ? Math.Round(s.Width).ToString(System.Globalization.CultureInfo.CurrentCulture) + " × " + Math.Round(s.Height).ToString(System.Globalization.CultureInfo.CurrentCulture) + " pt"
-                : "Drag a rectangle to set the region" + (_aspect is null ? string.Empty : " (aspect locked)") + ". Esc cancels.";
+                : "Drag a rectangle to set the region" + (_aspect is null ? string.Empty : " (aspect locked)") + ". Esc or Cancel to keep the current one.";
             var attributes = new NSStringAttributes
             {
                 Font = NSFont.SystemFontOfSize(18, NSFontWeight.Medium),
@@ -223,7 +240,7 @@ internal sealed class RegionOverlay : IDisposable
             };
             using var label = new NSAttributedString(text, attributes);
             CGSize size = label.Size;
-            var origin = new CGPoint((bounds.Width - size.Width) / 2, bounds.Height * 0.12);
+            var origin = new CGPoint((bounds.Width - size.Width) / 2, bounds.Height * HintHeightFraction);
             CGRect pill = new CGRect(origin, size).Inset(-14, -8);
             using (NSBezierPath background = NSBezierPath.FromRoundedRect(pill, 10, 10))
             {
