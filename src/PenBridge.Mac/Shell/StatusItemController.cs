@@ -432,8 +432,8 @@ public sealed partial class StatusItemController : IDisposable
 
     private void ChooseDisplay(string uuid)
     {
-        _resolver.SetTarget(uuid);
-        _settings.TargetDisplayUuid = _resolver.PreferredUuid;
+        _settings.TargetDisplay = uuid;
+        _resolver.SetTarget(_settings.TargetDisplayUuid);
     }
 
     private static void ToggleRunAtStartup()
