@@ -85,7 +85,7 @@ Messages (C = phone → Mac, S = Mac → phone):
 | 25 | ThreeFingerDrag | Bool | | true |
 | 26 | FourFingerGestures | Bool | | true |
 
-`FullPressureAt > ClickThreshold + 0.1` (in `f32`) must hold across the pair. The Mac validates each entry of an update on its own (`MacSettings.TryValidate`: known key, its type, in range, a listed display id) and checks the pair on the result (`MacSettingValues.ApplyUpdate`: if the result breaks it, both pressure entries of that update are ignored); it applies the valid ones, ignores the rest, and replies with the full snapshot, which is the truth.
+`FullPressureAt > ClickThreshold + 0.1` (in `f32`) must hold across the pair. The Mac validates each entry of an update on its own (`MacSettings.TryValidate`: known key, its type, in range, a display id from the list it sends; the display list is a required argument) and checks the pair on the result (`MacSettingValues.ApplyUpdate(entries, displays)`: if the result breaks it, both pressure entries of that update are ignored); it applies the valid ones, ignores the rest, and replies with the full snapshot, which is the truth. The phone reads a snapshot with `MacSettingValues.FromEntries`, which takes the Mac's TargetDisplay as sent.
 
 **Connection flow:**
 1. Hello / HelloAck.

@@ -57,13 +57,15 @@ public sealed class MacSettingValues
     public bool FourFingerGestures => Get(MacSettingKey.FourFingerGestures).BoolValue;
 
     /// <summary>
-    /// Values from a snapshot (or a store): starts at the defaults and applies the entries as one update
-    /// (<see cref="ApplyUpdate"/>), so unknown keys, wrong types and out-of-range values keep their defaults.
+    /// Values from a SettingsSnapshot (the phone side): starts at the defaults and applies the entries as one update,
+    /// so unknown keys, wrong types and out-of-range values keep their defaults. The TargetDisplay is taken as the Mac
+    /// sent it (any id): the Mac validated it against its displays. The Mac itself loads its store with
+    /// <see cref="ApplyUpdate"/> and its current display list.
     /// </summary>
     public static MacSettingValues FromEntries(IReadOnlyList<SettingEntry> entries)
     {
         var values = new MacSettingValues();
-        values.ApplyUpdate(entries);
+        values.Apply(entries, null);
         return values;
     }
 
@@ -78,10 +80,10 @@ public sealed class MacSettingValues
 
     public MacSettingValues Clone() => new([.. _values]);
 
-    /// <summary>Applies one entry if <see cref="MacSettings.TryValidate"/> accepts it against the current values.</summary>
-    public bool TryApply(in SettingEntry entry, IReadOnlyList<DisplayListEntry>? displays = null)
+    /// <summary>Applies one entry if <see cref="MacSettings.TryValidate"/> accepts it against the current values and <paramref name="displays"/>.</summary>
+    public bool TryApply(in SettingEntry entry, IReadOnlyList<DisplayListEntry> displays)
     {
-        if (!MacSettings.TryValidate(entry, this, out SettingEntry normalized, displays))
+        if (!MacSettings.TryValidate(entry, this, displays, out SettingEntry normalized))
         {
             return false;
         }
@@ -91,11 +93,19 @@ public sealed class MacSettingValues
     }
 
     /// <summary>
-    /// Applies a SettingsUpdate: each entry valid on its own is applied (later entries for the same key win), the rest
-    /// are ignored. The pressure pair is checked on the result, so one update can move both ends; if the result breaks
-    /// the rule, the update's ClickThreshold and FullPressureAt are both ignored. Returns the entries that changed a value.
+    /// The Mac applies a SettingsUpdate (or its stored values): each entry valid on its own
+    /// (<see cref="MacSettings.TryValidate"/>, a TargetDisplay must be main, all or one of <paramref name="displays"/>)
+    /// is applied (later entries for the same key win), the rest are ignored. The pressure pair is checked on the
+    /// result, so one update can move both ends; if the result breaks the rule, the update's ClickThreshold and
+    /// FullPressureAt are both ignored. Returns the entries that changed a value.
     /// </summary>
-    public IReadOnlyList<SettingEntry> ApplyUpdate(IReadOnlyList<SettingEntry> entries, IReadOnlyList<DisplayListEntry>? displays = null)
+    public IReadOnlyList<SettingEntry> ApplyUpdate(IReadOnlyList<SettingEntry> entries, IReadOnlyList<DisplayListEntry> displays)
+    {
+        ArgumentNullException.ThrowIfNull(displays);
+        return Apply(entries, displays);
+    }
+
+    private List<SettingEntry> Apply(IReadOnlyList<SettingEntry> entries, IReadOnlyList<DisplayListEntry>? displays)
     {
         ArgumentNullException.ThrowIfNull(entries);
         SettingEntry[] candidate = [.. _values];

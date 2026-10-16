@@ -9,8 +9,10 @@ public class MacSettingsTests
 {
     private static readonly MacSettingValues Defaults = new();
 
+    private static readonly DisplayListEntry[] NoDisplays = [];
+
     private static bool Valid(in SettingEntry entry, MacSettingValues? current = null, IReadOnlyList<DisplayListEntry>? displays = null) =>
-        MacSettings.TryValidate(entry, current ?? Defaults, out _, displays);
+        MacSettings.TryValidate(entry, current ?? Defaults, displays ?? NoDisplays, out _);
 
     [Fact]
     public void Table_matches_the_contract()
@@ -110,8 +112,26 @@ public class MacSettingsTests
         Assert.True(Valid(SettingEntry.String(MacSettingKey.TargetDisplay, MacSettings.AllDisplays), displays: displays));
         Assert.True(Valid(SettingEntry.String(MacSettingKey.TargetDisplay, "uuid-1"), displays: displays));
         Assert.False(Valid(SettingEntry.String(MacSettingKey.TargetDisplay, "uuid-2"), displays: displays));
-        Assert.True(Valid(SettingEntry.String(MacSettingKey.TargetDisplay, "uuid-2"))); // no list to check against
+        Assert.False(Valid(SettingEntry.String(MacSettingKey.TargetDisplay, "uuid-1"))); // an empty list knows no ids
+        Assert.True(Valid(SettingEntry.String(MacSettingKey.TargetDisplay, MacSettings.AllDisplays)));
         Assert.False(Valid(SettingEntry.Bool(MacSettingKey.TargetDisplay, true)));
+    }
+
+    [Fact]
+    public void The_mac_side_needs_its_display_list()
+    {
+        SettingEntry target = SettingEntry.String(MacSettingKey.TargetDisplay, "uuid-1");
+        Assert.Throws<ArgumentNullException>(() => MacSettings.TryValidate(target, Defaults, null!, out _));
+        Assert.Throws<ArgumentNullException>(() => new MacSettingValues().ApplyUpdate([target], null!));
+        Assert.Throws<ArgumentNullException>(() => new MacSettingValues().TryApply(target, null!));
+        Assert.Empty(new MacSettingValues().ApplyUpdate([target], NoDisplays));
+    }
+
+    [Fact]
+    public void The_phone_side_takes_the_macs_target_display_as_sent()
+    {
+        MacSettingValues values = MacSettingValues.FromEntries([SettingEntry.String(MacSettingKey.TargetDisplay, "uuid-9")]);
+        Assert.Equal("uuid-9", values.TargetDisplay);
     }
 
     [Fact]
@@ -122,7 +142,7 @@ public class MacSettingsTests
 
         // 0.1f + 0.9f rounds past 1 in float; the wire allows that much, the validator trims it.
         SettingEntry edge = SettingEntry.Rect(MacSettingKey.Region, new NormalizedRect(0.3f, 0.7f, 0.7f, 0.3f));
-        Assert.True(MacSettings.TryValidate(edge, Defaults, out SettingEntry normalized));
+        Assert.True(MacSettings.TryValidate(edge, Defaults, NoDisplays, out SettingEntry normalized));
         NormalizedRect r = normalized.RectValue;
         Assert.True(r.X + r.Width <= 1 + 1e-6);
         Assert.True(r.Y + r.Height <= 1 + 1e-6);
@@ -145,10 +165,10 @@ public class MacSettingsTests
         Assert.True(Valid(SettingEntry.Float(MacSettingKey.ClickThreshold, 0.45f), current));
         Assert.False(Valid(SettingEntry.Float(MacSettingKey.ClickThreshold, 0.5f), current));
 
-        Assert.True(current.TryApply(SettingEntry.Float(MacSettingKey.ClickThreshold, 0.4f)));
+        Assert.True(current.TryApply(SettingEntry.Float(MacSettingKey.ClickThreshold, 0.4f), NoDisplays));
         Assert.False(Valid(SettingEntry.Float(MacSettingKey.FullPressureAt, 0.5f), current));
         Assert.True(Valid(SettingEntry.Float(MacSettingKey.FullPressureAt, 0.55f), current));
-        Assert.False(current.TryApply(SettingEntry.Float(MacSettingKey.FullPressureAt, 0.5f)));
+        Assert.False(current.TryApply(SettingEntry.Float(MacSettingKey.FullPressureAt, 0.5f), NoDisplays));
         Assert.Equal(0.6f, current.FullPressureAt);
     }
 
@@ -166,7 +186,8 @@ public class MacSettingsTests
         [
             SettingEntry.Float(MacSettingKey.FullPressureAt, 0.5f),
             SettingEntry.Float(MacSettingKey.ClickThreshold, 0.1f),
-        ]);
+        ],
+            NoDisplays);
         Assert.Equal(2, changed.Count);
         Assert.Equal(0.1f, values.ClickThreshold);
         Assert.Equal(0.5f, values.FullPressureAt);
@@ -176,7 +197,8 @@ public class MacSettingsTests
         [
             SettingEntry.Float(MacSettingKey.ClickThreshold, 0.45f),
             SettingEntry.Bool(MacSettingKey.Zoom, false),
-        ]);
+        ],
+            NoDisplays);
         Assert.Equal([SettingEntry.Bool(MacSettingKey.Zoom, false)], changed);
         Assert.Equal(0.1f, values.ClickThreshold);
     }
@@ -194,7 +216,8 @@ public class MacSettingsTests
             SettingEntry.Int(MacSettingKey.Zoom, 0), // wrong type
             SettingEntry.Int(MacSettingKey.SideButton, 2),
             SettingEntry.Int(MacSettingKey.SideButton, 3), // later wins
-        ]);
+        ],
+            NoDisplays);
         Assert.Equal([SettingEntry.Int(MacSettingKey.StylusMode, 1), SettingEntry.Int(MacSettingKey.SideButton, 3)], changed);
         Assert.Equal(1, values.StylusMode);
         Assert.Equal(3, values.SideButton);
@@ -218,7 +241,8 @@ public class MacSettingsTests
             SettingEntry.Bool(MacSettingKey.MouseAcceleration, false),
             SettingEntry.Bool(MacSettingKey.ThreeFingerDrag, false),
             SettingEntry.Bool(MacSettingKey.FourFingerGestures, false),
-        ]);
+        ],
+            NoDisplays);
         IReadOnlyList<SettingEntry> entries = values.ToEntries();
         Assert.Equal(MacSettings.All.Count, entries.Count);
         var buffer = new byte[ControlFrame.GetFrameSize(new SettingsSnapshotMessage(entries))];
@@ -239,7 +263,7 @@ public class MacSettingsTests
         Assert.True(back.Rotate);
 
         MacSettingValues clone = back.Clone();
-        clone.TryApply(SettingEntry.Bool(MacSettingKey.Rotate, false));
+        clone.TryApply(SettingEntry.Bool(MacSettingKey.Rotate, false), NoDisplays);
         Assert.True(back.Rotate);
     }
 

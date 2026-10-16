@@ -130,15 +130,17 @@ public static class MacSettings
     }
 
     /// <summary>
-    /// Validates one entry against the table and the <paramref name="current"/> values: a known key, the key's type,
-    /// a value in range (Int: one of <see cref="MacSettingDescriptor.Values"/>), and for the pressure pair
-    /// <c>FullPressureAt &gt; ClickThreshold + 0.1</c> with the other one's current value. With <paramref name="displays"/>,
-    /// a TargetDisplay other than main or all must be one of their ids. <paramref name="normalized"/> is the value to
-    /// apply (a region pulled exactly inside 0..1).
+    /// The Mac's (server-side) validation of one entry against the table, the <paramref name="current"/> values and
+    /// the Mac's <paramref name="displays"/> (the list it sends in DisplayList): a known key, the key's type, a value in
+    /// range (Int: one of <see cref="MacSettingDescriptor.Values"/>), a TargetDisplay of main, all or one of the display ids, and for the pressure pair
+    /// <c>FullPressureAt &gt; ClickThreshold + 0.1</c> with the other one's current value. <paramref name="normalized"/>
+    /// is the value to apply (a region pulled exactly inside 0..1). The phone reads snapshots with
+    /// <see cref="MacSettingValues.FromEntries"/> instead, which trusts the Mac's TargetDisplay.
     /// </summary>
-    public static bool TryValidate(in SettingEntry entry, MacSettingValues current, out SettingEntry normalized, IReadOnlyList<DisplayListEntry>? displays = null)
+    public static bool TryValidate(in SettingEntry entry, MacSettingValues current, IReadOnlyList<DisplayListEntry> displays, out SettingEntry normalized)
     {
         ArgumentNullException.ThrowIfNull(current);
+        ArgumentNullException.ThrowIfNull(displays);
         if (!TryValidateAlone(entry, out normalized, displays))
         {
             return false;
@@ -165,7 +167,10 @@ public static class MacSettings
     public static bool IsPressurePairValid(float clickThreshold, float fullPressureAt) =>
         fullPressureAt > clickThreshold + MinPressureSpan;
 
-    /// <summary>Every check of <see cref="TryValidate"/> except the pressure pair rule.</summary>
+    /// <summary>
+    /// Every check of <see cref="TryValidate"/> except the pressure pair rule. <paramref name="displays"/> null accepts
+    /// any TargetDisplay id: only for reading the Mac's own snapshot (<see cref="MacSettingValues.FromEntries"/>).
+    /// </summary>
     internal static bool TryValidateAlone(in SettingEntry entry, out SettingEntry normalized, IReadOnlyList<DisplayListEntry>? displays)
     {
         normalized = default;

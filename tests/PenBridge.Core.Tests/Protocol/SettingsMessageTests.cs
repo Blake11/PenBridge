@@ -150,7 +150,7 @@ public class SettingsMessageTests
         Assert.True(SettingsUpdateMessage.TryRead(Hex.Bytes("01 7777 01 0001 01"), out SettingsUpdateMessage update));
         SettingEntry entry = Assert.Single(update.Entries);
         Assert.Equal(0x7777, entry.Key);
-        Assert.False(MacSettings.TryValidate(entry, new MacSettingValues(), out _));
+        Assert.False(MacSettings.TryValidate(entry, new MacSettingValues(), [], out _));
     }
 
     [Fact]
