@@ -59,6 +59,19 @@ public enum ProtocolCapabilities : uint
     /// otherwise the phone keeps ADR-0022's absolute cursor.
     /// </summary>
     FingerTouches = 2,
+
+    /// <summary>
+    /// Since 1.2 (ADR-0030). The phone views and edits the Mac's settings: the server sends SettingsSnapshot and
+    /// DisplayList after SessionStart and on changes, and answers each SettingsUpdate with a snapshot. Used only when
+    /// both sides advertise it; without it none of these messages is sent, and receiving one is a protocol error.
+    /// </summary>
+    RemoteSettings = 4,
+
+    /// <summary>
+    /// Since 1.2 (ADR-0031). The server sends ActiveArea (the part of the surface that maps onto the whole target)
+    /// after each SurfaceInfo and target change; the phone marks it. Used only when both sides advertise it.
+    /// </summary>
+    ActiveArea = 8,
 }
 
 /// <summary><c>u32</c> flags describing the phone surface in SurfaceInfo. Unknown bits are preserved and ignored.</summary>

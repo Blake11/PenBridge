@@ -70,6 +70,19 @@ public sealed class PenBridgeClient : IAsyncDisposable
     /// <summary>Raised (on a thread-pool thread) when an established session ends.</summary>
     public event EventHandler<ClientDisconnectedEventArgs>? Disconnected;
 
+    /// <summary>
+    /// Raised on the read-loop thread when the Mac sends its settings (<see cref="ProtocolCapabilities.RemoteSettings"/>,
+    /// ADR-0030): after SessionStart, after every change and in reply to <see cref="UpdateSettingsAsync"/>. Redraw from
+    /// it (<see cref="Settings.MacSettingValues.FromEntries"/>); it is the truth. Handlers must be quick.
+    /// </summary>
+    public event EventHandler<SettingsSnapshotEventArgs>? SettingsSnapshotReceived;
+
+    /// <summary>Raised on the read-loop thread when the Mac sends the displays it can target (before its first snapshot and on changes).</summary>
+    public event EventHandler<DisplayListEventArgs>? DisplayListReceived;
+
+    /// <summary>Raised on the read-loop thread when the Mac sends the surface's active area (<see cref="ProtocolCapabilities.ActiveArea"/>, ADR-0031).</summary>
+    public event EventHandler<ActiveAreaEventArgs>? ActiveAreaReceived;
+
     public Guid DeviceId { get; }
 
     public ClientCredentialStore Credentials => _credentials;
@@ -106,6 +119,15 @@ public sealed class PenBridgeClient : IAsyncDisposable
 
     /// <summary>The connected server's name (untrusted peer text), or null.</summary>
     public string? ServerName => Volatile.Read(ref _connection)?.ServerName;
+
+    /// <summary>The Mac's latest settings snapshot on this connection, or null (not connected, not negotiated, or none yet).</summary>
+    public IReadOnlyList<SettingEntry>? LastSettingsSnapshot => Volatile.Read(ref _connection)?.Remote.Snapshot;
+
+    /// <summary>The Mac's latest display list on this connection, or null.</summary>
+    public IReadOnlyList<DisplayListEntry>? LastDisplayList => Volatile.Read(ref _connection)?.Remote.Displays;
+
+    /// <summary>The latest active area on this connection, or null (then the whole surface is active).</summary>
+    public NormalizedRect? LastActiveArea => Volatile.Read(ref _connection)?.Remote.ActiveArea;
 
     /// <summary>Capabilities the connected server advertised in HelloAck (None when not connected).</summary>
     public ProtocolCapabilities ServerCapabilities => Volatile.Read(ref _connection)?.ServerCapabilities ?? ProtocolCapabilities.None;
@@ -263,6 +285,32 @@ public sealed class PenBridgeClient : IAsyncDisposable
         await c.Channel.WriteAsync(surface).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Asks the Mac to change settings (ADR-0030). It applies the valid entries and answers with a snapshot
+    /// (<see cref="SettingsSnapshotReceived"/>). False, without sending, when not connected or the session didn't negotiate
+    /// <see cref="ProtocolCapabilities.RemoteSettings"/>, or when the write failed (the connection then closes).
+    /// </summary>
+    /// <exception cref="ArgumentException">Not 1..<see cref="SettingsWire.MaxEntries"/> entries.</exception>
+    public async Task<bool> UpdateSettingsAsync(IReadOnlyList<SettingEntry> entries)
+    {
+        var message = new SettingsUpdateMessage(entries);
+        if (Volatile.Read(ref _connection) is not { Closed: false } c || (c.Negotiated & ProtocolCapabilities.RemoteSettings) == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            await c.Channel.WriteAsync(message).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException or SocketException or InvalidOperationException or NotSupportedException)
+        {
+            c.Channel.Abort();
+            return false;
+        }
+    }
+
     /// <summary>Sends Bye(Normal) (best effort, bounded) and closes the session.</summary>
     public async Task DisconnectAsync()
     {
@@ -291,6 +339,14 @@ public sealed class PenBridgeClient : IAsyncDisposable
             c.Channel.AbortHard();
             await c.Completed.Task.ConfigureAwait(false);
         }
+    }
+
+    /// <summary>Writes any control message on the session's channel (tests: protocol violations after SessionStart).</summary>
+    internal async Task SendRawControlAsync<T>(T message)
+        where T : IControlMessage<T>
+    {
+        Connection c = Volatile.Read(ref _connection) ?? throw new InvalidOperationException("Not connected.");
+        await c.Channel.WriteAsync(message).ConfigureAwait(false);
     }
 
     /// <summary>Sends raw bytes on the session's UDP socket (tests: replay/tamper from the pinned source).</summary>
@@ -949,6 +1005,21 @@ public sealed class PenBridgeClient : IAsyncDisposable
                     case ControlMessageType.Pong:
                         c.UpdateRtt(frame.Read<PongMessage>().TimestampUs);
                         break;
+                    case ControlMessageType.SettingsSnapshot when (c.Negotiated & ProtocolCapabilities.RemoteSettings) != 0:
+                        IReadOnlyList<SettingEntry> snapshot = frame.Read<SettingsSnapshotMessage>().Entries;
+                        c.Remote.Snapshot = snapshot;
+                        RaiseRemote(SettingsSnapshotReceived, new SettingsSnapshotEventArgs(snapshot));
+                        break;
+                    case ControlMessageType.DisplayList when (c.Negotiated & ProtocolCapabilities.RemoteSettings) != 0:
+                        IReadOnlyList<DisplayListEntry> displays = frame.Read<DisplayListMessage>().Displays;
+                        c.Remote.Displays = displays;
+                        RaiseRemote(DisplayListReceived, new DisplayListEventArgs(displays));
+                        break;
+                    case ControlMessageType.ActiveArea when (c.Negotiated & ProtocolCapabilities.ActiveArea) != 0:
+                        NormalizedRect area = frame.Read<ActiveAreaMessage>().ToNormalizedRect();
+                        c.Remote.ActiveArea = area;
+                        RaiseRemote(ActiveAreaReceived, new ActiveAreaEventArgs(area));
+                        break;
                     case ControlMessageType.Bye:
                         bye = frame.Read<ByeMessage>().Reason;
                         reason = bye switch
@@ -1016,6 +1087,60 @@ public sealed class PenBridgeClient : IAsyncDisposable
             catch (Exception)
 #pragma warning restore CA1031
             {
+            }
+        }
+    }
+
+    private void RaiseRemote<T>(EventHandler<T>? handler, T args)
+    {
+        try
+        {
+            handler?.Invoke(this, args);
+        }
+#pragma warning disable CA1031 // A faulty UI handler must not end the session.
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            NetLog.Unexpected(_log, null, ex);
+        }
+    }
+
+    /// <summary>What the Mac last told this connection (written by the read loop, read by any thread).</summary>
+    private sealed class RemoteState
+    {
+        private readonly Lock _lock = new();
+        private IReadOnlyList<SettingEntry>? _snapshot;
+        private IReadOnlyList<DisplayListEntry>? _displays;
+        private NormalizedRect? _activeArea;
+
+        public IReadOnlyList<SettingEntry>? Snapshot
+        {
+            get => Volatile.Read(ref _snapshot);
+            set => Volatile.Write(ref _snapshot, value);
+        }
+
+        public IReadOnlyList<DisplayListEntry>? Displays
+        {
+            get => Volatile.Read(ref _displays);
+            set => Volatile.Write(ref _displays, value);
+        }
+
+        public NormalizedRect? ActiveArea
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _activeArea;
+                }
+            }
+
+            set
+            {
+                lock (_lock)
+                {
+                    _activeArea = value;
+                }
             }
         }
     }
@@ -1160,6 +1285,8 @@ public sealed class PenBridgeClient : IAsyncDisposable
         public TouchSample[] LastTouches { get; } = new TouchSample[InputPayload.MaxTouches];
 
         public PenSample[] ClickHistory { get; } = new PenSample[InputPayload.MaxHistory];
+
+        public RemoteState Remote { get; } = new();
 
         public ProtocolCapabilities ServerCapabilities { get; init; }
 

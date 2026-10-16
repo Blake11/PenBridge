@@ -51,8 +51,11 @@ public sealed class PenBridgeServer : IAsyncDisposable
     private readonly Dictionary<IPAddress, int> _pendingByAddress = [];
     private int _pending;
     private volatile bool _allowTakeover;
-    private DisplayRect _display;
-    private NormalizedRect _region;
+    private SettingsSnapshotMessage? _settingsSnapshot; // guarded by _gate
+    private DisplayListMessage? _displayList; // guarded by _gate
+    private readonly Lock _applyLock = new(); // orders target/settings applications to the input; see ApplyToInput
+    private MappingTarget _target; // guarded by _gate
+    private InputSettings _inputSettings; // guarded by _gate
     private SessionInput? _ppsInput;
     private long _ppsCount;
     private long _ppsTimestamp;
@@ -72,14 +75,16 @@ public sealed class PenBridgeServer : IAsyncDisposable
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPendingConnections, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPendingConnectionsPerAddress, 1);
         _ = new CoordinateMapper(1, 1, options.TargetDisplay, options.TargetRegion); // validates the target
+        ArgumentNullException.ThrowIfNull(options.InputSettings);
+        options.InputSettings.Validate();
 
         _options = options;
         _log = (options.LoggerFactory ?? NullLoggerFactory.Instance).CreateLogger("PenBridge.Server");
         _pins = new PinIssuer(options.TimeProvider);
         _pins.SecretsChanged += OnSecretsChanged;
         _allowTakeover = options.AllowTakeover;
-        _display = options.TargetDisplay;
-        _region = options.TargetRegion;
+        _target = MappingTarget.ForDisplay(options.TargetDisplay, options.TargetRegion);
+        _inputSettings = options.InputSettings;
         _serverName = WireString.Truncate(options.ServerName ?? string.Empty);
         _tlsOptions = new SslServerAuthenticationOptions
         {
@@ -103,6 +108,15 @@ public sealed class PenBridgeServer : IAsyncDisposable
 
     /// <summary>Raised when the active session ends (after its input was released).</summary>
     public event EventHandler<SessionEndedEventArgs>? SessionEnded;
+
+    /// <summary>
+    /// Raised when the phone sends a SettingsUpdate (needs <see cref="PenBridgeServerOptions.RemoteSettings"/>), on the
+    /// session's control-read task, in arrival order, never under the input lock. Validate and apply the entries, then
+    /// reply with <see cref="SendSettingsSnapshotAsync"/> (the snapshot is the acknowledgement, ADR-0030). Handlers must
+    /// be quick and marshal to the UI themselves. At most 20 updates per second (burst 20) per session reach it; the
+    /// excess is dropped (and logged), so a reply isn't guaranteed for every update the phone sent.
+    /// </summary>
+    public event EventHandler<SettingsUpdateRequestedEventArgs>? SettingsUpdateRequested;
 
     /// <summary>The bound TCP/UDP port (0 before <see cref="Start"/>).</summary>
     public int Port { get; private set; }
@@ -254,19 +268,157 @@ public sealed class PenBridgeServer : IAsyncDisposable
     }
 
     /// <summary>Changes the display region the phone maps to (applies to the active session immediately).</summary>
-    public void SetTarget(DisplayRect display, NormalizedRect region)
+    public void SetTarget(DisplayRect display, NormalizedRect region) => SetTarget(MappingTarget.ForDisplay(display, region));
+
+    /// <summary>
+    /// Changes the mapping target (one display and region, or all displays; ADR-0031) for the active session and every
+    /// later one. When the active area changes and the session negotiated <see cref="ProtocolCapabilities.ActiveArea"/>,
+    /// the phone gets the new area. Thread-safe.
+    /// </summary>
+    public void SetTarget(MappingTarget target)
     {
-        _ = new CoordinateMapper(1, 1, display, region);
-        SessionInput? input;
+        ArgumentNullException.ThrowIfNull(target);
         lock (_gate)
         {
-            _display = display;
-            _region = region;
-            input = _activeInput;
+            _target = target;
         }
 
-        input?.SetTarget(display, region);
+        ApplyToInput(target: true, settings: false);
     }
+
+    /// <summary>
+    /// Changes the input settings (ADR-0031..0033: stylus mode, side button, pressure curve, gestures) for the active
+    /// session and every later one; starts from <see cref="PenBridgeServerOptions.InputSettings"/>. Pen settings take
+    /// effect between strokes. A stylus mode change that changes the active area sends it to the phone (with
+    /// <see cref="ProtocolCapabilities.ActiveArea"/>). Thread-safe.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">Settings out of range (<see cref="InputSettings.Validate"/>).</exception>
+    public void SetInputSettings(InputSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        settings.Validate();
+        lock (_gate)
+        {
+            _inputSettings = settings;
+        }
+
+        ApplyToInput(target: false, settings: true);
+    }
+
+    /// <summary>The current input settings.</summary>
+    public InputSettings InputSettings
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _inputSettings;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Applies the latest target and input settings to the active input. Runs outside <c>_gate</c> and the input lock
+    /// (SessionInput takes the input lock and raises ActiveAreaChanged after it); <c>_applyLock</c> serializes the
+    /// applications and each reads the latest values under it, so the last one to run applies the latest state.
+    /// Lock order: <c>_applyLock</c>, then <c>_gate</c> or the input lock (never held while taking <c>_applyLock</c>).
+    /// </summary>
+    private void ApplyToInput(bool target, bool settings)
+    {
+        lock (_applyLock)
+        {
+            SessionInput? input;
+            MappingTarget latestTarget;
+            InputSettings latestSettings;
+            lock (_gate)
+            {
+                input = _activeInput;
+                latestTarget = _target;
+                latestSettings = _inputSettings;
+            }
+
+            if (input is null)
+            {
+                return;
+            }
+
+            if (target)
+            {
+                input.SetTarget(latestTarget);
+            }
+
+            if (settings)
+            {
+                input.ApplySettings(latestSettings);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Sets the Mac settings snapshot (ADR-0030) and sends it to the active session if it negotiated
+    /// <see cref="ProtocolCapabilities.RemoteSettings"/>; otherwise only stores it. Every new session gets the latest
+    /// one right after SessionStart, so call this at startup, after every change and in reply to every
+    /// <see cref="SettingsUpdateRequested"/>. Only queues the send: calls in quick succession coalesce and the phone
+    /// gets the latest snapshot. The task completes when it went out (or the session failed); it is already complete
+    /// when there's no session, or the session isn't sending yet (between its activation and SessionStart): it then
+    /// gets the latest snapshot right after SessionStart. Never throws for network failures (a failed write closes the
+    /// session).
+    /// </summary>
+    /// <exception cref="ArgumentException">More than <see cref="SettingsWire.MaxEntries"/> entries.</exception>
+    public Task SendSettingsSnapshotAsync(IReadOnlyList<SettingEntry> entries)
+    {
+        var message = new SettingsSnapshotMessage(entries);
+        ServerConnection? target;
+        lock (_gate)
+        {
+            _settingsSnapshot = message;
+            target = _active;
+        }
+
+        return target is null ? Task.CompletedTask : target.RequestPush(ServerConnection.PushSnapshot);
+    }
+
+    /// <summary>
+    /// Sets the targetable displays (ADR-0031; "All displays" is implied) and sends them to the active session like
+    /// <see cref="SendSettingsSnapshotAsync"/> (coalesced, latest wins). The list always goes out before a snapshot
+    /// queued with it, and new sessions get it before their first snapshot. As there, the task is already complete when
+    /// there's no session or it isn't sending yet (between its activation and SessionStart).
+    /// </summary>
+    /// <exception cref="ArgumentException">More than <see cref="SettingsWire.MaxDisplays"/> displays.</exception>
+    public Task SendDisplayListAsync(IReadOnlyList<DisplayListEntry> displays)
+    {
+        var message = new DisplayListMessage(displays);
+        ServerConnection? target;
+        lock (_gate)
+        {
+            _displayList = message;
+            target = _active;
+        }
+
+        return target is null ? Task.CompletedTask : target.RequestPush(ServerConnection.PushDisplays);
+    }
+
+    /// <summary>The latest settings snapshot and display list (null until set).</summary>
+    internal (SettingsSnapshotMessage? Snapshot, DisplayListMessage? Displays) SettingsState
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return (_settingsSnapshot, _displayList);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Queues the active area for the active session if it negotiated <see cref="ProtocolCapabilities.ActiveArea"/>
+    /// (coalesced, latest wins, unchanged areas aren't resent). Only takes a short lock and queues, so it may be called
+    /// from input callbacks.
+    /// </summary>
+    internal void SendActiveArea(NormalizedRect area) => Volatile.Read(ref _active)?.SendActiveArea(area);
+
+    /// <summary>The active session's connection (for tests).</summary>
+    internal ServerConnection? ActiveConnection => Volatile.Read(ref _active);
 
     /// <summary>A snapshot for the menu: active device, transport, RTT, packets/s and input counters.</summary>
     public PenBridgeServerStats GetStats()
@@ -444,14 +596,19 @@ public sealed class PenBridgeServer : IAsyncDisposable
                 if (published)
                 {
                     _inputOwner = input;
-                    input.SetTarget(_display, _region);
                     Volatile.Write(ref _activeInput, input);
                 }
             }
         }
 
-        // Outside the locks: the fault callback closes the old connection.
+        // Outside the locks: the fault callback closes the old connection. The target and settings are applied
+        // before SessionStart goes out, so no input of this session is processed without them.
         previous?.ReportFault(fault);
+        if (published)
+        {
+            ApplyToInput(target: true, settings: true);
+        }
+
         return published;
     }
 
@@ -560,6 +717,9 @@ public sealed class PenBridgeServer : IAsyncDisposable
     internal void RaiseSessionStarted(SessionInfo session) => Raise(SessionStarted, new SessionStartedEventArgs(session));
 
     internal void RaiseSessionEnded(SessionInfo session, SessionEndReason reason) => Raise(SessionEnded, new SessionEndedEventArgs(session, reason));
+
+    internal void RaiseSettingsUpdateRequested(SessionInfo session, IReadOnlyList<SettingEntry> entries) =>
+        Raise(SettingsUpdateRequested, new SettingsUpdateRequestedEventArgs(session, entries));
 
     private void Raise<T>(EventHandler<T>? handler, T args)
     {

@@ -65,7 +65,8 @@ public sealed class PenBridgeClientOptions
     /// <see cref="ProtocolCapabilities.FingerTouches"/> only changes what the head sends once it configures its
     /// <see cref="Input.InputFilter"/> from <see cref="PenBridgeClient.NegotiatedCapabilities"/>.
     /// </summary>
-    internal ProtocolCapabilities Capabilities { get; init; } = ProtocolCapabilities.SampleDedupe | ProtocolCapabilities.FingerTouches;
+    internal ProtocolCapabilities Capabilities { get; init; } =
+        ProtocolCapabilities.SampleDedupe | ProtocolCapabilities.FingerTouches | ProtocolCapabilities.RemoteSettings | ProtocolCapabilities.ActiveArea;
 
     /// <summary>Optional fault injection: return false to drop a sealed datagram instead of sending it.</summary>
     public DatagramFilter? DatagramFilter { get; init; }
