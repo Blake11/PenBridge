@@ -183,7 +183,28 @@ public sealed partial class SettingsSync : IDisposable
         }
 
         _applyQueued = true;
-        NSApplication.SharedApplication.BeginInvokeOnMainThread(() => Apply(forceSnapshot: false));
+        NSApplication.SharedApplication.BeginInvokeOnMainThread(RunQueuedApply);
+    }
+
+    // A main-run-loop block: an apply that ran meanwhile (a phone reply) already covered it, and nothing may throw
+    // into the run loop.
+    private void RunQueuedApply()
+    {
+        if (!_applyQueued)
+        {
+            return;
+        }
+
+        try
+        {
+            Apply(forceSnapshot: false);
+        }
+#pragma warning disable CA1031 // A run-loop block must not throw; logged instead.
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            Log.ApplyFailed(_log, ex);
+        }
     }
 
     /// <summary>Applies the current values to the server and sends the snapshot if it differs from the last one (or when forced).</summary>
@@ -321,5 +342,8 @@ public sealed partial class SettingsSync : IDisposable
 
         [LoggerMessage(2, LogLevel.Information, "Input settings applied: stylus {StylusMode}, side button {SideButton}, smart zoom {SmartZoom}")]
         public static partial void InputSettingsApplied(ILogger logger, string stylusMode, string sideButton, string smartZoom);
+
+        [LoggerMessage(3, LogLevel.Error, "Applying the settings failed")]
+        public static partial void ApplyFailed(ILogger logger, Exception exception);
     }
 }

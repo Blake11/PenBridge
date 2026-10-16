@@ -409,7 +409,8 @@ public sealed class SettingsWindowController : IDisposable
         bool all = target == MacSettings.AllDisplays;
         NormalizedRect region = display is null ? NormalizedRect.Full : _store.GetRegion(display.Uuid);
         _regionText.StringValue = all ? "Not used with All displays"
-            : display is null ? "The display is not connected"
+            : display is null ? "No display connected"
+            : _resolver.IsUsingFallback ? "Not connected — using the main display: " + RegionText(region, display)
             : RegionText(region, display);
         _regionText.TextColor = display is null ? NSColor.SecondaryLabel : NSColor.Label;
         _setRegion.Enabled = display is not null && ScreenFor(display) is not null && _overlay is null;
@@ -536,25 +537,12 @@ public sealed class SettingsWindowController : IDisposable
             ? "Pressure –"
             : "Pressure " + pressure.ToString("0.00", CultureInfo.CurrentCulture);
 
-    /// <summary>The display the region applies to: the chosen one (main for ""), or null for All displays or a missing display.</summary>
-    private DisplayInfo? RegionDisplay()
-    {
-        string target = _store.TargetDisplay;
-        if (target == MacSettings.AllDisplays)
-        {
-            return null;
-        }
-
-        foreach (DisplayInfo display in _resolver.Displays)
-        {
-            if (target.Length == 0 ? display.IsMain : string.Equals(display.Uuid, target, StringComparison.OrdinalIgnoreCase))
-            {
-                return display;
-            }
-        }
-
-        return null;
-    }
+    /// <summary>
+    /// The display the region applies to, as applied (SettingsSync uses the resolved target): the chosen one, main for
+    /// "" or while the chosen one is disconnected (the stored choice is kept), null for All displays or no display.
+    /// </summary>
+    private DisplayInfo? RegionDisplay() =>
+        _store.TargetDisplay == MacSettings.AllDisplays || !_resolver.HasDisplay ? null : _resolver.Target;
 
     private static NSScreen? ScreenFor(DisplayInfo display)
     {
