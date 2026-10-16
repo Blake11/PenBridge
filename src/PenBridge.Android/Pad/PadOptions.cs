@@ -40,6 +40,9 @@ public sealed record PadOptions
     /// <summary>Debug: show each finger's live normalized contact size (to tune <see cref="PalmSizeThreshold"/>).</summary>
     public bool ShowTouchSize { get; init; }
 
+    /// <summary>Background, marker opacity and centre marker (ADR-0031).</summary>
+    public SurfaceLook Look { get; init; } = new();
+
     /// <summary>Show the faint fading local trail of the last ~1 s of pen positions.</summary>
     public bool InkEcho { get; init; } = true;
 }

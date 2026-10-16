@@ -81,6 +81,13 @@ internal sealed class InkEchoView : View
         Invalidate();
     }
 
+    /// <summary>Ink colour (opaque; the fade is applied as alpha). Readable on the chosen background.</summary>
+    public void SetColor(Color color)
+    {
+        _paint.Color = color;
+        Invalidate();
+    }
+
     public void Clear()
     {
         _head = 0;
