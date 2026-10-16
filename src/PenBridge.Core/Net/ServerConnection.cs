@@ -50,6 +50,9 @@ internal sealed class ServerConnection
     private readonly Lock _areaLock = new();
     private NormalizedRect? _activeArea; // latest requested; guarded by _areaLock
     private NormalizedRect? _activeAreaSent; // only touched by the push writer
+    // The last list and snapshot sent, by their (immutable, per-send) arrays; only touched by the push writer.
+    private IReadOnlyList<DisplayListEntry>? _displaysSent;
+    private IReadOnlyList<SettingEntry>? _snapshotSent;
     private long _settingsUpdatesDropped;
     private long _throttleLoggedAt = -1; // read loop only: when dropped updates were last logged
     private byte[] _deviceIdBytes = [];
@@ -93,6 +96,12 @@ internal sealed class ServerConnection
 
     /// <summary>The server → phone push writer (for tests).</summary>
     internal CoalescingWriter Pushes => _pushes;
+
+    /// <summary>True once the control channel was aborted (for tests).</summary>
+    internal bool IsChannelAborted => _channel.IsAborted;
+
+    /// <summary>Test hook: awaited by the push writer after it took its bits and before it reads the state to send.</summary>
+    internal Func<int, Task>? BeforePushDrain { get; set; }
 
     public TimeSpan? RoundTripTime
     {
@@ -599,6 +608,11 @@ internal sealed class ServerConnection
     }
 
     /// <summary>The push writer's drain: the latest display list, snapshot and active area, in that order. False after a failed write (the connection is aborted).</summary>
+    /// <remarks>
+    /// The state is read after the bits were taken, so a snapshot read here may be newer than the bits say and name a
+    /// display of a list whose bit is still pending: a snapshot always goes out behind the list read with it. Each
+    /// list or snapshot is sent once (every send copies its entries into a new array, compared by reference), so the pending bit that follows sends nothing again.
+    /// </remarks>
     private async Task<bool> DrainPushesAsync(int bits)
     {
         if (RequestedReason is not null)
@@ -608,15 +622,30 @@ internal sealed class ServerConnection
 
         try
         {
-            (SettingsSnapshotMessage? snapshot, DisplayListMessage? displays) = _server.SettingsState;
-            if ((bits & PushDisplays) != 0 && displays is { } d)
+            if (BeforePushDrain is { } hook)
             {
-                await _channel.WriteAsync(d).ConfigureAwait(false);
+                await hook(bits).ConfigureAwait(false);
             }
 
-            if ((bits & PushSnapshot) != 0 && snapshot is { } s)
+            (SettingsSnapshotMessage? snapshot, DisplayListMessage? displays) = _server.SettingsState;
+            if ((bits & (PushDisplays | PushSnapshot)) != 0 && displays is { } d && !ReferenceEquals(d.Displays, _displaysSent))
             {
-                await _channel.WriteAsync(s).ConfigureAwait(false);
+                if (!await TryPushAsync(d).ConfigureAwait(false))
+                {
+                    return false;
+                }
+
+                _displaysSent = d.Displays;
+            }
+
+            if ((bits & PushSnapshot) != 0 && snapshot is { } s && !ReferenceEquals(s.Entries, _snapshotSent))
+            {
+                if (!await TryPushAsync(s).ConfigureAwait(false))
+                {
+                    return false;
+                }
+
+                _snapshotSent = s.Entries;
             }
 
             if ((bits & PushActiveArea) != 0)
@@ -629,7 +658,11 @@ internal sealed class ServerConnection
 
                 if (area is { } a && a != _activeAreaSent)
                 {
-                    await _channel.WriteAsync(ActiveAreaMessage.FromNormalized(a)).ConfigureAwait(false);
+                    if (!await TryPushAsync(ActiveAreaMessage.FromNormalized(a)).ConfigureAwait(false))
+                    {
+                        return false;
+                    }
+
                     _activeAreaSent = a;
                 }
             }
@@ -642,6 +675,14 @@ internal sealed class ServerConnection
             return false;
         }
     }
+
+    /// <summary>
+    /// One push write; false once the connection is closing. A drain may be mid-way when <see cref="CloseAsync"/>
+    /// sends Bye and half-closes: a write after that would fail and abort, cutting the linger short.
+    /// </summary>
+    private async ValueTask<bool> TryPushAsync<T>(T message)
+        where T : IControlMessage<T> =>
+        RequestedReason is null && await _channel.TryWriteAsync(message).ConfigureAwait(false);
 
     private void OnUdpAck(ulong highestSequence) => _ = SendUdpAckAsync(highestSequence);
 
@@ -657,7 +698,7 @@ internal sealed class ServerConnection
     {
         try
         {
-            await _channel.WriteAsync(new UdpAckMessage(highestSequence)).ConfigureAwait(false);
+            _ = await _channel.TryWriteAsync(new UdpAckMessage(highestSequence)).ConfigureAwait(false); // false: closing, Bye was the last frame
         }
         catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException or SocketException or InvalidOperationException or NotSupportedException)
         {
@@ -675,7 +716,7 @@ internal sealed class ServerConnection
 
         try
         {
-            await _channel.WriteAsync(new PingMessage(NowUs())).ConfigureAwait(false);
+            _ = await _channel.TryWriteAsync(new PingMessage(NowUs())).ConfigureAwait(false); // false: closing, Bye was the last frame
         }
         catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException or SocketException or InvalidOperationException or NotSupportedException)
         {

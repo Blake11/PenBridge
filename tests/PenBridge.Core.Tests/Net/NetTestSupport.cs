@@ -512,10 +512,10 @@ internal sealed class RawClient : IAsyncDisposable
 
     public async Task<ReceivedControlFrame?> ReadAsync() => await _reader!.ReadAsync().AsTask().Bounded();
 
-    public async Task<byte[]> HelloAsync(Guid deviceId, ProtocolVersion? version = null)
+    public async Task<byte[]> HelloAsync(Guid deviceId, ProtocolVersion? version = null, ProtocolCapabilities capabilities = ProtocolCapabilities.None)
     {
         byte[] id = deviceId.ToByteArray(bigEndian: true);
-        await WriteAsync(new HelloMessage(version ?? ProtocolVersion.Current, id, "Raw", ProtocolCapabilities.None));
+        await WriteAsync(new HelloMessage(version ?? ProtocolVersion.Current, id, "Raw", capabilities));
         ReceivedControlFrame? frame = await ReadAsync();
         Assert.NotNull(frame);
         return frame.Value.Read<HelloAckMessage>().Challenge.ToArray();

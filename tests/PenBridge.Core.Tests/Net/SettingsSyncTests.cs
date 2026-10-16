@@ -1,7 +1,10 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Security.Cryptography;
 using PenBridge.Core.Input;
 using PenBridge.Core.Net;
 using PenBridge.Core.Protocol;
+using PenBridge.Core.Security;
 using PenBridge.Core.Settings;
 
 #pragma warning disable xUnit1051 // Network waits are bounded by Wait.Limit instead of the test token.
@@ -315,6 +318,63 @@ public class SettingsSyncTests
     }
 
     [Fact]
+    public async Task A_snapshot_read_after_a_new_display_list_goes_out_behind_that_list()
+    {
+        await using NetHarness h = Harness();
+        await h.Server.SendDisplayListAsync([Displays[0]]);
+        await h.Server.SendSettingsSnapshotAsync(Snapshot(1));
+        var log = new ConcurrentQueue<string>();
+        await PairAsync(h, c =>
+        {
+            c.DisplayListReceived += (_, e) => log.Enqueue("displays " + e.Displays.Count);
+            c.SettingsSnapshotReceived += (_, e) => log.Enqueue("snapshot " + e.Entries.Count);
+        });
+        await Wait.Until(() => log.Count == 2, "the first list and snapshot");
+        Assert.Equal(["displays 1", "snapshot 1"], log);
+        log.Clear();
+
+        // The writer takes the snapshot bit, then (paused here) the list and a snapshot naming one of its displays
+        // change: the snapshot it reads must not overtake the list whose bit is still pending.
+        ServerConnection connection = h.Server.ActiveConnection!;
+        (TaskCompletionSource entered, TaskCompletionSource release) = PauseNextDrain(connection);
+        Task push = h.Server.SendSettingsSnapshotAsync(Snapshot(2));
+        await entered.Task.Bounded();
+        _ = h.Server.SendDisplayListAsync(Displays);
+        _ = h.Server.SendSettingsSnapshotAsync(Snapshot(3));
+        release.SetResult();
+        await push.Bounded();
+        await PingRoundTripAsync(h);
+
+        // Each goes out once: the pending bits find nothing new.
+        Assert.Equal(["displays 2", "snapshot 3"], log);
+        Assert.Equal(0, connection.Pushes.Pending);
+    }
+
+    [Fact]
+    public async Task A_push_racing_the_close_sends_nothing_after_the_bye_and_keeps_the_linger()
+    {
+        await using NetHarness h = Harness();
+        await using RawClient raw = await StartRawSessionAsync(h);
+        ServerConnection connection = h.Server.ActiveConnection!;
+        (TaskCompletionSource entered, TaskCompletionSource release) = PauseNextDrain(connection);
+        Task push = h.Server.SendSettingsSnapshotAsync(Snapshot(1));
+        await entered.Task.Bounded();
+
+        // The raw peer never closes, so the server lingers after its Bye until the linger timeout.
+        var lingering = Stopwatch.StartNew();
+        Task close = h.Server.DisconnectSessionAsync();
+        Assert.Equal(ControlMessageType.Bye, (await raw.ReadAsync())!.Value.Type);
+        release.SetResult();
+        await push.Bounded();
+
+        // A write after the half-close would fail and abort the channel at once, ending the linger early.
+        Assert.True(!connection.IsChannelAborted || lingering.Elapsed >= ControlChannel.LingerTimeout, "aborted during the linger");
+        Assert.Null(await raw.ReadAsync()); // the Bye was the last frame
+        raw.Socket.Shutdown(System.Net.Sockets.SocketShutdown.Send); // the peer closes its side: the linger ends
+        await close.Bounded();
+    }
+
+    [Fact]
     public async Task Server_sends_validate_their_arguments()
     {
         await using NetHarness h = Harness();
@@ -338,6 +398,43 @@ public class SettingsSyncTests
     /// An ordering barrier: the server pings, and its RTT appears only after the phone's read loop handled every
     /// frame sent before the Ping (the control channel is in order).
     /// </summary>
+    private static SettingEntry[] Snapshot(int count) =>
+        [.. new[] { SettingEntry.Int(MacSettingKey.SideButton, 1), SettingEntry.Bool(MacSettingKey.Zoom, true), SettingEntry.Int(MacSettingKey.StylusMode, 1) }.Take(count)];
+
+    /// <summary>Holds the push writer's next drain after it took its bits, before it reads the state.</summary>
+    private static (TaskCompletionSource Entered, TaskCompletionSource Release) PauseNextDrain(ServerConnection connection)
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int armed = 1;
+        connection.BeforePushDrain = async _ =>
+        {
+            if (Interlocked.Exchange(ref armed, 0) == 1)
+            {
+                entered.SetResult();
+                await release.Task;
+            }
+        };
+        return (entered, release);
+    }
+
+    /// <summary>A hand-driven 1.2 session that never closes its side (Hello with RemoteSettings, Auth, SessionStart).</summary>
+    private static async Task<RawClient> StartRawSessionAsync(NetHarness h)
+    {
+        Guid id = Guid.NewGuid();
+        byte[] key = RandomNumberGenerator.GetBytes(32);
+        h.Registry.Add(id, "Raw", key);
+        RawClient raw = await RawClient.ConnectTlsAsync(h.Port);
+        byte[] challenge = await raw.HelloAsync(id, capabilities: ProtocolCapabilities.RemoteSettings);
+        byte[] nonce = RandomNumberGenerator.GetBytes(WireSizes.Nonce);
+        byte[] proof = new byte[ReconnectAuth.ProofLength];
+        ReconnectAuth.ComputeProof(key, challenge, nonce, h.Identity.Fingerprint, proof);
+        await raw.WriteAsync(new AuthMessage(id.ToByteArray(bigEndian: true), proof, nonce));
+        Assert.Equal(ControlMessageType.SessionStart, (await raw.ReadAsync())!.Value.Type);
+        await Wait.Until(() => h.Server.ActiveConnection is not null, "the raw session");
+        return raw;
+    }
+
     private static async Task PingRoundTripAsync(NetHarness h)
     {
         Assert.Null(h.Server.GetStats().RoundTripTime);

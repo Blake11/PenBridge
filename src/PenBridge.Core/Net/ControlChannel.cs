@@ -43,6 +43,7 @@ internal sealed class ControlChannel : IAsyncDisposable
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private int _timedOut;
     private int _disposed;
+    private bool _sendClosed; // guarded by _writeLock: the last frame went out (or is going out) before a half-close
 
     public ControlChannel(Socket socket, TimeProvider time)
     {
@@ -104,15 +105,37 @@ internal sealed class ControlChannel : IAsyncDisposable
         await ReadAsync(timeout).ConfigureAwait(false) ?? throw new IOException("The peer closed the control connection.");
 
     /// <summary>Writes one message (serialized with other writes).</summary>
+    /// <exception cref="IOException">The send side was closed by a farewell (see <see cref="TryWriteAsync"/>).</exception>
     public async ValueTask WriteAsync<T>(T message)
+        where T : IControlMessage<T>
+    {
+        if (!await TryWriteAsync(message).ConfigureAwait(false))
+        {
+            throw new IOException("The control connection's send side is closed.");
+        }
+    }
+
+    /// <summary>
+    /// Writes one message (serialized with other writes) unless a farewell with a half-close already took the send
+    /// side: then nothing is written and the result is false. Checked under the write lock, so a writer racing the
+    /// farewell either goes out before it or not at all, instead of failing on the closed socket. Throws like
+    /// <see cref="WriteAsync"/> on any other failure.
+    /// </summary>
+    public async ValueTask<bool> TryWriteAsync<T>(T message)
         where T : IControlMessage<T>
     {
         await _writeLock.WaitAsync(_cts.Token).ConfigureAwait(false);
         _writeDeadline.Change(WriteTimeout, Timeout.InfiniteTimeSpan);
         try
         {
+            if (_sendClosed)
+            {
+                return false;
+            }
+
             Volatile.Write(ref _writeStarted, System.Diagnostics.Stopwatch.GetTimestamp());
             await ControlFrameWriter.WriteAsync(_ssl, message, _cts.Token).ConfigureAwait(false);
+            return true;
         }
         finally
         {
@@ -129,6 +152,11 @@ internal sealed class ControlChannel : IAsyncDisposable
         _writeDeadline.Change(WriteTimeout, Timeout.InfiniteTimeSpan);
         try
         {
+            if (_sendClosed)
+            {
+                throw new IOException("The control connection's send side is closed.");
+            }
+
             Volatile.Write(ref _writeStarted, System.Diagnostics.Stopwatch.GetTimestamp());
             await _ssl.WriteAsync(frame, _cts.Token).ConfigureAwait(false);
         }
@@ -167,6 +195,8 @@ internal sealed class ControlChannel : IAsyncDisposable
             locked = await _writeLock.WaitAsync(FarewellTimeout, cts.Token).ConfigureAwait(false);
             if (locked)
             {
+                // From here on nothing else may go out: the farewell is the last frame (even if writing it fails).
+                _sendClosed |= shutdownSend;
                 await ControlFrameWriter.WriteAsync(_ssl, message, cts.Token).ConfigureAwait(false);
                 if (shutdownSend)
                 {
