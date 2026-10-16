@@ -3,6 +3,7 @@ using AppKit;
 using CoreFoundation;
 using Foundation;
 using Microsoft.Extensions.Logging;
+using PenBridge.Core.Input;
 using PenBridge.Core.Net;
 using PenBridge.Core.Security;
 using PenBridge.Mac.Input;

@@ -1,33 +1,5 @@
 namespace PenBridge.Mac.Settings;
 
-/// <summary>Stylus mode (ADR-0032). Values match the wire table (key StylusMode).</summary>
-public enum StylusMode
-{
-    /// <summary>Absolute: the active area maps onto the target.</summary>
-    Pen = 0,
-
-    /// <summary>Relative: the hovering pen moves the cursor from where it is.</summary>
-    Mouse = 1,
-}
-
-/// <summary>Side-button action (ADR-0032). Values match the wire table (key SideButton).</summary>
-public enum SideButtonAction
-{
-    RightClick = 0,
-    MiddleClick = 1,
-    Eraser = 2,
-    DoubleClick = 3,
-    None = 4,
-}
-
-/// <summary>Smart Zoom override (ADR-0033). Values match the wire table (key SmartZoom).</summary>
-public enum SmartZoomMode
-{
-    FollowSystem = 0,
-    On = 1,
-    Off = 2,
-}
-
 /// <summary>
 /// Ranges and defaults of the Mac settings (issue #154's key table, ADR-0031–0033). Core's <c>MacSettingKey</c>
 /// table is the long-term single source; until it is wired (P5-C2) these mirror it.

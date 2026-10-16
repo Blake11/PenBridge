@@ -1,28 +1,9 @@
 using AppKit;
 using CoreGraphics;
 using Foundation;
+using PenBridge.Core.Input;
 
 namespace PenBridge.Mac.Settings;
-
-/// <summary>
-/// The ADR-0032 pressure curve, for the Settings window's preview graph only. Injection applies Core's curve (P5-B);
-/// this copy draws the same shape and must follow it.
-/// </summary>
-internal static class PressureCurvePreview
-{
-    /// <summary>curve((p − threshold) / (full − threshold)) clamped to 0..1, with γ = 2^tipFeel.</summary>
-    public static double Apply(double pressure, double tipFeel, double clickThreshold, double fullPressureAt)
-    {
-        double span = fullPressureAt - clickThreshold;
-        if (!(span > 0))
-        {
-            return 0;
-        }
-
-        double x = Math.Clamp((pressure - clickThreshold) / span, 0, 1);
-        return Math.Pow(x, Math.Pow(2, tipFeel));
-    }
-}
 
 /// <summary>
 /// A pad that draws strokes from the window's own mouse and tablet events, stroke width by
@@ -122,9 +103,7 @@ internal sealed class PressureTestPad : NSView
 internal sealed class PressureCurveView : NSView
 {
     private const int Steps = 48;
-    private double _tipFeel;
-    private double _clickThreshold;
-    private double _fullPressureAt = 1;
+    private PressureCurve _curve = PressureCurve.Linear;
 
     public PressureCurveView()
     {
@@ -135,9 +114,15 @@ internal sealed class PressureCurveView : NSView
 
     public void SetCurve(double tipFeel, double clickThreshold, double fullPressureAt)
     {
-        _tipFeel = tipFeel;
-        _clickThreshold = clickThreshold;
-        _fullPressureAt = fullPressureAt;
+        // A slider mid-drag can momentarily break threshold < full; Core rejects that, so keep the last valid curve.
+        try
+        {
+            _curve = new PressureCurve(tipFeel, clickThreshold, fullPressureAt);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+        }
+
         NeedsDisplay = true;
     }
 
@@ -164,7 +149,7 @@ internal sealed class PressureCurveView : NSView
             for (int i = 0; i <= Steps; i++)
             {
                 double x = (double)i / Steps;
-                double y = PressureCurvePreview.Apply(x, _tipFeel, _clickThreshold, _fullPressureAt);
+                double y = _curve.Apply(x);
                 var point = new CGPoint(box.GetMinX() + (x * box.Width), box.GetMinY() + (y * box.Height));
                 if (i == 0)
                 {
