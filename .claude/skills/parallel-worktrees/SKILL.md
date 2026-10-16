@@ -20,6 +20,7 @@ Pass the absolute path in the prompt. Don't use the Agent tool's `isolation: "wo
 ## Work in it
 - The subagent uses absolute paths and `git -C <path>` (cwd resets between bash calls). A `cd` into a worktree in the shared shell moves the session's working directory: a PreToolUse hook warns about it (`.claude/hooks/warn-cd-worktree.sh`).
 - Each worktree has its own `bin/`/`obj/`: first build is a full restore/build. Don't share output dirs.
+- Serena: each dev/review agent runs its own `serena-ws` server and calls `activate_project` with the worktree path from the prompt, so parallel agents never share an active project; the worktree's `.serena/cache` and `memories` are gitignored and go away with it.
 - `.claude/progress/` is untracked: the agent writes its `ws-<id>.md` at the path given in the prompt (usually `<worktree>/.claude/progress/<feature>/`); the architect copies it to the main tree.
 - Mac app runs from a worktree get a different bundle path; the Accessibility grant is per signed identity + path in practice — prefer running the Mac app from one place (the main tree) or re-grant.
 - Two worktrees can't check out the same branch.
