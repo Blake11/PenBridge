@@ -14,12 +14,14 @@ public sealed class SessionInputSettingsTests : IDisposable
     private readonly RecordingSink _sink = new();
     private readonly List<NormalizedRect> _areas = [];
     private readonly SessionInput _input;
+    private readonly Lock _inputLock = new();
+    private readonly FakeTime _time = new();
     private readonly byte[] _payload = new byte[InputPayload.MaxSize];
     private uint _timeUs = 1_000;
 
     public SessionInputSettingsTests()
     {
-        _input = new SessionInput(new Lock(), _sink, new FakeTime(), null, Key, 7, new DisplayRect(0, 0, 1920, 1080), NormalizedRect.Full, 16, null, null);
+        _input = new SessionInput(_inputLock, _sink, _time, null, Key, 7, new DisplayRect(0, 0, 1920, 1080), NormalizedRect.Full, 16, null, null);
         _input.ActiveAreaChanged += _areas.Add;
     }
 
@@ -141,4 +143,59 @@ public sealed class SessionInputSettingsTests : IDisposable
             ran++;
         }, () => ran);
     }
+
+    [Fact]
+    public void Mouse_mode_area_follows_the_mode_switch_after_the_stroke()
+    {
+        _input.ConfigureSurface(3088, 1440);
+        Frame(Pens.Contact(20000, 20000));
+        _input.ApplySettings(new InputSettings { StylusMode = StylusMode.Mouse });
+        Assert.Equal([Landscape16x9], _areas); // the stroke is still in Pen mode
+        Assert.Equal(Landscape16x9, _input.ActiveArea);
+        Frame(Pens.Contact(21000, 20000));
+        Assert.Single(_areas);
+        Frame(Pens.Hover(21000, 20000)); // Up: Mouse mode applies now
+        Assert.Equal([Landscape16x9, NormalizedRect.Full], _areas);
+        Assert.Equal(NormalizedRect.Full, _input.ActiveArea);
+        Frame(Pens.Hover(22000, 20000));
+        Assert.Equal(2, _areas.Count);
+    }
+
+    [Fact]
+    public void Watchdog_release_raises_the_waiting_mode_area()
+    {
+        _input.ConfigureSurface(3088, 1440);
+        _input.ApplySettings(new InputSettings { StylusMode = StylusMode.Mouse });
+        Frame(Pens.Contact(20000, 20000));
+        _input.ApplySettings(InputSettings.Default);
+        Assert.Equal([Landscape16x9, NormalizedRect.Full], _areas);
+        _time.Advance(TimeSpan.FromSeconds(5)); // the phone went silent: the watchdog ends the stroke
+        Assert.Equal(Up, Assert.Single(_sink.Pen, e => e.Kind == Up).Kind);
+        Assert.Equal([Landscape16x9, NormalizedRect.Full, Landscape16x9], _areas);
+    }
+
+    [Fact]
+    public void Active_area_handlers_run_outside_the_input_lock_and_may_call_back()
+    {
+        var seen = new List<NormalizedRect>();
+        bool reentered = false;
+        _input.ActiveAreaChanged += area =>
+        {
+            Assert.False(_inputLock.IsHeldByCurrentThread);
+            seen.Add(area);
+            if (!reentered)
+            {
+                reentered = true;
+                _input.SetTarget(new DisplayRect(0, 0, 1000, 1000), NormalizedRect.Full); // queued, raised after this call
+                Assert.Single(seen);
+            }
+        };
+        _input.ConfigureSurface(2000, 1000);
+        Assert.Equal([CoordinateMapper.ActiveAreaFor(2000, 1000, 1920, 1080), new NormalizedRect(0.25, 0, 0.5, 1)], seen, AreaComparer);
+        Assert.Equal(new NormalizedRect(0.25, 0, 0.5, 1), _input.ActiveArea);
+    }
+
+    private static readonly IEqualityComparer<NormalizedRect> AreaComparer = EqualityComparer<NormalizedRect>.Create(
+        (a, b) => Math.Abs(a.X - b.X) < 1e-9 && Math.Abs(a.Y - b.Y) < 1e-9 && Math.Abs(a.Width - b.Width) < 1e-9 && Math.Abs(a.Height - b.Height) < 1e-9,
+        _ => 0);
 }
