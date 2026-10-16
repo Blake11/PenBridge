@@ -132,13 +132,23 @@ icns_max_px() {
 }
 [[ "$(icns_max_px "$scratch/AppIconLegacy.icns")" == 1024 ]] || die "the rendered legacy icns has no 1024 px representation"
 committed_icns="$REPO_ROOT/src/PenBridge.Mac/Resources/AppIconLegacy.icns"
+hash_file="$committed_icns.sha256"
+# Hash of the icon sources (masters + the AppIcon.icon the generator wrote), so a stale committed icns is caught.
+sources_hash() {
+  ( cd "$1" && { find assets/icon -type f ! -name .DS_Store; find src/PenBridge.Mac/Resources/AppIcon.icon -type f ! -name .DS_Store; } \
+      | LC_ALL=C sort | while IFS= read -r f; do shasum -a 256 "$f"; done | shasum -a 256 | awk '{print $1}' )
+}
 if $check; then
   [[ -f "$committed_icns" ]] || die "${committed_icns#"$REPO_ROOT"/} is missing: run scripts/gen-icons.sh and commit the result"
   [[ "$(icns_max_px "$committed_icns")" == 1024 ]] \
     || die "${committed_icns#"$REPO_ROOT"/} has no 1024 px representation: run scripts/gen-icons.sh and commit the result"
-  ok "AppIconLegacy.icns carries the full size set up to 1024 px"
+  [[ -f "$hash_file" ]] || die "${hash_file#"$REPO_ROOT"/} is missing: run scripts/gen-icons.sh and commit the result"
+  [[ "$(cat "$hash_file")" == "$(sources_hash "$REPO_ROOT")" ]] \
+    || die "AppIconLegacy.icns is stale against assets/icon: run scripts/gen-icons.sh and commit the result"
+  ok "AppIconLegacy.icns carries the full size set up to 1024 px and matches the icon sources"
 else
   cp "$scratch/AppIconLegacy.icns" "$committed_icns"
+  sources_hash "$REPO_ROOT" >"$hash_file"
   ok "wrote ${committed_icns#"$REPO_ROOT"/} (1024 px max)"
 fi
 

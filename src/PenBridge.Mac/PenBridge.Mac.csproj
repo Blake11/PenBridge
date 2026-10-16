@@ -35,6 +35,9 @@
   <Target Name="PenBridgeUseFullSizeLegacyIcon" AfterTargets="_CompileImageAssets">
     <ItemGroup>
       <_PenBridgeActoolIcns Include="@(_BundleResourceWithLogicalName)" Condition="'%(LogicalName)' == 'AppIcon.icns'" />
+    </ItemGroup>
+    <Error Condition="'@(_PenBridgeActoolIcns)' == ''" Text="PenBridgeUseFullSizeLegacyIcon: no AppIcon.icns in _BundleResourceWithLogicalName after _CompileImageAssets (workload-internal target/item; the macOS SDK may have renamed them). Update this target." />
+    <ItemGroup>
       <_BundleResourceWithLogicalName Remove="@(_PenBridgeActoolIcns)" />
       <_BundleResourceWithLogicalName Include="$(MSBuildThisFileDirectory)Resources/AppIconLegacy.icns" LogicalName="AppIcon.icns" />
     </ItemGroup>
