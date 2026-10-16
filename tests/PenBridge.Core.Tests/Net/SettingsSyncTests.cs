@@ -272,9 +272,11 @@ public class SettingsSyncTests
         await Wait.Until(() => Volatile.Read(ref handled) + connection.SettingsUpdatesDropped == 100, "every update read");
         Assert.Equal(ServerConnection.SettingsUpdateBurst, Volatile.Read(ref handled));
         Assert.Equal(100 - ServerConnection.SettingsUpdateBurst, connection.SettingsUpdatesDropped);
+        // Wait on the event, not LastSettingsSnapshot: the client stores the snapshot before it raises the event.
         await Wait.Until(
-            () => client.LastSettingsSnapshot is [{ } last] && last == SettingEntry.Int(MacSettingKey.SideButton, ServerConnection.SettingsUpdateBurst),
+            () => snapshots.LastOrDefault() is [{ } last] && last == SettingEntry.Int(MacSettingKey.SideButton, ServerConnection.SettingsUpdateBurst),
             "the latest snapshot");
+        Assert.Equal([SettingEntry.Int(MacSettingKey.SideButton, ServerConnection.SettingsUpdateBurst)], client.LastSettingsSnapshot);
         Assert.InRange(snapshots.Count, 1, ServerConnection.SettingsUpdateBurst); // replies coalesce, never multiply
         Assert.Equal(0, connection.Pushes.Pending);
 
