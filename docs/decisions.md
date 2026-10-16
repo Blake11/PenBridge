@@ -12,7 +12,7 @@ Cite ADRs by number (and section) rather than reading this whole file.
 | 0002 | Phone shows a blank pad; mirroring later | accepted |
 | 0003 | Mac input via CGEvent tablet events behind IInputInjector | accepted |
 | 0004 | Bonjour discovery, PIN/QR pairing, TLS control + encrypted UDP input | accepted; TLS version refined by 0013 |
-| 0005 | Absolute mapping to one configurable display | accepted |
+| 0005 | Absolute mapping to one configurable display | accepted; refined by 0031 |
 | 0006 | Input feature scope for MVP | accepted; finger fallback amended by 0022 |
 | 0007 | Distribution and repo conventions | accepted; versioning refined by 0021 |
 | 0008 | Manual host:port + PIN connection as a user-facing fallback | accepted |
@@ -23,7 +23,7 @@ Cite ADRs by number (and section) rather than reading this whole file.
 | 0013 | Control channel accepts TLS 1.2+ | accepted; supersedes part of 0004 |
 | 0014 | Issue-driven planning and bug tracking | accepted |
 | 0015 | Windows host app as a later phase | accepted (scope only) |
-| 0016 | Mac server UX defaults for Phase 2 | accepted; amended by 0018, 0022, 0023 |
+| 0016 | Mac server UX defaults for Phase 2 | accepted; amended by 0018, 0022, 0023, 0031, 0032 |
 | 0017 | Debug builds store secrets in a local file, not the Keychain | accepted |
 | 0018 | NativeAOT Mac Release with a guarded SDK trimming substitution | accepted |
 | 0019 | Android client UX defaults for Phase 3 | accepted |
@@ -36,7 +36,11 @@ Cite ADRs by number (and section) rather than reading this whole file.
 | 0026 | One finger moves the cursor relatively, like a trackpad (`FingerTouches`, protocol 1.1) | accepted; refined by 0027, 0028 |
 | 0027 | One-finger pointer slop and settle time | accepted; refined by 0028 |
 | 0028 | Separate tap windows for one and two fingers | accepted; refined by 0029 |
-| 0029 | The two-finger tap follows the macOS Smart Zoom setting | accepted |
+| 0029 | The two-finger tap follows the macOS Smart Zoom setting | accepted; override added by 0033 |
+| 0030 | Settings live where they apply; the phone edits the Mac's over the control channel (protocol 1.2) | accepted |
+| 0031 | Target display or all displays, a dragged region, and the active area follows the target's aspect ratio | accepted |
+| 0032 | Pen settings: Pen/Mouse mode, side-button action and pressure curve, applied on the Mac | accepted |
+| 0033 | Gesture settings: Smart Zoom override, pointer and scroll speed, per-gesture toggles | accepted |
 
 ## ADR-0001 — .NET 10 LTS, native platform heads + shared Core
 **Status:** accepted (2026-10-13)
@@ -64,7 +68,7 @@ Cite ADRs by number (and section) rather than reading this whole file.
 - **Why not QUIC:** `System.Net.Quic` needs libmsquic, which isn't shipped on macOS.
 
 ## ADR-0005 — Absolute mapping to one configurable display
-**Status:** accepted (2026-10-13)
+**Status:** accepted (2026-10-13); refined by ADR-0031 (2026-10-16)
 - **Decision:** the phone surface maps to one chosen display, or to a sub-region of it, preserving aspect ratio.
 - **Deferred:** relative/trackpad mode.
 
@@ -152,7 +156,7 @@ Cite ADRs by number (and section) rather than reading this whole file.
 - **Consequence:** platform heads must keep Core free of macOS assumptions: no Apple-specific coordinate conventions in Core, and the display model stays generic.
 
 ## ADR-0016 — Mac server UX defaults for Phase 2
-**Status:** accepted (2026-10-13); the side-button-while-touching rule is amended by ADR-0022 (2026-10-14); the gestures phase boundary is lifted by ADR-0023 (2026-10-14)
+**Status:** accepted (2026-10-13); the side-button-while-touching rule is amended by ADR-0022 (2026-10-14); the gestures phase boundary is lifted by ADR-0023 (2026-10-14); the target display is refined by ADR-0031 and the side-button mapping made configurable by ADR-0032 (2026-10-16)
 - **S Pen side button:** right-click, following the Wacom side-switch default. Pressing it posts right-down at the current point and releasing posts right-up, both while hovering and while touching. The mapping becomes configurable in Phase 5.
 - **Eraser:** the eraser tool is reported as the eraser pointer type in tablet proximity events, so drawing apps switch tools themselves.
 - **Pairing UI:** a floating panel. Opening it opens the pairing window (ADR-0009), and it closes on success.
@@ -311,3 +315,59 @@ Cite ADRs by number (and section) rather than reading this whole file.
   - Phase 5 adds a PenBridge setting that can override the macOS one.
 - **Why:** it matches what the same Mac does with a real trackpad, and it lets the user choose speed over smart zoom in the place they already know.
 - Amended 2026-10-15 (#142): DoubleTapWindow 200 ms, jitter allowance 20 ms, ~225 ms after lift; measured S23 double-tap gaps 78–135 ms, MacBook trackpad right-click ~300 ms after lift.
+
+## ADR-0030 — Settings live where they apply; the phone edits the Mac's over the control channel (protocol 1.2)
+**Status:** accepted (2026-10-16)
+- **Context:** Phase 5 adds settings on both sides (epic #14). Most of them apply on the Mac (mapping, pen, gestures), a few on the phone (orientation, finger and palm options, the surface look). The user wants to change Mac settings from the phone too.
+- **Decision:**
+  - **One owner per setting:** each setting is stored and applied on the side that uses it. The Mac's are **global**, not per paired phone (one session at a time, ADR-0010). The Mac stores them in `NSUserDefaults`, the phone in SharedPreferences. Phone-only settings never go over the wire.
+  - **Remote edit:** with the new capability `RemoteSettings` (4) on both sides, the phone can view and edit the Mac's settings from a "Mac" section in its Settings screen, except drawing the region, which needs the Mac screen ("Reset region to full display" is allowed).
+  - **Wire (protocol 1.2, all after Auth/SessionStart):**
+    - `0x40` S `SettingsSnapshot`: every Mac setting as a list of entries. Sent once after SessionStart, after each change from either side, and in reply to every `SettingsUpdate` (the reply is the acknowledgement).
+    - `0x41` C `SettingsUpdate`: one or more entries to change. The Mac validates each one (known key, matching type, in range); it applies and persists the valid ones and ignores the rest. The snapshot it sends back is the truth, so the phone just redraws from it.
+    - `0x42` S `DisplayList`: the displays the user can pick (id, name, is-main, size in points), plus the pseudo-target "All displays". Sent with the first snapshot and on display reconfiguration.
+    - Entry: `key u16, type u8, len u16, value`. Types: Bool (u8), Int (i32), Float (f32), String (≤ 256 B UTF-8), Rect (4 × f32, normalized). Unknown keys or a type mismatch are skipped (forward compatibility), and an entry count above 64 is a protocol error. The key table lives in Core (`MacSettingKey`), with each key's type, range and default; it is the one source for the Mac store, the validation and the phone UI.
+  - The Mac's Settings window edits the same settings locally and pushes a snapshot to the connected phone.
+- **Why not both sides store everything:** two copies need conflict rules, and a phone that has been away would overwrite newer Mac choices. With one owner, the snapshot is always right.
+- **Why not Mac-only editing:** the user wants to tune from the phone while drawing, and the snapshot costs one message type more.
+- **Consequences / deferred:** a 1.0/1.1 peer simply has no Mac section on the phone. Per-device profiles stay out of scope. Phone settings can't be edited from the Mac.
+
+## ADR-0031 — Target display or all displays, a dragged region, and the phone's active area follows the target's aspect ratio
+**Status:** accepted (2026-10-16). Refines ADR-0005 (fit direction, all displays) and ADR-0016 (target display).
+- **Context:** `CoordinateMapper` fits the phone surface inside the display. The S23 in landscape is wider than the Mac display, so the pen can't reach the display's top and bottom strips (#127). ADR-0005 promised a region; the user also wants an "All displays" target.
+- **Decision:**
+  - **Target:** one display (remembered by UUID, falling back to main, as in ADR-0016), or **All displays**: the bounding box of every display, as one desktop. Points that fall in a gap between displays are clamped onto the nearest display.
+  - **Region:** "Set region…" in the Mac Settings window dims the target display and lets the user drag a rectangle (Esc cancels; "Full display" resets). The region is stored per display UUID as a normalized rect. An **aspect-lock** checkbox (default off) keeps the dragged rectangle at the phone surface's aspect ratio. Regions don't apply to "All displays".
+  - **Active area (#127):** the inverse of today's fit. The active part of the phone is the largest rectangle with the target's (display or region) aspect ratio, centred on the phone surface, and it maps onto the whole target. A pen outside it is pinned to the nearest edge of the target, so the margins make the edges easy to reach. Strokes keep their shape.
+  - **Wire:** with the capability `ActiveArea` (8) on both sides, the Mac sends `0x43` S `ActiveArea` (normalized rect in the current surface orientation, 4 × u16 on the 0..65535 scale) after each SurfaceInfo and each target, region or display change. In Mouse mode (ADR-0032) it sends the full surface.
+  - **Phone surface (#130):** L-shaped corner ticks at the active-area corners, the margins outside it dimmed, and an optional centre cross. Phone-only settings: background (black, dark grey, light), marker opacity, centre marker on/off. The markers stay visible while drawing (they're faint). Without `ActiveArea` the phone marks the whole surface.
+- **Why not a full outline:** the corner ticks show the edges without a frame running through the strokes; the dimmed margin already shows the boundary.
+- **Consequences / deferred:** numeric region fields and per-app mappings stay out of scope.
+
+## ADR-0032 — Pen settings: Pen/Mouse mode, side-button action and pressure curve, applied on the Mac
+**Status:** accepted (2026-10-16). Makes ADR-0016's side-button mapping configurable; keeps ADR-0022's contact-down latch.
+- **Context:** Wacom drivers offer a relative Mouse mode (#129), a side-switch action and a tip-feel curve. ADR-0006 and ADR-0016 deferred the button mapping to Phase 5, and the pressure curve was deferred from Phase 1.
+- **Decision:** all three live in Core on the Mac side and are applied before injection, so the input wire format doesn't change.
+  - **Stylus mode** (`Pen` default, `Mouse`):
+    - Pen: absolute, as today, with ADR-0031's active area.
+    - Mouse: the hovering pen moves the cursor from where it is, by its movement in phone millimetres (from SurfaceInfo DPI) times its own **Mouse speed** (separate from the finger pointer speed) through the ADR-0026 acceleration curve, which an **Acceleration** toggle can switch off. Entering proximity anchors the pen, so re-entering never jumps the cursor. The tip clicks and drags at the cursor with pressure and tilt (tablet subtype), and the side button keeps its action. The cursor is clamped to the displays (the target display, or all of them with "All displays").
+    - A quick toggle is in the Mac menu, in the Mac Settings window and on the phone (remote edit).
+  - **Side-button action:** Right click (default), Middle click, Eraser while held, Double click, None.
+    - Hovering press: Right and Middle post that button's down on press and up on release, at the pen's point. Double click posts two left clicks (click states 1, 2) on press. None posts nothing. Eraser switches the proximity to the eraser pointer type while held, so drawing apps change tool, and back on release.
+    - Held at contact-down (the ADR-0022 latch stays): Right and Middle make the stroke a drag with that button, Eraser makes it an eraser stroke, and Double click and None leave it a normal left stroke. Pressing or releasing the button during contact posts nothing.
+  - **Pressure curve** (pen and eraser only; the finger fallback's synthetic pressure is not curved):
+    - **Tip feel**, −1 (soft) … +1 (firm), default 0 = linear: output = input^γ with γ = 2^tipFeel (soft γ = 0.5, firm γ = 2).
+    - Advanced: **Click threshold** 0 … 0.5 (default 0: the phone's contact decides): below it the pen hovers. **Full pressure at** 0.5 … 1 (default 1).
+    - Output = curve((p − threshold) / (full − threshold)), clamped to 0..1, allocation-free per sample.
+    - The Mac Settings window has a live test pad that draws with the curved pressure.
+- **Why on the Mac:** Wacom keeps these in the driver too. The Mac sees every sample before injection, and one place means the phone stays a pure sampler and older phones get the settings too.
+- **Consequences / deferred:** keystroke, pan/scroll and mode-toggle button actions and a curve editor stay out of scope.
+
+## ADR-0033 — Gesture settings: Smart Zoom override, pointer and scroll speed, per-gesture toggles
+**Status:** accepted (2026-10-16). Delivers the Phase 5 items deferred by ADR-0026 (pointer speed) and ADR-0029 (Smart Zoom override).
+- **Decision (Mac settings, editable from the phone per ADR-0030):**
+  - **Smart Zoom:** Follow macOS (default, ADR-0029) / On / Off.
+  - **Pointer speed** scales the one-finger cursor and three-finger drag gain; **Scroll speed** scales two-finger scrolling and its momentum. Both 0.25 … 4, default 1.
+  - **Toggles**, all on by default: Zoom (pinch), Rotate, Three-finger drag, Four-finger gestures. Off drops that output in Core's `GestureRecognizer`: zoom off and rotate off each remove their part of the combined transform, and with both off two fingers only scroll, tap and smart-zoom; three or four fingers with their toggle off do nothing.
+  - The tap windows (ADR-0028) stay fixed.
+- **Why:** these are the trackpad pane's settings, and they're the ones the device tests asked for.
