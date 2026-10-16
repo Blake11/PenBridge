@@ -45,7 +45,7 @@ lipo -archs PenBridge.app/Contents/MacOS/PenBridge   # x86_64 arm64 (universal)
 - macOS (disabled until a paid Apple account): `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`, toggled by repo variable `MACOS_NOTARIZE=true`.
 
 ## CI path filters (`ci.yml`, issue #52)
-A `Detect changes` job (`dorny/paths-filter@v3`) gates the jobs with job-level `if:`. Never use workflow-level `paths:`: a required check that never reports blocks the PR, while a job skipped by `if:` reports "skipped" (passing). Pushes to `main`, `workflow_dispatch`, and a failed `Detect changes` run everything. Full table: CONTRIBUTING.md "CI jobs".
+A `Detect changes` job (`dorny/paths-filter@v4`) gates the jobs with job-level `if:`. Never use workflow-level `paths:`: a required check that never reports blocks the PR, while a job skipped by `if:` reports "skipped" (passing). PRs and pushes to `main` use the same filters; the nightly `schedule` (iOS only on Sundays), `workflow_dispatch` and a failed `Detect changes` run everything. Runs on `main` are never cancelled; PR runs cancel older ones. Full table: CONTRIBUTING.md "CI jobs".
 
 | Changed paths | Jobs |
 |---|---|
@@ -53,7 +53,7 @@ A `Detect changes` job (`dorny/paths-filter@v3`) gates the jobs with job-level `
 | `src/PenBridge.Core/**`, `tests/**`, `tools/**`, `build/**`, `**/Directory.Build.*`, `**/Directory.Packages.props`, `global.json`, `PenBridge.slnx`, `.editorconfig` | all |
 | `src/PenBridge.Mac/**` | macOS build |
 | `src/PenBridge.Android/**` | Android build |
-| `src/PenBridge.iOS/**` | iOS build (placeholder) |
+| `src/PenBridge.iOS/**`, `.github/workflows/**`, `.github/actions/**`, `global.json`, `scripts/check-bundle.sh` | iOS build (placeholder), only these (not Core/tests) |
 | docs, `.claude/**`, `LICENSE`, issue/PR templates | none (only Conventional Commit title) |
 
 Keep required check names (`name:`) unchanged when editing jobs, and add new projects or build-affecting root files to the filters.
