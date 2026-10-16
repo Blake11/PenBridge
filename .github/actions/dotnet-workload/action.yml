@@ -9,7 +9,10 @@ description: >
   workload set or Xcode is a cache miss. The install pins that same workload
   set (`--version`), so a hit and a miss give the same packs. If the workload
   set lookup fails, it installs without the cache. After a restore it checks
-  `dotnet workload list` and installs normally if anything is missing.
+  `dotnet workload list` and installs normally if anything is missing. Each
+  save gets a unique key (base key plus run id) and a restore takes the newest
+  entry under the base key, so a bad entry heals: the run that rejects it
+  installs normally and saves a fresh entry that later runs pick up.
 
 inputs:
   workloads:
@@ -26,7 +29,7 @@ inputs:
 outputs:
   cache-hit:
     description: '"true" when the workloads came from the cache'
-    value: ${{ steps.restore.outputs.cache-hit == 'true' && steps.extract.outputs.ok == 'true' }}
+    value: ${{ steps.extract.outputs.ok == 'true' }}
 
 runs:
   using: composite
@@ -57,7 +60,7 @@ runs:
         ids=$(printf '%s' "$WORKLOADS" | tr -s ' ' '+')
         {
           echo "workload-set=$ws"
-          echo "key=dotnet-workloads-v1-${RUNNER_OS}-${RUNNER_ARCH}-xcode${xcode}-sdk${sdk}-ws${ws:-none}-${ids}"
+          echo "base-key=dotnet-workloads-v2-${RUNNER_OS}-${RUNNER_ARCH}-xcode${xcode}-sdk${sdk}-ws${ws:-none}-${ids}"
           echo "archive=${RUNNER_TEMP}/dotnet-workloads.tar"
         } >> "$GITHUB_OUTPUT"
         echo "SDK ${sdk}, workload set ${ws:-unknown}, Xcode ${xcode}"
@@ -68,11 +71,13 @@ runs:
       uses: actions/cache/restore@v6
       with:
         path: ${{ steps.plan.outputs.archive }}
-        key: ${{ steps.plan.outputs.key }}
+        # Never an exact match: the newest save under the base key wins via restore-keys.
+        key: ${{ steps.plan.outputs.base-key }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: ${{ steps.plan.outputs.base-key }}-
 
     - name: Unpack cached workloads
       id: extract
-      if: steps.restore.outputs.cache-hit == 'true'
+      if: steps.restore.outputs.cache-matched-key != ''
       shell: bash
       env:
         WORKLOADS: ${{ inputs.workloads }}
@@ -105,13 +110,23 @@ runs:
         WORKLOADS: ${{ inputs.workloads }}
         WORKLOAD_SET: ${{ steps.plan.outputs.workload-set }}
         ARCHIVE: ${{ steps.plan.outputs.archive }}
-        # Snapshot only on a cache miss we may save; a hit whose unpack failed already has the key.
-        SNAPSHOT: ${{ inputs.save == 'true' && steps.plan.outputs.workload-set != '' && steps.restore.outputs.cache-hit != 'true' }}
+        # Snapshot (and save) on a miss and after a rejected restore, so a bad entry is replaced.
+        SNAPSHOT: ${{ inputs.save == 'true' && steps.plan.outputs.workload-set != '' }}
+        RESTORED: ${{ steps.restore.outputs.cache-matched-key != '' }}
       run: |
         set -euo pipefail
         list_files() { (cd "$DOTNET_ROOT" && find . \( -type f -o -type l \) | LC_ALL=C sort); }
         before="${RUNNER_TEMP}/dotnet-files-before.txt"
-        if [ "$SNAPSHOT" = "true" ]; then list_files > "$before"; fi
+        if [ "$SNAPSHOT" = "true" ]; then
+          if [ "$RESTORED" = "true" ] && [ -f "$ARCHIVE" ]; then
+            # Files the rejected restore unpacked count as added, so the fresh archive keeps them.
+            restored="${RUNNER_TEMP}/dotnet-files-restored.txt"
+            { tar -tf "$ARCHIVE" 2>/dev/null || true; } | LC_ALL=C sort -u > "$restored"
+            list_files | LC_ALL=C comm -23 - "$restored" > "$before"
+          else
+            list_files > "$before"
+          fi
+        fi
         # shellcheck disable=SC2086 # WORKLOADS is a space-separated list of IDs
         if [ -n "$WORKLOAD_SET" ]; then
           dotnet workload install $WORKLOADS --version "$WORKLOAD_SET"
@@ -137,4 +152,4 @@ runs:
       uses: actions/cache/save@v6
       with:
         path: ${{ steps.plan.outputs.archive }}
-        key: ${{ steps.plan.outputs.key }}
+        key: ${{ steps.plan.outputs.base-key }}-${{ github.run_id }}-${{ github.run_attempt }}
