@@ -94,7 +94,12 @@ if [[ -n "$STOP" ]]; then
   rm -f "$DIR/pids"
   step "Latency capture"
   if [[ -f "$DIR/latency-enabled" ]]; then
-    "$SCRIPTS/latency-report.sh" --disable >/dev/null && rm -f "$DIR/latency-enabled" && ok "turned off (this round turned it on; restart the Mac app to apply)"
+    if "$SCRIPTS/latency-report.sh" --disable >/dev/null; then
+      rm -f "$DIR/latency-enabled"
+      ok "turned off (this round turned it on; restart the Mac app to apply)"
+    else
+      warn "could not turn off latency capture: run scripts/latency-report.sh --disable"
+    fi
   else
     info "left as it was before setup (scripts/latency-report.sh --disable turns it off)"
   fi
