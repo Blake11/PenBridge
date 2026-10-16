@@ -6,6 +6,7 @@ using PenBridge.Core.Input;
 using PenBridge.Core.Net;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
+using PenBridge.Core.Settings;
 
 namespace PenBridge.SimClient;
 
@@ -26,6 +27,10 @@ internal static class Program
           penbridge-sim pair --qr "<penbridge://pair?...>"                Pair with a QR payload
           penbridge-sim draw <script> [--host <host>] [--port <port>] [--repeat <n>]
                                                                           Reconnect to the last paired Mac and draw
+          penbridge-sim settings [--set <Key>=<value>]... [--host <host>] [--port <port>]
+                                                                          Print the Mac's settings and displays (protocol
+                                                                          1.2) and optionally change some, e.g.
+                                                                          --set StylusMode=Mouse --set MouseSpeed=1.5
           penbridge-sim serve [--port <port>]                             Run a server here that prints its input
           penbridge-sim scripts                                           List the draw scripts
 
@@ -33,6 +38,7 @@ internal static class Program
           --in-process-server   pair/draw against a server started in this process (no Mac app needed)
           --finger-touches      the in-process/serve server offers FingerTouches (ADR-0026: one finger is a
                                 relative cursor; try the one-finger script)
+          --settings            draw: print the settings, displays and active area the Mac sends
           --verbose             debug logging
 
         PENBRIDGE_LATENCY_LOG=1 turns on the in-process/serve server's latency capture (dumped as
@@ -73,6 +79,7 @@ internal static class Program
             {
                 "pair" => await PairAsync(parsed, loggers, cts.Token),
                 "draw" => await DrawAsync(parsed, loggers, cts.Token),
+                "settings" => await SettingsAsync(parsed, loggers, cts.Token),
                 "serve" => await ServeAsync(parsed, loggers, cts.Token),
                 "scripts" => ListScripts(),
                 _ => Fail("Unknown command '" + parsed.Command + "'.\n\n" + Usage),
@@ -181,34 +188,12 @@ internal static class Program
             : 1;
         DatagramFilter? filter = script == DrawScripts.PacketLoss ? static _ => Random.Shared.NextDouble() >= 0.2 : null;
         InProcessServer? local = null;
-        PenBridgeClient client;
         try
         {
-            if (args.Has("--in-process-server"))
+            (PenBridgeClient? client, local, string? error) = await OpenSessionAsync(args, loggers, filter, args.Has("--settings") ? PrintRemote : null, ct);
+            if (client is null)
             {
-                local = InProcessServer.Start(loggers, args.Port, fingerTouches: args.Has("--finger-touches"));
-                client = CreateClient(new InMemorySecretStore(), loggers, filter);
-                await client.PairWithPinAsync("127.0.0.1", local.Server.Port, local.Server.CurrentPin!, ct);
-            }
-            else
-            {
-                FileSecretStore store = OpenStore();
-                if (!store.TryGet(LastServerKey, out byte[]? saved))
-                {
-                    return Fail("No paired server: run 'pair' first.");
-                }
-
-                string[] parts = Encoding.UTF8.GetString(saved).Split('\n');
-                byte[] fingerprint = new byte[CertificateFingerprint.Length];
-                if (parts.Length != 3 || !CertificateFingerprint.TryParseBase64Url(parts[2], fingerprint))
-                {
-                    return Fail("The saved server record is corrupt: run 'pair' again.");
-                }
-
-                string host = args.Value("--host") ?? parts[0];
-                int port = args.Port ?? int.Parse(parts[1], CultureInfo.InvariantCulture);
-                client = CreateClient(store, loggers, filter);
-                await client.ConnectAsync(host, port, fingerprint, ct);
+                return Fail(error!);
             }
 
             await using (client)
@@ -250,6 +235,137 @@ internal static class Program
             }
         }
     }
+
+    /// <summary>
+    /// Connects to the last paired Mac (or pairs with an in-process server), subscribing <paramref name="subscribe"/>
+    /// before the session starts so nothing sent right after SessionStart is missed.
+    /// </summary>
+    private static async Task<(PenBridgeClient? Client, InProcessServer? Local, string? Error)> OpenSessionAsync(
+        Args args, ILoggerFactory loggers, DatagramFilter? filter, Action<PenBridgeClient>? subscribe, CancellationToken ct)
+    {
+        if (args.Has("--in-process-server"))
+        {
+            InProcessServer local = InProcessServer.Start(loggers, args.Port, fingerTouches: args.Has("--finger-touches"));
+            PenBridgeClient demo = CreateClient(new InMemorySecretStore(), loggers, filter);
+            subscribe?.Invoke(demo);
+            await demo.PairWithPinAsync("127.0.0.1", local.Server.Port, local.Server.CurrentPin!, ct);
+            return (demo, local, null);
+        }
+
+        FileSecretStore store = OpenStore();
+        if (!store.TryGet(LastServerKey, out byte[]? saved))
+        {
+            return (null, null, "No paired server: run 'pair' first.");
+        }
+
+        string[] parts = Encoding.UTF8.GetString(saved).Split('\n');
+        byte[] fingerprint = new byte[CertificateFingerprint.Length];
+        if (parts.Length != 3 || !CertificateFingerprint.TryParseBase64Url(parts[2], fingerprint))
+        {
+            return (null, null, "The saved server record is corrupt: run 'pair' again.");
+        }
+
+        string host = args.Value("--host") ?? parts[0];
+        int port = args.Port ?? int.Parse(parts[1], CultureInfo.InvariantCulture);
+        PenBridgeClient client = CreateClient(store, loggers, filter);
+        subscribe?.Invoke(client);
+        await client.ConnectAsync(host, port, fingerprint, ct);
+        return (client, null, null);
+    }
+
+    private static async Task<int> SettingsAsync(Args args, ILoggerFactory loggers, CancellationToken ct)
+    {
+        var updates = new List<SettingEntry>();
+        foreach (string assignment in args.Values("--set"))
+        {
+            if (!MacSettings.TryParseAssignment(assignment, out SettingEntry entry))
+            {
+                return Fail($"Not a Mac setting assignment: '{assignment}'. Keys: {string.Join(", ", MacSettings.All.Select(d => d.Name))}.");
+            }
+
+            updates.Add(entry);
+        }
+
+        if (updates.Count > SettingsWire.MaxEntries)
+        {
+            return Fail($"At most {SettingsWire.MaxEntries} --set values.");
+        }
+
+        var snapshots = new SemaphoreSlim(0);
+        (PenBridgeClient? client, InProcessServer? local, string? error) = await OpenSessionAsync(
+            args, loggers, null, c => c.SettingsSnapshotReceived += (_, _) => snapshots.Release(), ct);
+        if (client is null)
+        {
+            return Fail(error!);
+        }
+
+        try
+        {
+            await using (client)
+            {
+                if ((client.NegotiatedCapabilities & ProtocolCapabilities.RemoteSettings) == 0)
+                {
+                    return Fail($"'{PeerText.Sanitize(client.ServerName)}' doesn't offer remote settings (negotiated: {client.NegotiatedCapabilities}).");
+                }
+
+                TimeSpan wait = TimeSpan.FromSeconds(5);
+                if (!await snapshots.WaitAsync(wait, ct))
+                {
+                    return Fail("No settings snapshot from the Mac.");
+                }
+
+                PrintSettings(client);
+                if (updates.Count > 0)
+                {
+                    Console.WriteLine("Sending: " + string.Join(", ", updates.Select(e => MacSettings.Format(e))));
+                    if (!await client.UpdateSettingsAsync(updates) || !await snapshots.WaitAsync(wait, ct))
+                    {
+                        return Fail("The Mac didn't answer the update.");
+                    }
+
+                    Console.WriteLine("After the update (invalid values are ignored by the Mac):");
+                    PrintSettings(client);
+                }
+
+                await client.DisconnectAsync();
+            }
+
+            return 0;
+        }
+        finally
+        {
+            if (local is not null)
+            {
+                await local.DisposeAsync();
+            }
+        }
+    }
+
+    private static void PrintRemote(PenBridgeClient client)
+    {
+        client.SettingsSnapshotReceived += (_, e) => Console.WriteLine("Settings: " + string.Join(", ", e.Entries.Select(Describe)));
+        client.DisplayListReceived += (_, e) => Console.WriteLine("Displays: " + string.Join("; ", e.Displays.Select(Describe)));
+        client.ActiveAreaReceived += (_, e) => Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"Active area: {e.Area.X:F3},{e.Area.Y:F3} {e.Area.Width:F3}x{e.Area.Height:F3}"));
+    }
+
+    private static void PrintSettings(PenBridgeClient client)
+    {
+        foreach (DisplayListEntry d in client.LastDisplayList ?? [])
+        {
+            Console.WriteLine("  display " + Describe(d));
+        }
+
+        foreach (SettingEntry entry in client.LastSettingsSnapshot ?? [])
+        {
+            Console.WriteLine("  " + Describe(entry));
+        }
+    }
+
+    private static string Describe(SettingEntry entry) => PeerText.Sanitize(MacSettings.Format(entry));
+
+    private static string Describe(DisplayListEntry d) => string.Create(
+        CultureInfo.InvariantCulture,
+        $"{PeerText.Sanitize(d.Id)} '{PeerText.Sanitize(d.Name)}' {d.WidthPt}x{d.HeightPt}{(d.IsMain ? " (main)" : string.Empty)}");
 
     private static async Task<int> ServeAsync(Args args, ILoggerFactory loggers, CancellationToken ct)
     {
@@ -317,7 +433,9 @@ internal static class Program
                 LoggerFactory = loggers,
                 LatencyRecorder = latency?.Recorder,
                 FingerTouches = fingerTouches,
+                RemoteSettings = true,
             });
+            SimSettings.Attach(server);
             server.Start();
             if (!persistent)
             {
@@ -335,10 +453,40 @@ internal static class Program
         }
     }
 
+    /// <summary>The in-process server's Mac settings: in memory, validated like the Mac app, two fake displays.</summary>
+    private static class SimSettings
+    {
+        private static readonly DisplayListEntry[] Displays =
+        [
+            new("sim-main", "Sim Display", true, 1512, 982),
+            new("sim-side", "Sim Side Display", false, 1920, 1080),
+        ];
+
+        public static void Attach(PenBridgeServer server)
+        {
+            var values = new MacSettingValues();
+            _ = server.SendDisplayListAsync(Displays);
+            _ = server.SendSettingsSnapshotAsync(values.ToEntries());
+            server.SettingsUpdateRequested += (_, e) =>
+            {
+                IReadOnlyList<SettingEntry> reply;
+                lock (values)
+                {
+                    IReadOnlyList<SettingEntry> changed = values.ApplyUpdate(e.Entries, Displays);
+                    Console.WriteLine($"[server] settings update: {e.Entries.Count} entries, changed: {(changed.Count == 0 ? "nothing" : string.Join(", ", changed.Select(c => PeerText.Sanitize(MacSettings.Format(c)))))}");
+                    reply = values.ToEntries();
+                }
+
+                _ = server.SendSettingsSnapshotAsync(reply);
+            };
+        }
+    }
+
     /// <summary>Tiny parser: the first token is the command, the first bare token after it the positional argument.</summary>
     private sealed class Args
     {
         private readonly Dictionary<string, string?> _options = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, List<string>> _all = new(StringComparer.Ordinal);
 
         public Args(string[] args)
         {
@@ -347,8 +495,18 @@ internal static class Program
                 string a = args[i];
                 if (a.StartsWith("--", StringComparison.Ordinal) && a.Length > 2)
                 {
-                    bool isFlag = a is "--in-process-server" or "--verbose" or "--help" or "--finger-touches";
-                    _options[a] = !isFlag && i + 1 < args.Length ? args[++i] : null;
+                    bool isFlag = a is "--in-process-server" or "--verbose" or "--help" or "--finger-touches" or "--settings";
+                    string? value = !isFlag && i + 1 < args.Length ? args[++i] : null;
+                    _options[a] = value;
+                    if (value is not null)
+                    {
+                        if (!_all.TryGetValue(a, out List<string>? list))
+                        {
+                            _all[a] = list = [];
+                        }
+
+                        list.Add(value);
+                    }
                 }
                 else if (Command is null)
                 {
@@ -374,5 +532,8 @@ internal static class Program
         public bool Has(string option) => _options.ContainsKey(option);
 
         public string? Value(string option) => _options.TryGetValue(option, out string? v) ? v : null;
+
+        /// <summary>Every value of a repeatable option, in order.</summary>
+        public List<string> Values(string option) => _all.TryGetValue(option, out List<string>? v) ? v : [];
     }
 }
