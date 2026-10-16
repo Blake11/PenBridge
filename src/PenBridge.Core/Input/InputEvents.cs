@@ -183,7 +183,7 @@ public enum GesturePhase : byte
 
 /// <summary>
 /// One gesture event. Deltas and the center are in global display points (via the recognizer's
-/// <see cref="CoordinateMapper"/>, top-left origin, y down); a positive <see cref="DeltaY"/> means the fingers moved
+/// <see cref="CoordinateMapper.GestureRect"/>, top-left origin, y down); a positive <see cref="DeltaY"/> means the fingers moved
 /// down. Gestures act at the current cursor position (ADR-0023); <see cref="Center"/> is informational only.
 /// </summary>
 /// <param name="Kind">See <see cref="GestureKind"/>.</param>

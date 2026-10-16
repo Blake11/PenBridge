@@ -233,4 +233,90 @@ public class GestureSettingsTests
         Assert.Equal(GesturePhase.Changed, Gestures[^1].Phase);
         Assert.Equal(last * 2, Gestures[^1].DeltaY, 0.1); // 10 pt steps, quantized to 1/65.535 pt
     }
+
+    /// <summary>Scroll, three-finger drag, four-finger swipe, spread, turn and the one-finger cursor through one mapper.</summary>
+    private static List<GestureEvent> AllGestures(CoordinateMapper mapper)
+    {
+        var sink = new RecordingSink();
+        GestureRecognizer Make(bool oneFinger) => new(sink, new GestureRecognizerOptions { OneFingerCursor = oneFinger }) { Mapper = mapper };
+        Move(Make(false), 400, 600);
+        Move(Make(false), 300, 500, 700);
+        Move(Make(false), 200, 400, 600, 800);
+        Spread(Make(false));
+        Turn(Make(false));
+        Move(Make(true), 500);
+        return sink.Gestures;
+    }
+
+    public static TheoryData<double, double, double, double> Regions => new()
+    {
+        { 0.7, 0.7, 0.2, 0.1 },   // small, wide (3.6:1)
+        { 0.1, 0.1, 0.1, 0.8 },   // narrow and tall (0.22:1)
+        { 0.25, 0.25, 0.5, 0.5 }, // the display's own aspect
+    };
+
+    [Theory]
+    [MemberData(nameof(Regions))]
+    public void Gesture_deltas_do_not_depend_on_the_region_or_active_area(double x, double y, double w, double h)
+    {
+        var display = new DisplayRect(0, 0, 1920, 1080);
+        List<GestureEvent> full = AllGestures(new CoordinateMapper(3088, 1440, display));
+        Assert.Contains(full, g => g.Kind == GestureKind.Scroll);
+        Assert.Contains(full, g => g.Kind == GestureKind.Drag);
+        Assert.Contains(full, g => g.Kind == GestureKind.SystemSwipe);
+        Assert.Contains(full, g => g.Kind == GestureKind.Pinch);
+        Assert.Contains(full, g => g.Kind == GestureKind.PointerMove);
+
+        List<GestureEvent> region = AllGestures(new CoordinateMapper(3088, 1440, display, new NormalizedRect(x, y, w, h)));
+        Assert.Equal(full, region);
+    }
+
+    [Fact]
+    public void Gesture_deltas_with_all_displays_match_the_main_display()
+    {
+        var main = new DisplayRect(0, 0, 1920, 1080);
+        MappingTarget all = MappingTarget.ForAllDisplays([new DisplayRect(-1080, -400, 1080, 1920), main, new DisplayRect(1920, 0, 2560, 1440)]);
+        Assert.Equal(AllGestures(new CoordinateMapper(3088, 1440, main)), AllGestures(new CoordinateMapper(3088, 1440, all)));
+    }
+
+    [Fact]
+    public void Gesture_gain_is_the_phase_4_letterbox_scale()
+    {
+        // 3088x1440 letterboxed on 1920x1080: 1920 pt across the surface; a two-finger move of 0.1 of the surface
+        // height is 0.1 * 1920 * 1440 / 3088 pt before gain, whatever the region.
+        var mapper = new CoordinateMapper(3088, 1440, new DisplayRect(0, 0, 1920, 1080), new NormalizedRect(0, 0, 0.3, 0.3));
+        Assert.Equal(1920 * 1440.0 / 3088, mapper.GestureShortSide, 9);
+        DisplayPoint a = mapper.MapGesture(0, 0);
+        DisplayPoint b = mapper.MapGesture(0, 6553.5);
+        Assert.Equal(0.1 * 1920 * 1440.0 / 3088, b.Y - a.Y, 9);
+    }
+
+    [Fact]
+    public void Zoom_and_rotate_toggles_apply_to_the_next_gesture_only()
+    {
+        GestureRecognizer rec = Recognizer();
+        for (int step = 0; step <= 4; step++)
+        {
+            double half = 100 + (step * 10);
+            rec.Process([F(1, 500 - half, 500), F(2, 500 + half, 500)], false, Ms(step * 50));
+        }
+
+        Assert.Contains(Gestures, g => g.Kind == GestureKind.Pinch && g.Phase == GesturePhase.Began);
+        rec.ApplySettings(new InputSettings { ZoomEnabled = false });
+        int before = Gestures.Count;
+        for (int step = 5; step <= 8; step++)
+        {
+            double half = 100 + (step * 10);
+            rec.Process([F(1, 500 - half, 500), F(2, 500 + half, 500)], false, Ms(step * 50));
+        }
+
+        rec.Process([], false, Ms(9 * 50));
+        List<GestureEvent> rest = Gestures.Skip(before).Where(g => g.Phase == GesturePhase.Changed).ToList();
+        Assert.NotEmpty(rest);
+        Assert.All(rest, g => Assert.True(g.ScaleDelta > 1)); // the running pinch keeps zooming
+
+        _sink.Clear();
+        Spread(rec); // the next gesture: zoom off
+        Assert.DoesNotContain(Gestures, g => g.Kind == GestureKind.Pinch);
+    }
 }

@@ -109,18 +109,56 @@ public class CoordinateMapperTests
         AssertRect(new DisplayRect(-(fullWidth - 1920) / 2, 0, fullWidth, 1080), m.ContentRect);
         Assert.Equal(fullWidth / Max, m.ScaleX, 12);
         Assert.Equal(1080 / Max, m.ScaleY, 12);
-        Assert.Equal(1080, m.ShortSide, 9);
     }
 
     [Fact]
-    public void Unclamped_mapping_extends_linearly_beyond_the_target()
+    public void Gesture_rect_is_the_phase_4_letterbox_on_the_whole_display()
+    {
+        // Wide surface on 16:9: full width, bars top and bottom.
+        var m = new CoordinateMapper(3088, 1440, new DisplayRect(0, 0, 1920, 1080));
+        double h = 1920 * 1440.0 / 3088;
+        AssertRect(new DisplayRect(0, (1080 - h) / 2, 1920, h), m.GestureRect);
+        Assert.Equal(h, m.GestureShortSide, 9);
+        AssertPoint(new DisplayPoint(0, (1080 - h) / 2), m.MapGesture(0, 0));
+        AssertPoint(new DisplayPoint(960, 540), m.MapGesture(Max / 2, Max / 2));
+
+        // Tall surface: full height, bars left and right.
+        var tall = new CoordinateMapper(1440, 3088, new DisplayRect(100, 50, 1920, 1080));
+        double w = 1080 * 1440.0 / 3088;
+        AssertRect(new DisplayRect(100 + ((1920 - w) / 2), 50, w, 1080), tall.GestureRect);
+        Assert.Equal(w, tall.GestureShortSide, 9);
+    }
+
+    [Fact]
+    public void Gesture_rect_ignores_the_region()
+    {
+        var display = new DisplayRect(0, 0, 1920, 1080);
+        var full = new CoordinateMapper(3088, 1440, display);
+        var region = new CoordinateMapper(3088, 1440, display, new NormalizedRect(0.6, 0.1, 0.2, 0.5));
+        Assert.Equal(full.GestureRect, region.GestureRect);
+        Assert.Equal(full.MapGesture(1234, 5678), region.MapGesture(1234, 5678));
+    }
+
+    [Fact]
+    public void Gesture_rect_with_all_displays_uses_the_display_at_the_origin()
+    {
+        var main = new DisplayRect(0, 0, 1512, 982);
+        MappingTarget all = MappingTarget.ForAllDisplays([new DisplayRect(-2560, -200, 2560, 1440), main]);
+        Assert.Equal(main, all.GestureDisplay);
+        Assert.Equal(new CoordinateMapper(3088, 1440, main).GestureRect, new CoordinateMapper(3088, 1440, all).GestureRect);
+
+        MappingTarget noOrigin = MappingTarget.ForAllDisplays([new DisplayRect(10, 0, 800, 600), new DisplayRect(900, 0, 800, 600)]);
+        Assert.Equal(new DisplayRect(10, 0, 800, 600), noOrigin.GestureDisplay);
+    }
+
+    [Fact]
+    public void Gesture_mapping_clamps_to_the_gesture_rect()
     {
         var m = new CoordinateMapper(3088, 1440, new DisplayRect(0, 0, 1920, 1080));
-        DisplayPoint left = m.MapUnclamped(0, Max / 2);
-        Assert.Equal(m.ContentRect.X, left.X, 9);
-        Assert.True(left.X < 0);
-        Assert.Equal(540, left.Y, 9);
-        AssertPoint(m.Map(Max / 2, Max / 2), m.MapUnclamped(Max / 2, Max / 2));
+        DisplayPoint p = m.MapGesture(-10, double.NaN);
+        Assert.Equal(m.GestureRect.X, p.X);
+        Assert.Equal(m.GestureRect.Y, p.Y);
+        Assert.True(m.MapGesture(Max, Max).X < m.GestureRect.X + m.GestureRect.Width);
     }
 
     [Fact]

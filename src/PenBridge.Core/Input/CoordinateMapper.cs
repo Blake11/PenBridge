@@ -43,6 +43,27 @@ public sealed class MappingTarget
     /// <summary>The displays a point is kept on: the one display (whole, not just the region), or all of them.</summary>
     public ReadOnlySpan<DisplayRect> Displays => _displays;
 
+    /// <summary>
+    /// The display gesture distances are measured on (ADR-0033): the one display (whole, whatever the region), or with
+    /// all displays the one at the global origin (the main display on macOS), else the first.
+    /// </summary>
+    public DisplayRect GestureDisplay
+    {
+        get
+        {
+            DisplayRect[] displays = _displays;
+            for (int i = 0; i < displays.Length; i++)
+            {
+                if (displays[i].X == 0 && displays[i].Y == 0)
+                {
+                    return displays[i];
+                }
+            }
+
+            return displays[0];
+        }
+    }
+
     /// <summary>One display, or a region of it (fractions of the display).</summary>
     /// <exception cref="ArgumentOutOfRangeException">The display is empty or not finite, or the region is not inside 0..1.</exception>
     public static MappingTarget ForDisplay(DisplayRect display, NormalizedRect region)
@@ -157,6 +178,9 @@ public readonly struct CoordinateMapper
     private readonly DisplayRect _bounds;
     private readonly double _maxX;
     private readonly double _maxY;
+    private readonly DisplayRect _gesture;
+    private readonly double _gestureMaxX;
+    private readonly double _gestureMaxY;
 
     public CoordinateMapper(double surfaceWidth, double surfaceHeight, DisplayRect display)
         : this(surfaceWidth, surfaceHeight, MappingTarget.ForDisplay(display, NormalizedRect.Full))
@@ -185,6 +209,9 @@ public readonly struct CoordinateMapper
         _active = ActiveAreaFor(surfaceWidth, surfaceHeight, _bounds.Width, _bounds.Height);
         _maxX = Math.BitDecrement(_bounds.X + _bounds.Width);
         _maxY = Math.BitDecrement(_bounds.Y + _bounds.Height);
+        _gesture = LetterboxFor(surfaceWidth, surfaceHeight, target.GestureDisplay);
+        _gestureMaxX = Math.BitDecrement(_gesture.X + _gesture.Width);
+        _gestureMaxY = Math.BitDecrement(_gesture.Y + _gesture.Height);
     }
 
     /// <summary>Maps normalized coordinates to the unit square (0..1); used until a real surface/display is known.</summary>
@@ -221,8 +248,15 @@ public readonly struct CoordinateMapper
     /// <summary>Display points per normalized unit on the Y axis.</summary>
     public double ScaleY => _bounds.Height / (_active.Height * NormalizedMax);
 
-    /// <summary>The whole surface's shorter side in display points (<see cref="ContentRect"/>): gesture distances scale with it.</summary>
-    public double ShortSide => Math.Min(_bounds.Width / _active.Width, _bounds.Height / _active.Height);
+    /// <summary>
+    /// The gesture space (ADR-0033, the Phase 4 basis): the whole surface fitted inside
+    /// <see cref="MappingTarget.GestureDisplay"/> with its aspect ratio kept (letterbox or pillarbox, centred).
+    /// Independent of the region and the active area, so gesture gain and thresholds don't change with them.
+    /// </summary>
+    public DisplayRect GestureRect => _gesture;
+
+    /// <summary>The shorter side of <see cref="GestureRect"/>: gesture thresholds and slops are fractions of it.</summary>
+    public double GestureShortSide => Math.Min(_gesture.Width, _gesture.Height);
 
     /// <summary>
     /// The active area of a surface for a target size: the largest rectangle with the target's aspect ratio, centred,
@@ -261,17 +295,36 @@ public readonly struct CoordinateMapper
     }
 
     /// <summary>
-    /// Maps without pinning or clamping (linear, extends beyond the target): for gesture measurements, whose deltas
-    /// and distances must not stop at the active area's edge. Not a position to post.
+    /// Maps fractional normalized coordinates (0..65535) into <see cref="GestureRect"/> for gesture measurements
+    /// (out-of-range and NaN inputs are clamped; right/bottom edges map just inside). Not a position to post.
     /// </summary>
-    public DisplayPoint MapUnclamped(double x, double y) => new(
-        _bounds.X + ((((x / NormalizedMax) - _active.X) / _active.Width) * _bounds.Width),
-        _bounds.Y + ((((y / NormalizedMax) - _active.Y) / _active.Height) * _bounds.Height));
+    public DisplayPoint MapGesture(double x, double y)
+    {
+        double px = _gesture.X + (Clamp01(x / NormalizedMax) * _gesture.Width);
+        double py = _gesture.Y + (Clamp01(y / NormalizedMax) * _gesture.Height);
+        return new DisplayPoint(Math.Min(px, _gestureMaxX), Math.Min(py, _gestureMaxY));
+    }
 
     /// <summary>Keeps a point on the target's displays (see <see cref="MappingTarget.ClampToDisplays"/>).</summary>
     public DisplayPoint ClampToDisplays(DisplayPoint p) => _target!.ClampToDisplays(p);
 
     private static double Clamp01(double v) => v > 0 ? (v < 1 ? v : 1) : 0;
+
+    /// <summary>The surface fitted inside <paramref name="display"/> with its aspect ratio kept, centred.</summary>
+    private static DisplayRect LetterboxFor(double surfaceWidth, double surfaceHeight, DisplayRect display)
+    {
+        double surfaceAspect = surfaceWidth / surfaceHeight;
+        if (surfaceAspect >= display.Width / display.Height)
+        {
+            // The surface is relatively wider: full width, bars top and bottom.
+            double height = display.Width / surfaceAspect;
+            return new DisplayRect(display.X, display.Y + ((display.Height - height) / 2), display.Width, height);
+        }
+
+        // The surface is relatively taller: full height, bars left and right.
+        double width = display.Height * surfaceAspect;
+        return new DisplayRect(display.X + ((display.Width - width) / 2), display.Y, width, display.Height);
+    }
 
     private static void RequirePositive(double value, string name)
     {

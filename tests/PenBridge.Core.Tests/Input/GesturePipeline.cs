@@ -97,13 +97,13 @@ internal sealed class GesturePipeline
 
     /// <summary>Normalized coordinates of a point in content points (0..1512 × 0..705).</summary>
     public static (ushort X, ushort Y) At(double xPt, double yPt) => (
-        (ushort)Math.Clamp(Math.Round(xPt / Mapper.ContentRect.Width * 65535), 0, 65535),
-        (ushort)Math.Clamp(Math.Round(yPt / Mapper.ContentRect.Height * 65535), 0, 65535));
+        (ushort)Math.Clamp(Math.Round(xPt / Mapper.GestureRect.Width * 65535), 0, 65535),
+        (ushort)Math.Clamp(Math.Round(yPt / Mapper.GestureRect.Height * 65535), 0, 65535));
 
     public (double X, double Y) PositionOf(byte id)
     {
         RawTouch t = _fingers[IndexOf(id)];
-        return (t.X / 65535.0 * Mapper.ContentRect.Width, t.Y / 65535.0 * Mapper.ContentRect.Height);
+        return (t.X / 65535.0 * Mapper.GestureRect.Width, t.Y / 65535.0 * Mapper.GestureRect.Height);
     }
 
     public string[] Names(int from = 0) => Events.Skip(from).Select(e => e.Name).ToArray();
