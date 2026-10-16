@@ -11,6 +11,7 @@ using PenBridge.Core.Input;
 using PenBridge.Core.Net;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
+using PenBridge.Core.Settings;
 using PenBridge.Mac.Input;
 
 namespace PenBridge.Mac.Services;
@@ -115,8 +116,10 @@ public sealed partial class ServerHost : IAsyncDisposable
     private string? _error;
     private bool _accessibilityMissing;
     private IReadOnlyList<string> _addresses = [];
-    private DisplayRect _display = new(0, 0, 1, 1);
-    private NormalizedRect _region = NormalizedRect.Full;
+    private MappingTarget _target = MappingTarget.ForDisplay(new DisplayRect(0, 0, 1, 1));
+    private InputSettings _inputSettings = InputSettings.Default;
+    private IReadOnlyList<SettingEntry>? _settingsSnapshot;
+    private IReadOnlyList<DisplayListEntry>? _displayList;
 
     /// <param name="injector">The CGEvent injector; it only ever receives input through the pause gate.</param>
     /// <param name="secrets">Holds the server identity and the paired-device registry (<see cref="KeychainSecretStore"/>).</param>
@@ -150,6 +153,12 @@ public sealed partial class ServerHost : IAsyncDisposable
 
     /// <summary>Raised on the main thread after a device paired (the pairing window closes itself on this).</summary>
     public event EventHandler<DevicePairedEventArgs>? DevicePaired;
+
+    /// <summary>
+    /// Raised on the main thread when the connected phone asks to change Mac settings (ADR-0030). The handler
+    /// validates, applies and persists, then replies with <see cref="PublishSettings"/> (the snapshot is the answer).
+    /// </summary>
+    public event EventHandler<SettingsUpdateRequestedEventArgs>? SettingsUpdateRequested;
 
     /// <summary>The current snapshot.</summary>
     public ServerHostState State { get; private set; }
@@ -203,13 +212,51 @@ public sealed partial class ServerHost : IAsyncDisposable
         PublishState();
     }
 
-    /// <summary>The display region the phone maps to (global display points); kept across restarts.</summary>
-    public void SetTarget(DisplayRect display, NormalizedRect region)
+    /// <summary>What the phone maps to (one display and region, or all displays; ADR-0031); kept across restarts.</summary>
+    public void SetTarget(MappingTarget target)
     {
         EnsureMainThread();
-        _server?.SetTarget(display, region);
-        _display = display;
-        _region = region;
+        ArgumentNullException.ThrowIfNull(target);
+        _target = target;
+        _server?.SetTarget(target);
+    }
+
+    /// <summary>The input settings (stylus mode, side button, pressure curve, gestures; ADR-0032/0033); kept across restarts.</summary>
+    /// <exception cref="ArgumentOutOfRangeException">Settings out of range (<see cref="InputSettings.Validate"/>).</exception>
+    public void SetInputSettings(InputSettings settings)
+    {
+        EnsureMainThread();
+        ArgumentNullException.ThrowIfNull(settings);
+        settings.Validate();
+        _inputSettings = settings;
+        _server?.SetInputSettings(settings);
+    }
+
+    /// <summary>
+    /// The Mac settings snapshot for the phone (ADR-0030): pushed to the connected phone now and to every later
+    /// session after its SessionStart (also across server restarts). Coalesced in Core, latest wins.
+    /// </summary>
+    public void PublishSettings(IReadOnlyList<SettingEntry> snapshot)
+    {
+        EnsureMainThread();
+        ArgumentNullException.ThrowIfNull(snapshot);
+        _settingsSnapshot = snapshot;
+        if (_server is not null)
+        {
+            _ = _server.SendSettingsSnapshotAsync(snapshot);
+        }
+    }
+
+    /// <summary>The display list for the phone (ADR-0030), like <see cref="PublishSettings"/>; it goes out before a snapshot published with it.</summary>
+    public void PublishDisplays(IReadOnlyList<DisplayListEntry> displays)
+    {
+        EnsureMainThread();
+        ArgumentNullException.ThrowIfNull(displays);
+        _displayList = displays;
+        if (_server is not null)
+        {
+            _ = _server.SendDisplayListAsync(displays);
+        }
     }
 
     /// <summary>Re-checks <see cref="AccessibilityStatus.IsTrusted"/> (call on menu open; also done on connect).</summary>
@@ -493,8 +540,9 @@ public sealed partial class ServerHost : IAsyncDisposable
             ServerName = name,
             AllowTakeover = _settings.AllowTakeover,
             FingerTouches = true, // the injector posts PointerMove/Click/PointerDrag (ADR-0026)
-            TargetDisplay = _display,
-            TargetRegion = _region,
+            RemoteSettings = true, // ADR-0030: SettingsSync answers SettingsUpdateRequested
+            ActiveArea = true, // ADR-0031
+            InputSettings = _inputSettings,
             TimeProvider = _time,
             LoggerFactory = _loggers,
             LatencyRecorder = _latency?.Recorder,
@@ -504,10 +552,22 @@ public sealed partial class ServerHost : IAsyncDisposable
                 Gestures = new GestureRecognizerOptions { SmartZoomEnabled = SmartZoom.Delegate },
             },
         });
+        server.SetTarget(_target);
+        if (_displayList is not null)
+        {
+            _ = server.SendDisplayListAsync(_displayList); // held for the first session; no session yet
+        }
+
+        if (_settingsSnapshot is not null)
+        {
+            _ = server.SendSettingsSnapshotAsync(_settingsSnapshot);
+        }
+
         server.SessionStarted += OnSessionStarted;
         server.SessionEnded += OnSessionEnded;
         server.DevicePaired += OnDevicePaired;
         server.PairingWindowChanged += OnPairingWindowChanged;
+        server.SettingsUpdateRequested += OnSettingsUpdateRequested;
         try
         {
             server.Start();
@@ -562,6 +622,7 @@ public sealed partial class ServerHost : IAsyncDisposable
         server.SessionEnded -= OnSessionEnded;
         server.DevicePaired -= OnDevicePaired;
         server.PairingWindowChanged -= OnPairingWindowChanged;
+        server.SettingsUpdateRequested -= OnSettingsUpdateRequested;
     }
 
     // Server events: thread pool → main queue; events from a server that was replaced meanwhile are ignored.
@@ -609,6 +670,11 @@ public sealed partial class ServerHost : IAsyncDisposable
         PublishState();
         Raise(PairingChanged, nameof(PairingChanged));
     });
+
+    // Raised on the session's control-read task; handled on the main thread (store, resolver, window). An update from
+    // a session that has ended meanwhile is still applied: it was authenticated, and the Mac settings are global.
+    private void OnSettingsUpdateRequested(object? sender, SettingsUpdateRequestedEventArgs e) => OnMain(sender, () =>
+        Raise(SettingsUpdateRequested, e, nameof(SettingsUpdateRequested)));
 
     private void OnMain(object? sender, Action action) => DispatchQueue.MainQueue.DispatchAsync(() =>
     {

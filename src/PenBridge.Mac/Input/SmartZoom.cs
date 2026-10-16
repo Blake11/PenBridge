@@ -6,6 +6,8 @@ namespace PenBridge.Mac.Input;
 /// Reads the macOS Smart Zoom setting (System Settings ▸ Trackpad ▸ Scroll &amp; Zoom ▸ Smart zoom), the
 /// <c>TrackpadTwoFingerDoubleTapGesture</c> key, for <see cref="PenBridge.Core.Input.GestureRecognizerOptions.SmartZoomEnabled"/>
 /// (ADR-0029). With it off a two-finger tap right-clicks on the lift instead of waiting for a possible double tap.
+/// Used only while the Smart Zoom setting is "Follow macOS"; On/Off override it in Core (ADR-0033,
+/// <see cref="PenBridge.Core.Input.InputSettings.SmartZoom"/>).
 /// </summary>
 /// <remarks>
 /// <para>The recognizer calls <see cref="IsEnabled"/> once per decided two-finger tap, so the value is read live

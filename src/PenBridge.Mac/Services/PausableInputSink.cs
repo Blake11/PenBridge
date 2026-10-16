@@ -18,10 +18,12 @@ namespace PenBridge.Mac.Services;
 /// resume the phased gestures (scroll, pinch, drag, system swipe/pinch, pointer move/drag) are dropped until a
 /// <see cref="GesturePhase.Began"/>, so a gesture in progress at resume time never continues with a dangling
 /// Changed/Ended. One-shot events (Tap, SmartZoom, TouchDown, Click) pass at once.</para>
+/// <para>It is the sink Core's tracker sees, so it also forwards <see cref="ICursorLocator"/> (Mouse mode anchors at
+/// the host cursor, ADR-0032) to the injector, outside the pause lock: reading the cursor posts nothing.</para>
 /// <para>Platform-free; a candidate for Core if another head needs it.</para>
 /// <para>Hot path: one uncontended lock per event, no allocations.</para>
 /// </remarks>
-public sealed class PausableInputSink : IInputSink
+public sealed class PausableInputSink : IInputSink, ICursorLocator
 {
     private readonly IReleasableInputSink _inner;
     private readonly Lock _lock = new();
@@ -77,6 +79,18 @@ public sealed class PausableInputSink : IInputSink
                 momentum.StopMomentum();
             }
         }
+    }
+
+    /// <inheritdoc />
+    public bool TryGetCursorLocation(out DisplayPoint location)
+    {
+        if (_inner is ICursorLocator locator)
+        {
+            return locator.TryGetCursorLocation(out location);
+        }
+
+        location = default;
+        return false;
     }
 
     public void OnPenEvent(in PenEvent e)

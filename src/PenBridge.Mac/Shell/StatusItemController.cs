@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using PenBridge.Core.Input;
 using PenBridge.Core.Net;
 using PenBridge.Core.Security;
+using PenBridge.Core.Settings;
 using PenBridge.Mac.Input;
 using PenBridge.Mac.Pairing;
 using PenBridge.Mac.Services;
@@ -399,7 +400,7 @@ public sealed partial class StatusItemController : IDisposable
         var item = new NSMenuItem("Display");
         var submenu = new NSMenu { AutoEnablesItems = false };
         IReadOnlyList<DisplayInfo> displays = _resolver.Displays;
-        bool all = _settings.TargetDisplay == SettingLimits.AllDisplays;
+        bool all = _settings.TargetDisplay == MacSettings.AllDisplays;
         if (displays.Count == 0)
         {
             submenu.AddItem(Disabled("No displays"));
@@ -414,7 +415,7 @@ public sealed partial class StatusItemController : IDisposable
             submenu.AddItem(entry);
         }
 
-        NSMenuItem allDisplays = Action("All displays", () => ChooseDisplay(SettingLimits.AllDisplays));
+        NSMenuItem allDisplays = Action("All displays", () => ChooseDisplay(MacSettings.AllDisplays));
         allDisplays.State = all ? NSCellStateValue.On : NSCellStateValue.Off;
         allDisplays.ToolTip = "Every display together, as one desktop.";
         submenu.AddItem(allDisplays);
@@ -456,13 +457,8 @@ public sealed partial class StatusItemController : IDisposable
         NSWorkspace.SharedWorkspace.OpenUrl(url);
     }
 
-    // target: a display UUID or SettingLimits.AllDisplays. The resolver handles single displays; "All displays" maps
-    // to the main display there until the server applies it (P5-C2).
-    private void ChooseDisplay(string target)
-    {
-        _settings.TargetDisplay = target;
-        _resolver.SetTarget(_settings.TargetDisplayUuid);
-    }
+    // target: a display UUID or MacSettings.AllDisplays. SettingsSync re-targets the resolver and the server.
+    private void ChooseDisplay(string target) => _settings.TargetDisplay = target;
 
     /// <summary>Toggles the login item (or opens System Settings while approval is pending). Shared with the Settings window.</summary>
     internal static void ToggleRunAtStartup()
