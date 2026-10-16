@@ -380,6 +380,47 @@ public sealed class GestureRecognizer
     /// </summary>
     public bool PhoneFingerFallback { get; set; } = true;
 
+    /// <summary>
+    /// Smart Zoom override (ADR-0033): <see cref="SmartZoomMode.On"/>/<see cref="SmartZoomMode.Off"/> replace
+    /// <see cref="GestureRecognizerOptions.SmartZoomEnabled"/>; <see cref="SmartZoomMode.FollowSystem"/> (the default)
+    /// uses it. Read when a two-finger tap is decided.
+    /// </summary>
+    public SmartZoomMode SmartZoom { get; set; }
+
+    /// <summary>Multiplies the one-finger cursor and three-finger drag deltas (ADR-0033). 1 by default.</summary>
+    public double PointerSpeed { get; set; } = 1;
+
+    /// <summary>Multiplies two-finger scroll deltas, and so their momentum (ADR-0033). 1 by default.</summary>
+    public double ScrollSpeed { get; set; } = 1;
+
+    /// <summary>Pinch zoom: off removes the scale from the two-finger transform (and a spread no longer starts one).</summary>
+    public bool ZoomEnabled { get; set; } = true;
+
+    /// <summary>Rotate: off removes the rotation from the two-finger transform (and a turn no longer starts one).</summary>
+    public bool RotateEnabled { get; set; } = true;
+
+    /// <summary>Three-finger drag: off, three fingers do nothing. Checked when a gesture would begin.</summary>
+    public bool ThreeFingerDragEnabled { get; set; } = true;
+
+    /// <summary>Four-finger swipe and pinch: off, four fingers do nothing. Checked when a gesture would begin.</summary>
+    public bool FourFingerGesturesEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Applies the gesture part of <paramref name="settings"/> (ADR-0033). Speeds apply from the next delta; the
+    /// toggles decide gestures that begin from now on (one already running finishes). Allocation-free.
+    /// </summary>
+    public void ApplySettings(InputSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        SmartZoom = settings.SmartZoom;
+        PointerSpeed = settings.PointerSpeed;
+        ScrollSpeed = settings.ScrollSpeed;
+        ZoomEnabled = settings.ZoomEnabled;
+        RotateEnabled = settings.RotateEnabled;
+        ThreeFingerDragEnabled = settings.ThreeFingerDragEnabled;
+        FourFingerGesturesEnabled = settings.FourFingerGesturesEnabled;
+    }
+
     /// <summary>Number of contacts in the last processed frame.</summary>
     public int ContactCount { get; private set; }
 
@@ -779,8 +820,8 @@ public sealed class GestureRecognizer
 
             case State.Pinching:
             {
-                double scale = spread / Math.Max(_prevSpread, MinSpread);
-                double rotation = RotationSincePrevious(spread, angle);
+                double scale = ZoomEnabled ? spread / Math.Max(_prevSpread, MinSpread) : 1;
+                double rotation = RotateEnabled ? RotationSincePrevious(spread, angle) : 0;
                 if (scale != 1 || rotation != 0 || center != _prevCenter)
                 {
                     Emit(GesturePhase.Changed, 0, 0, scale, rotation, center, synthetic: false, timestampUs);
@@ -855,13 +896,13 @@ public sealed class GestureRecognizer
         {
             double rotation = _rotationSinceStart + RotationSincePrevious(spread, angle);
             double arc = Math.Abs(rotation) / DegreesPerRadian * (spread / 2);
-            bool pinch = spreadChange >= _options.PinchThreshold * reference && spreadChange >= travel;
-            bool rotate = arc >= _options.RotationThreshold * reference && arc >= travel;
+            bool pinch = ZoomEnabled && spreadChange >= _options.PinchThreshold * reference && spreadChange >= travel;
+            bool rotate = RotateEnabled && arc >= _options.RotationThreshold * reference && arc >= travel;
             if (pinch || rotate)
             {
                 Lock(State.Pinching, timestampUs);
-                double scale = spread / Math.Max(_startSpread, MinSpread);
-                Emit(GesturePhase.Began, 0, 0, scale, rotation, center, synthetic: false, timestampUs);
+                double scale = ZoomEnabled ? spread / Math.Max(_startSpread, MinSpread) : 1;
+                Emit(GesturePhase.Began, 0, 0, scale, RotateEnabled ? rotation : 0, center, synthetic: false, timestampUs);
             }
             else if (travel >= _options.ScrollThreshold * reference)
             {
@@ -870,10 +911,14 @@ public sealed class GestureRecognizer
         }
         else if (_n == 3)
         {
-            if (travel >= _options.DragThreshold * reference)
+            if (ThreeFingerDragEnabled && travel >= _options.DragThreshold * reference)
             {
                 BeginRelative(State.Dragging, dx, dy, travel, center, timestampUs);
             }
+        }
+        else if (!FourFingerGesturesEnabled)
+        {
+            // Four fingers with their toggle off: nothing.
         }
         else if (spreadChange >= _options.SystemPinchThreshold * reference && spreadChange >= travel)
         {
@@ -942,8 +987,8 @@ public sealed class GestureRecognizer
     }
 
     private double Gain(double speed) => _state is State.Dragging or State.PointerMoving or State.PointerDragging
-        ? _options.DragGain * _options.DragAcceleration.GainAt(speed)
-        : _options.ScrollGain * _options.ScrollAcceleration.GainAt(speed);
+        ? _options.DragGain * PointerSpeed * _options.DragAcceleration.GainAt(speed)
+        : _options.ScrollGain * ScrollSpeed * _options.ScrollAcceleration.GainAt(speed);
 
     /// <summary>Cumulative progress toward the locked direction, as a fraction of the short side.</summary>
     private double SystemProgress(DisplayPoint center, double spread)
@@ -978,7 +1023,7 @@ public sealed class GestureRecognizer
             }
         }
 
-        DisplayPoint p = Mapper.Map(t.X, t.Y);
+        DisplayPoint p = Mapper.MapUnclamped(t.X, t.Y);
         _pointerPress = _clickValid
             && timestampUs - _clickLiftUs <= _clickWindowUs
             && Distance(p, _clickLand) <= _options.ClickSlop * Mapper.ShortSide;
@@ -1037,7 +1082,7 @@ public sealed class GestureRecognizer
             return false;
         }
 
-        DisplayPoint p = Mapper.Map(t.X, t.Y);
+        DisplayPoint p = Mapper.MapUnclamped(t.X, t.Y);
         // While a second finger may still land, only movement beyond the two-finger tap slop starts the pointer, so a
         // staggered two-finger tap's first finger never becomes a move (which would end its tap candidate).
         double slop = timestampUs - _pointerLandUs < _pointerSettleUs
@@ -1098,7 +1143,7 @@ public sealed class GestureRecognizer
                 return false;
             }
 
-            DisplayPoint p = Mapper.Map(t.X, t.Y);
+            DisplayPoint p = Mapper.MapUnclamped(t.X, t.Y);
             _points[i] = p;
             sumX += p.X;
             sumY += p.Y;
@@ -1157,7 +1202,7 @@ public sealed class GestureRecognizer
                 continue;
             }
 
-            DisplayPoint p = Mapper.Map(t.X, t.Y);
+            DisplayPoint p = Mapper.MapUnclamped(t.X, t.Y);
             if (_tapSlots > 0 && t.PointerId == _tapId0)
             {
                 _tapCandidate &= Distance(p, _tapLand0) <= slop;
@@ -1198,7 +1243,12 @@ public sealed class GestureRecognizer
         }
 
         var mid = new DisplayPoint((_tapLand0.X + _tapLand1.X) / 2, (_tapLand0.Y + _tapLand1.Y) / 2);
-        bool smartZoom = _doubleTapWindowUs > 0 && (_options.SmartZoomEnabled?.Invoke() ?? true);
+        bool smartZoom = _doubleTapWindowUs > 0 && SmartZoom switch
+        {
+            SmartZoomMode.On => true,
+            SmartZoomMode.Off => false,
+            _ => _options.SmartZoomEnabled?.Invoke() ?? true,
+        };
         if (smartZoom && _pendingTap && Distance(mid, _pendingMid) <= _options.DoubleTapSlop * Mapper.ShortSide)
         {
             _pendingTap = false;
@@ -1273,7 +1323,7 @@ public sealed class GestureRecognizer
     private void EmitTouchDown(ReadOnlySpan<TouchSample> touches, long timestampUs)
     {
         TryFind(touches, _firstLandedId, out TouchSample first);
-        DisplayPoint at = Mapper.Map(first.X, first.Y);
+        DisplayPoint at = Mapper.MapUnclamped(first.X, first.Y);
         _sink.OnGestureEvent(new GestureEvent(GestureKind.TouchDown, GesturePhase.Began, 0, 0, 1, 0, GestureDirection.None, 0, at, false, timestampUs));
     }
 
