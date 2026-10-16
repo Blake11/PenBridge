@@ -80,6 +80,13 @@ grep -o 'raw=[0-9a-f]*' mbp.log | sed 's/^raw=/raw /; s/$/; sleep 8/' | post
   so they cannot be what an app keys on for a posted event.
 - Magnify, rotate and smart zoom reach only the frontmost app. Activate it first (`open -a Preview file.pdf`).
 - If someone is using the mouse, a posted gesture without `loc` lands wherever the cursor is now.
+- Preview/PDFKit smart zoom toggles on view state, not on event fields: `-[PDFView focusOnColumnAtPoint:]` zooms
+  back out whenever `scaleFactor` differs from its cached `autoScaleFactor`, otherwise it zooms to the text column at
+  the point. With legacy (always-visible) scroll bars, which macOS picks when no trackpad is attached, the scroller
+  takes about 17 px after the first zoom. The view then refits to a slightly smaller scale than the cached one, so
+  every later smart zoom is a no-op "zoom out" (or slides the page). On a Mac without a trackpad, test smart zoom with
+  overlay scroll bars: launch the app with `--args -AppleShowScrollBars WhenScrolling`, or set System Settings ▸
+  Appearance ▸ Show scroll bars ▸ When scrolling.
 
 ## MacBook over LAN (recording a real trackpad)
 
