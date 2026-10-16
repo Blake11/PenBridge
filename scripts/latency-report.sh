@@ -6,7 +6,9 @@
 #   --enable / --disable  turn the Mac app's capture on/off (user default PenBridgeLatencyLog; restart the app).
 #                         Or launch it with PENBRIDGE_LATENCY_LOG=1 in its environment.
 #   --dump-now            ask the running PenBridge app for a dump now (SIGUSR1) instead of waiting for the
-#                         session to end; waits up to 5 s for the new file
+#                         session to end; waits up to 5 s for the new file. Refuses when the running app's
+#                         capture is off (no "Latency capture on" log line since it started): the app handles
+#                         SIGUSR1 only while capturing, and the default action would terminate it
 #   --file <dump>         report this dump instead of the newest one
 #   --sim                 newest SimClient dump (latency-sim-*.tsv) instead of the newest Mac app dump
 #   --dir <dir>           dump folder (default ~/Library/Logs/PenBridge)
@@ -24,6 +26,7 @@
 # every 2 s feed the offset estimate), disconnect (or --dump-now), then run scripts/latency-report.sh.
 set -euo pipefail
 source "$(dirname "$0")/lib/common.sh"
+source "$(dirname "$0")/lib/device.sh"
 
 DIR="$HOME/Library/Logs/PenBridge"; FILE=""; DUMP_NOW=0; SIM=0; LOGCAT=0; SERIAL=""; TOGGLE=""
 DEFAULTS_KEY="PenBridgeLatencyLog"
@@ -65,8 +68,15 @@ newest() {  # newest dump matching $pattern in $DIR, or nothing
 
 if [[ "$DUMP_NOW" == 1 ]]; then
   [[ "$SIM" == 0 ]] || die "--dump-now works with the Mac app only (SimClient dumps at session end)"
+  pid="$(penbridge_pid)"
+  [[ -n "$pid" ]] || die "PenBridge (the Mac app) is not running"
+  # The handler exists only while the capture is on (LatencyLog); otherwise SIGUSR1 would terminate the app. The
+  # user default may have changed since launch, so ask the app's own log, and send nothing when unsure.
+  if [[ -z "$(penbridge_log_since_start "$pid" 'Latency capture on' | tail -n 1)" ]]; then
+    die "the running PenBridge (pid $pid) has latency capture off, so no dump was requested (SIGUSR1 would quit it). Turn it on with --enable and restart the app."
+  fi
   before="$(newest)"
-  pkill -USR1 -x PenBridge || die "PenBridge (the Mac app) is not running"
+  kill -USR1 "$pid" || die "could not signal PenBridge (pid $pid)"
   for _ in $(seq 1 50); do
     now="$(newest)"
     [[ -n "$now" && "$now" != "$before" ]] && break
