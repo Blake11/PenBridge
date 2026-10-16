@@ -380,14 +380,17 @@ public class SettingsSyncTests
     public async Task A_push_writer_fault_ends_the_session_instead_of_leaving_it_without_pushes()
     {
         await using NetHarness h = Harness();
+        var ended = new ConcurrentQueue<SessionEndReason>();
+        h.Server.SessionEnded += (_, e) => ended.Enqueue(e.Reason);
         await PairAsync(h);
         ServerConnection connection = h.Server.ActiveConnection!;
         connection.BeforePushDrain = _ => throw new ArgumentException("a bug in the drain");
 
         await h.Server.SendSettingsSnapshotAsync(Snapshot(1)).Bounded();
 
-        await Wait.Until(() => connection.IsChannelAborted, "the connection aborted");
-        await Wait.Until(() => h.Server.ActiveConnection != connection, "the session ended");
+        // Closed like an input fault: Bye, then reported as an internal error (not a lost connection).
+        await Wait.Until(() => !ended.IsEmpty, "the session ended");
+        Assert.Equal(SessionEndReason.InternalError, Assert.Single(ended));
     }
 
     [Fact]
@@ -410,10 +413,6 @@ public class SettingsSyncTests
         return client;
     }
 
-    /// <summary>
-    /// An ordering barrier: the server pings, and its RTT appears only after the phone's read loop handled every
-    /// frame sent before the Ping (the control channel is in order).
-    /// </summary>
     private static SettingEntry[] Snapshot(int count) =>
         [.. new[] { SettingEntry.Int(MacSettingKey.SideButton, 1), SettingEntry.Bool(MacSettingKey.Zoom, true), SettingEntry.Int(MacSettingKey.StylusMode, 1) }.Take(count)];
 
@@ -451,6 +450,10 @@ public class SettingsSyncTests
         return raw;
     }
 
+    /// <summary>
+    /// An ordering barrier: the server pings, and its RTT appears only after the phone's read loop handled every
+    /// frame sent before the Ping (the control channel is in order).
+    /// </summary>
     private static async Task PingRoundTripAsync(NetHarness h)
     {
         Assert.Null(h.Server.GetStats().RoundTripTime);

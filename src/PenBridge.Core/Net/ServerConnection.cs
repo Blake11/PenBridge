@@ -494,7 +494,7 @@ internal sealed class ServerConnection
                 case ControlMessageType.Ping:
                     ulong pingUs = frame.Read<PingMessage>().TimestampUs;
                     _options.LatencyRecorder?.RecordClientPing(input.SessionId, pingUs, _time.GetTimestamp());
-                    await _channel.WriteAsync(new PongMessage(pingUs)).ConfigureAwait(false);
+                    _ = await _channel.TryWriteAsync(new PongMessage(pingUs)).ConfigureAwait(false); // false: closing, Bye was the last frame
                     break;
                 case ControlMessageType.Pong:
                     UpdateRtt(frame.Read<PongMessage>().TimestampUs, input.SessionId);
@@ -684,11 +684,11 @@ internal sealed class ServerConnection
         where T : IControlMessage<T> =>
         RequestedReason is null && await _channel.TryWriteAsync(message).ConfigureAwait(false);
 
-    /// <summary>The push writer died on an exception its drain doesn't expect (a bug): log it and end the connection.</summary>
+    /// <summary>The push writer died on an exception its drain doesn't expect (a bug): log it and end the session.</summary>
     private void OnPushFault(Exception exception)
     {
         NetLog.Unexpected(_log, _remote, exception);
-        _channel.Abort();
+        _ = CloseAsync(ByeReason.Normal, SessionEndReason.InternalError);
     }
 
     private void OnUdpAck(ulong highestSequence) => _ = SendUdpAckAsync(highestSequence);
