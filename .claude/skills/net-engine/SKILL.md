@@ -24,6 +24,9 @@ Design and timings: `docs/specs/phase-1-core.md` (connection flow), ADR-0012/001
 - Writes: `Socket.SendTimeout` does **not** apply to async writes. Give each write its own deadline (2 s), and on expiry **close the socket** (`AbortHard`) — cancellation alone doesn't unstick a write blocked on a full send buffer.
 - **Closing with Bye (takeover, unpair, shutdown):** write the Bye, half-close (`Shutdown(Send)`), stop the ping timer, then linger up to `ControlChannel.LingerTimeout` (1 s) draining until the peer closes, and only then abort. Aborting right after the Bye sends an RST that can discard it unread, so the client never learns it was taken over (#80).
 - Client fallback sends go through a bounded latest-wins queue + single writer, so `SendState` never blocks the caller.
+- **Server pushes are coalesced** (`CoalescingWriter`: dirty bits + one drain loop): latest-state pushes (display list, settings snapshot, active area) are deduped, so a phone can't count on one reply per request, and a request that changes nothing may produce no frame. `SurfaceInfo` forces an ActiveArea resend (#197). A throwing drain stops the writer and ends the session (`OnPushFault`). Write through `TryWriteAsync` once a farewell took the send side.
+- Latest-wins events raised outside a lock: pending slot + single drainer flag, not invocation under the gate. Compute "changed" before mutating the cached value (a helper that already updated it makes the check never fire).
+- Client `Last*` properties update *before* their event is raised; tests counting events must wait on the event, not on `Last*`.
 - TLS: macOS `SslStream` servers negotiate only TLS 1.2 (forcing 1.3 fails; ADR-0013). Accept 1.2+, never assert 1.3; tests assert the negotiated protocol is `Tls12 or Tls13`.
 
 ## Addresses and limits
