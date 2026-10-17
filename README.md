@@ -116,13 +116,19 @@ Everything marked ✅ works end to end, checked on a Galaxy S23 Ultra with a Mac
 - ✅ 📲 **Multiple paired phones**; one draws at a time
 - ✅ 🖼️ **App icon** in Finder, the DMG and Login Items, with matching menu-bar glyphs for each state
 
-**Next**
+**Settings**, on the Mac (**Settings…**, ⌘,) and from the phone ([table](#5-settings))
 
-- ⏳ 🗺️ **Region and button mapping** settings ([Phase 5](https://github.com/Blake11/PenBridge/issues/14))
+- ✅ 🗺️ **Display and region mapping**: the main display, a chosen one or **All displays** as one desktop, or a region you drag on a display, optionally locked to the phone's aspect. The phone outlines the area that maps onto the Mac and dims the rest, so strokes are never squashed ([ADR-0031](docs/decisions.md#adr-0031--target-display-or-all-displays-a-dragged-region-and-the-phones-active-area-follows-the-targets-aspect-ratio))
+- ✅ 🖱️ **Pen or Mouse**: absolute like a tablet, or relative like a mouse with its own speed and acceleration
+- ✅ 🔘 **Side button actions**: right click, middle click, eraser while held, double click or nothing
+- ✅ 📈 **Pressure curve**: tip feel from soft to firm, click threshold and full-pressure point, with a live test pad on the Mac ([ADR-0032](docs/decisions.md#adr-0032--pen-settings-penmouse-mode-side-button-action-and-pressure-curve-applied-on-the-mac))
+- ✅ ✌️ **Gesture settings**: pointer and scroll speed, Smart Zoom (follow macOS, on or off), and switches for pinch, rotate, three-finger drag and four-finger gestures ([ADR-0033](docs/decisions.md#adr-0033--gesture-settings-smart-zoom-override-pointer-and-scroll-speed-per-gesture-toggles))
+- ✅ 🔁 **Edit the Mac from the phone**: every Mac setting except drawing the region, synced both ways and applied at once ([ADR-0030](docs/decisions.md#adr-0030--settings-live-where-they-apply-the-phone-edits-the-macs-over-the-control-channel-protocol-12))
+- ✅ 🎨 **Phone surface look**: corner ticks and dimmed margins around the mapped area, an optional centre marker, background and marker opacity
 
 ## Status
 
-**Beta, 1.1.0.** Phase 4 is done: two to four fingers now work like a Mac trackpad, and both apps have their own icon. The gestures were checked on the Mac in Safari and Preview (scroll and momentum, swipe between pages, zoom, rotate, smart zoom, right-click, three-finger drag and the four-finger gestures), and on the S23 Ultra against the release build of the Mac app ([#110](https://github.com/Blake11/PenBridge/issues/110)). One finger now moves the cursor relatively, like a trackpad. Known issue: in Preview, a second smart-zoom double tap zooms into the next block instead of zooming back out ([#144](https://github.com/Blake11/PenBridge/issues/144)). Phase 3 (1.0.0) was verified on a Galaxy S23 Ultra against the release build of the Mac app ([#66](https://github.com/Blake11/PenBridge/issues/66)). 1.1.0 also recovers a finger tap whose datagram is lost ([#92](https://github.com/Blake11/PenBridge/issues/92)) and cancels a gesture when a palm touches down ([#114](https://github.com/Blake11/PenBridge/issues/114)). The wire protocol is now 1.1; 1.0.0 phones and Macs still work with 1.1.0 ones (with a 1.0.0 peer, one finger keeps the absolute cursor).
+**Beta, 1.2.0.** Phase 5 is done, and with it the MVP: mapping, pen and gesture settings live in a Settings window on the Mac and can be edited from the phone, and the phone shows the part of its surface that maps onto the Mac. Phase 5 was checked on the S23 Ultra against the release build of the Mac app ([#160](https://github.com/Blake11/PenBridge/issues/160)). The wire protocol is now 1.2; 1.0 and 1.1 phones and Macs still work with 1.2 ones: the phone then has no Mac section and keeps its whole surface active, and the Mac's pen settings still apply. Known issue: on a Mac without a trackpad, a second smart-zoom double tap in Preview zooms into the next block instead of back out, a quirk of Preview with always-visible scroll bars. Set **System Settings → Appearance → Show scroll bars** to **When scrolling** to avoid it ([#144](https://github.com/Blake11/PenBridge/issues/144)). Phase 4 (1.1.0) added trackpad-parity gestures ([#110](https://github.com/Blake11/PenBridge/issues/110)), and Phase 3 (1.0.0), the first release, was verified on the S23 Ultra ([#66](https://github.com/Blake11/PenBridge/issues/66)).
 
 | Phase | Scope | Status | Release |
 |---|---|---|---|
@@ -131,7 +137,7 @@ Everything marked ✅ works end to end, checked on a Galaxy S23 Ultra with a Mac
 | [2 — Mac server](https://github.com/Blake11/PenBridge/milestone/2) ([#11](https://github.com/Blake11/PenBridge/issues/11)) | Menu bar, run at startup, pause hotkey, Bonjour, PIN/QR pairing window, Accessibility, CGEvent injector, NativeAOT | ✅ Done | |
 | [3 — Android client](https://github.com/Blake11/PenBridge/milestone/3) ([#12](https://github.com/Blake11/PenBridge/issues/12)) | Drawing surface, S Pen, palm rejection, finger cursor mode, discovery, QR/PIN pairing, reconnect, on-device checks on the S23 Ultra | ✅ Done | **1.0.0** |
 | [4 — Gestures](https://github.com/Blake11/PenBridge/milestone/4) ([#13](https://github.com/Blake11/PenBridge/issues/13)) | Trackpad-parity gestures: two-finger scroll, momentum, swipe pages, pinch/rotate, tap, smart zoom; three-finger drag; four-finger system gestures. App icon | ✅ Done | **1.1.0** |
-| [5 — Settings](https://github.com/Blake11/PenBridge/milestone/5) ([#14](https://github.com/Blake11/PenBridge/issues/14)) | Display/region mapping, button mapping | ⏳ Next | 1.2.0 |
+| [5 — Settings](https://github.com/Blake11/PenBridge/milestone/5) ([#14](https://github.com/Blake11/PenBridge/issues/14)) | Settings window on the Mac, edited from the phone too: display/region mapping, Pen/Mouse mode, side button, pressure curve, gesture settings, phone surface look | ✅ Done | **1.2.0** |
 | [Windows host](https://github.com/Blake11/PenBridge/milestone/9) ([#28](https://github.com/Blake11/PenBridge/issues/28)) | Tray server for Windows: pen injection, gestures, pairing, settings | ⏳ Later | |
 | [Publishing](https://github.com/Blake11/PenBridge/milestone/10) ([#177](https://github.com/Blake11/PenBridge/issues/177)) | Google Play, signed and notarized Mac app, DriverKit digitizer | ⏳ Later | |
 | [Screen mirroring](https://github.com/Blake11/PenBridge/milestone/11) ([#16](https://github.com/Blake11/PenBridge/issues/16)) | The Mac or Windows screen shown under the pen on the phone | ⏳ Later | |
@@ -208,6 +214,21 @@ With the pen away from the screen, use fingers like a trackpad. Gestures act whe
 
 - Zoom, rotate and smart zoom reach only the frontmost app, as on a trackpad.
 - Four-finger gestures fire once per gesture through the default Mission Control keyboard shortcuts (⌃↑ ⌃↓ ⌃← ⌃→, and F11 for show desktop), so those need to be on in **System Settings → Keyboard → Keyboard Shortcuts → Mission Control**.
+
+#### 5. Settings
+
+On the Mac, choose **Settings…** from the PenBridge menu (⌘,). On the phone, open **Settings**: while connected, it has a section for the Mac's settings, and changes apply on the Mac at once. Mac settings are the same for every paired phone.
+
+| Section | Settings | Where |
+|---|---|---|
+| Display | Main display, a chosen display or **All displays**; full display or a region on a chosen display (**Set region…**, then drag a rectangle; optionally keep the phone's aspect ratio) | Mac and phone (the region is drawn on the Mac; the phone can reset it to the full display) |
+| Pen | **Pen** (absolute) or **Mouse** (relative, with its own speed and acceleration); side button: right click, middle click, eraser while held, double click or none | Mac and phone |
+| Pressure | Tip feel (soft to firm), click threshold, full pressure at; try it on the **Test pad** (Mac) | Mac and phone |
+| Gestures | Pointer and scroll speed; Smart Zoom (follow macOS, on, off); pinch to zoom, rotate, three-finger drag and four-finger gestures on or off | Mac and phone |
+| Surface | Background (black, dark grey, light), marker opacity, centre marker on or off; the corner ticks and dimmed margins are always shown | phone only |
+| Fingers and pad | Finger mode, finger pressure, palm size, pad orientation | phone only |
+
+The phone draws the outline of the area that maps onto the Mac and dims the rest, so a stroke on the phone keeps its shape on the Mac.
 
 ### For developers
 
