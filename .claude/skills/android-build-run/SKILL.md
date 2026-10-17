@@ -47,6 +47,12 @@ Pairing persists; the connect port changes after a reboot or a Wireless debuggin
 - `adb shell dumpsys servicediscovery` shows NSD discovery results even while the screen is locked.
 - `adb logcat -c` run in the background can hang: capture with `--pid=<pid>` and don't block on the clear.
 
+## Emulator UI driving (agents)
+- `uiautomator dump` + tap by text/content-desc drives the emulator UI reliably (the pad's dot has content-desc "Connection status").
+- The tablet AVD is 16:10, so a 16:10 area is full-screen there; use 4:3 for margin screenshots. The first immersive entry shows a "Viewing full screen" dialog that dims screenshots: tap "Got it" first.
+- `penbridge-sim serve --port <p>` is a usable "Mac" for emulator end-to-end tests of settings/area UI (pairing window ~2 min after start: pair right away or restart).
+- Right after a new AVD boots, `-t:Run` can fail with XA0132 (package not installed); `--apk` a bit later works. On the manual-connect screen the IME hides Connect: KEYCODE_ENTER in the PIN field submits.
+
 ## Run
 ```bash
 scripts/android-run.sh --emulator [--logs]           # starts PenBridge_Tablet if none running

@@ -74,9 +74,11 @@ scripts/test.sh -c Release                                             # build o
 for i in $(seq "$(sysctl -n hw.ncpu)"); do yes > /dev/null & done     # load every core
 for i in 1 2 3 4; do (dotnet test --project tests/PenBridge.Core.Tests -c Release --no-build \
   > /tmp/soak-$i.log 2>&1 || echo "run $i FAILED") & done; wait
-pkill yes
+pkill -x yes
 ```
 Parallel runs share the build output, so pass `--no-build`; read failures from each log. Repeat a few rounds.
+- zsh `wait $pids` doesn't split the string: run soaks inside `bash -c` with an array. `timeout` isn't on macOS; stop the load with `pkill -x yes`.
+- `dotnet test` sometimes stalls for minutes before running when launched from the Bash sandbox (observed; cause unknown, test durations then include the stall). The in-process runner (`tests/PenBridge.Core.Tests/bin/<cfg>/net10.0/PenBridge.Core.Tests -class <name>`, `-longRunning <s>`) has no stall and suits soaks.
 
 ## Fake time with real sockets (Net tests)
 - `Net/NetTestSupport.cs` has `FakeTime` (a TimeProvider whose timers fire only inside `Advance`, in due order, on the
@@ -98,3 +100,6 @@ Parallel runs share the build output, so pass `--no-build`; read failures from e
 - TLS version: assert `Tls12 or Tls13`, never 1.3 only (macOS servers negotiate 1.2, ADR-0013).
 - To stall a TCP writer quickly, shrink both buffers (`PausableProxy` listener receive buffer, client
   `TcpSendBufferSize`) and keep sending until a write is really in flight.
+- Don't step fake time (e.g. a ping barrier) before the server has read a burst you are rate-testing: token buckets refill with fake time. Wait on a real-time condition first (`handled + dropped == sent`).
+- "Answered even if unchanged" tests: settle without moving the state. The single-use ping barrier can be spent; two display lists work as an ordering barrier (everything pushed before the second list has arrived).
+- Wire-quantized f32 values sit on thresholds (0.3 round-trips to 0.29999): use 0.301 in threshold tests. Allocation tests over settings paths should vary every branch per iteration (hover/button/contact/below-threshold/finger) so warm-up covers them.
