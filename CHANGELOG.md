@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.2.0](https://github.com/Blake11/PenBridge/compare/v1.1.0...v1.2.0) (2026-10-17)
+
+
+### Features
+
+* **android:** add the mac settings section and follow the active area ([#199](https://github.com/Blake11/PenBridge/issues/199)) ([5146c2c](https://github.com/Blake11/PenBridge/commit/5146c2c523dd3f0746de149ec3d4dfb452afff63))
+* **android:** add the surface look and Surface settings ([#162](https://github.com/Blake11/PenBridge/issues/162)) ([271fc13](https://github.com/Blake11/PenBridge/commit/271fc139782e8c5549f8f7d9e869eb3c007c7ee3))
+* **core:** apply the phase 5 input settings ([#164](https://github.com/Blake11/PenBridge/issues/164)) ([b5174f2](https://github.com/Blake11/PenBridge/commit/b5174f278ff78cb10dd0c175021f223a8b570839))
+* **mac:** add the settings window and region overlay ([#165](https://github.com/Blake11/PenBridge/issues/165)) ([18d8fdb](https://github.com/Blake11/PenBridge/commit/18d8fdb546764060289fa033f7bb1f5a164754d2))
+* **mac:** apply the phase 5 settings and sync them with the phone ([#205](https://github.com/Blake11/PenBridge/issues/205)) ([f2d21af](https://github.com/Blake11/PenBridge/commit/f2d21aff5df1b93c9eeb87d232adcfa046fb9f42))
+* **mac:** lock the region to the phone's aspect ([#206](https://github.com/Blake11/PenBridge/issues/206)) ([6b5c555](https://github.com/Blake11/PenBridge/commit/6b5c5557264c0a2207342ca6a4f8f2babaac2ab3))
+* **protocol:** sync mac settings and the active area (protocol 1.2) ([#168](https://github.com/Blake11/PenBridge/issues/168)) ([ec70e42](https://github.com/Blake11/PenBridge/commit/ec70e42f02eeae6cad98e144718065a2f10a6c27))
+
+
+### Bug Fixes
+
+* **ci:** isolate serena per agent type and avoid buried rm -rf ([#196](https://github.com/Blake11/PenBridge/issues/196)) ([b12beb9](https://github.com/Blake11/PenBridge/commit/b12beb97efb46a790e11ac3049afc2a4ee0a554f))
+* **core:** resend the active area after a surface change ([#203](https://github.com/Blake11/PenBridge/issues/203)) ([5004330](https://github.com/Blake11/PenBridge/commit/50043301e60da1dbab907f5fc41a776464d8e7e9))
+* **mac:** ship the full 16-1024 px legacy app icon set ([#198](https://github.com/Blake11/PenBridge/issues/198)) ([2f594d4](https://github.com/Blake11/PenBridge/commit/2f594d4f5660490a403d01fb01521f3664282a9b))
+
+
+### Documentation
+
+* add ADR-0030 to ADR-0033 for the Phase 5 settings ([#161](https://github.com/Blake11/PenBridge/issues/161)) ([4f3e566](https://github.com/Blake11/PenBridge/commit/4f3e566a31e0c5bc194b3a2428390c3c4e317b58)), closes [#14](https://github.com/Blake11/PenBridge/issues/14)
+* add ADR-0034 post-MVP milestones ([#194](https://github.com/Blake11/PenBridge/issues/194)) ([7a15960](https://github.com/Blake11/PenBridge/commit/7a15960d1d227a3b4f741721f41fb63c60e447a1))
+* apply the phase 4 retro to the workflow, agents and skills ([#150](https://github.com/Blake11/PenBridge/issues/150)) ([796de46](https://github.com/Blake11/PenBridge/commit/796de46083aa932e9633147fbb63a10d1f3b899b))
+* capture phase 5 learnings in skills ([#207](https://github.com/Blake11/PenBridge/issues/207)) ([182b866](https://github.com/Blake11/PenBridge/commit/182b86672e264bee0b6f86f851f424880b3d0724))
+* **mac:** note the PDFKit smart zoom scroll-bar pitfall in the probe readme ([#163](https://github.com/Blake11/PenBridge/issues/163)) ([5c5e9cb](https://github.com/Blake11/PenBridge/commit/5c5e9cbe58695564178a763e1400343ad1b6bece)), closes [#144](https://github.com/Blake11/PenBridge/issues/144)
+
 ## [1.1.0](https://github.com/Blake11/PenBridge/compare/v1.0.0...v1.1.0) (2026-10-15)
 
 
