@@ -75,7 +75,9 @@
       "mcp__rider__get_file_problems",
       "Bash(scripts/device-preflight.sh *)",
       "Bash(./scripts/device-preflight.sh *)",
-      "Bash(footprint *)"
+      "Bash(footprint *)",
+      "Bash(scripts/stray-process-check.sh *)",
+      "Bash(screencapture -x -o -l *)"
     ],
     "ask": [
       "Bash(tccutil reset *)",
@@ -106,6 +108,17 @@
           {
             "type": "command",
             "command": "root=$(git -C \"$CLAUDE_PROJECT_DIR\" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p'); root=${root:-$CLAUDE_PROJECT_DIR}; found=0; for f in \"$root\"/.claude/progress/*/progress.md; do [ -f \"$f\" ] || continue; [ $found -eq 0 ] && echo 'Active feature progress files (read the relevant one before working; see skill progress-tracking):'; found=1; echo \"- $f (updated $(date -r \"$f\" '+%Y-%m-%d %H:%M'))\"; done; exit 0"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/stray-process-check.sh --json",
+            "timeout": 5
           }
         ]
       }

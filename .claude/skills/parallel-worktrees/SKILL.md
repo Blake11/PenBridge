@@ -30,6 +30,7 @@ Pass the absolute path in the prompt. Don't use the Agent tool's `isolation: "wo
 - Each review/fix round gets a **fresh agent** in the same worktree, briefed from the previous `ws-<id>.md`: branch head, uncommitted files, what's done, the findings to fix. Huge resumed contexts cost tokens and stall (stream watchdog, "no progress for 600s").
 - Resume the previous agent (SendMessage) only for small changes (< ~50 lines).
 - Tell agents to keep tool calls short and background long app/SimClient runs.
+- **Every agent stalls at once** (2026-10-20: GitHub connection reset plus model stream hangs, all killed by the 10-minute watchdog): it is an outage, not the agents. Relaunch one as a probe first; once it makes progress, relaunch the rest.
 
 ## Merge back
 `scripts/ship-pr.sh <worktree> --title … --body-file … [--merge] [--no-test] [--dry-run]` (after the user approves pushing) does it end to end: rebase onto origin/main, refuse AI-attribution lines, `scripts/test.sh`, push (refusing a stale remote branch), `gh pr create`, wait for every check, squash-merge (with `--merge`, only when the user approved merging), copy `.claude/progress/**/ws-*.md` into the main tree, remove the worktree and its local branches. `--help` for flags.
