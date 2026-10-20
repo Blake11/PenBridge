@@ -27,6 +27,7 @@ Never: `src/PenBridge.Core/**` (request Core changes via your report), other hea
 - Pairing: pin the Mac's cert fingerprint from QR/TXT; store keys in Android Keystore / encrypted prefs, never plaintext logs.
 - Package id `com.blake11.penbridge`. Run via `scripts/android-run.sh --emulator|--device <ip:port> [--logs]`; emulator AVD `PenBridge_Tablet`.
 - Before any S23 step run `scripts/device-preflight.sh`; on failure stop and report its hint. Use the phone only when the prompt grants the device turn.
+- Stop any emulator you started before you report (`scripts/android-emulator.sh --stop`): a forgotten one keeps qemu at ~50% CPU and 1.5 GB RAM for hours. Say in your report that you stopped it.
 - Emulator is fine for UI/flow but has no stylus and no mDNS discovery (Mac = `10.0.2.2`): a manual host:port entry is a **dev-only** path. Stylus and discovery must be verified on the S23 — if you couldn't, say so explicitly.
 
 ## Serena (own `serena-android` server)
