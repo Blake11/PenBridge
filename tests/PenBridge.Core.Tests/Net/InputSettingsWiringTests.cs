@@ -39,8 +39,10 @@ public class InputSettingsWiringTests
         await h.WaitForSurfaceAsync();
 
         // SurfaceInfo: the portrait 1:2 display letterboxes the taller phone surface vertically.
-        await Wait.Until(() => client.LastActiveArea is not null, "the first active area");
-        AssertArea(h.Server.ActiveInput!.ActiveArea, client.LastActiveArea!.Value);
+        // The connect-time push (before SurfaceInfo) may arrive first: wait for the letterboxed area itself.
+        NormalizedRect letterboxed = h.Server.ActiveInput!.ActiveArea;
+        await Wait.Until(() => client.LastActiveArea is { } a && Near(letterboxed, a), "the first active area");
+        AssertArea(letterboxed, client.LastActiveArea!.Value);
         Assert.True(client.LastActiveArea.Value.Height < 1);
 
         // A wide target: a horizontal band.
@@ -68,7 +70,7 @@ public class InputSettingsWiringTests
         Assert.True(client.SendState(Pens.Hover(1000, 1000), []));
         Assert.True(client.SendState(Pens.Contact(1100, 1000, 30000), []));
         Assert.True(client.SendState(Pens.Contact(1200, 1000, 30000), []));
-        await Wait.Until(() => h.Sink.Pen().Length >= 3, "pen events");
+        await Wait.Until(() => h.Server.GetStats().Counters.Accepted == 3, "all three frames applied");
         Assert.DoesNotContain(PenEventKind.Down, h.Sink.PenKinds());
 
         // Back to the defaults (between strokes, so immediately): the same contact is a Down.

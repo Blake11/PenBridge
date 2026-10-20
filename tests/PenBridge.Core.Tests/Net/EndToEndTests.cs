@@ -241,6 +241,9 @@ public class EndToEndTests
         Assert.Equal(ByeReason.Unpaired, e.ByeReason);
         Assert.False(client.Credentials.IsPaired(h.Identity.Fingerprint)); // the useless key was dropped
 
+        // The phone's Disconnected fires on the Bye; the server frees the session only after its linger ends.
+        await Wait.Until(() => !h.Server.GetStats().HasSession, "the forgotten session ended");
+
         // A phone that kept its key (e.g. offline when forgotten) gets AuthFailed.
         var stale = new InMemorySecretStore();
         PenBridgeClient other = await h.PairAsync(stale);
