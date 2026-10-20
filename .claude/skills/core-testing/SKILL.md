@@ -63,6 +63,9 @@ those defaults change.
 
 ## Wait on exactly what you assert
 Await the same signal the assertion checks (the event, not a property set earlier or on another thread): #219 waited on a property, then asserted an event raised later on another thread. Use a `TaskCompletionSource`/`SemaphoreSlim` released by that event, with a timeout.
+- `Last*` properties are stored before their event is raised: a test that counts events waits on the event queue, not the property.
+- A client `Disconnected`/`Bye` doesn't mean the server freed the session (it lingers first). With takeover off, wait for `!HasSession` before pairing again.
+- The ping barrier is single-use. For a second ordering barrier send two differing display lists (`DisplayListBarrierAsync` in SettingsSyncTests).
 
 ## Gesture slops
 A new gesture's slop must be at least the slop of every gesture it can still turn into. The one-finger pointer

@@ -9,6 +9,11 @@ The main session does **not** implement. It clarifies, specifies, delegates, rev
 
 **One architect session per phase.** Start each phase in a fresh session; the handoff is `.claude/progress/<feature>/progress.md` plus the epic issue (keep both current enough to resume from). Don't carry a finished phase's context into the next.
 
+## 0. Milestone setup (before any workstream is split or delegated)
+- A new agent the milestone needs is defined **now**, not earlier (e.g. `windows-dev` for the Windows host #28, `ios-dev` for the iOS client #18, maybe a UX/design agent for the phone UX pass #227). Setup: the agent file in `.claude/agents/`, its own Serena server name, file ownership, a matching build-run skill, and a smoke test that spawns it read-only. Conventions: CLAUDE.md "How we work" (agent definitions, Serena servers).
+- Tweaks to existing agents, skills, hooks and CI for the milestone are done now too, so every agent starts properly set up.
+- The epic's first task-list item is this setup.
+
 ## 1. Clarify (hard gate)
 - Read `CLAUDE.md`, the relevant `docs/architecture.md` sections, the ADR index at the top of `docs/decisions.md` (then only the ADRs that matter), the phase's epic issue (`gh issue list --label "type: epic"`), and any existing `.claude/progress/<feature>/`.
 - List every ambiguity (behaviour, UX, protocol impact, platform limits, testing on which device, scope in/out). Ask the user — batch questions, offer options with a recommendation.
