@@ -286,4 +286,3 @@ else
   warn "main checkout is not on main — not pulled (git -C $MAIN fetch origin main:main)"
 fi
 step "Done: $pr_url ($(cd "$MAIN" && gh pr view "$pr" --json state --jq .state))"
-# throwaway
