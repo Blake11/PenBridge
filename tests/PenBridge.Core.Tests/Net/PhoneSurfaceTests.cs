@@ -21,7 +21,7 @@ public class PhoneSurfaceTests
         await Wait.Until(() => h.Server.PhoneSurface is not null, "surface published");
         Assert.Equal(new PhoneSurfaceSize(1440, 3088), h.Server.PhoneSurface);
         Assert.Equal(1440d / 3088d, h.Server.PhoneSurface!.Value.AspectRatio);
-        Assert.Equal(1, Volatile.Read(ref raised));
+        await Wait.Until(() => Volatile.Read(ref raised) == 1, "surface event raised");
     }
 
     [Fact]

@@ -149,6 +149,15 @@ public class SliderSpecTests
     }
 
     [Fact]
+    public void Coerce_never_returns_negative_zero()
+    {
+        var s = new SliderSpec(-1, 1, 0, 0.05, false);
+        Assert.False(double.IsNegative(s.Coerce(-0.001)));
+        Assert.False(double.IsNegative(s.StepDown(0.04)));
+        Assert.False(double.IsNegative(s.FromPosition(0.5 - 1e-9)));
+    }
+
+    [Fact]
     public void Empty_range_has_position_zero_and_no_NaN()
     {
         var s = new SliderSpec(2, 2, 2, 0.5, false);

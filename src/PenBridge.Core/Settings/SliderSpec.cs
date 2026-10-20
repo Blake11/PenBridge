@@ -70,7 +70,8 @@ public readonly record struct SliderSpec(double Min, double Max, double Default,
             value = Math.Round(Math.Round(value / Step, MidpointRounding.AwayFromZero) * Step, 10);
         }
 
-        return Math.Clamp(value, Min, Max);
+        // Adding 0.0 turns -0.0 into +0.0 so heads never display "-0.00".
+        return Math.Clamp(value, Min, Max) + 0.0;
     }
 
     /// <summary>The value one <see cref="Step"/> above <see cref="Coerce"/>(value), clamped.</summary>
