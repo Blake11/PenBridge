@@ -65,17 +65,6 @@ internal sealed class CGEventGestureInjector : IDisposable
     private const long MomentumContinue = 2;
     private const long MomentumEnd = 3;
 
-    /// <summary>
-    /// A transform's magnify stream opens once its accumulated magnification reaches this, its rotate stream once the
-    /// accumulated rotation reaches <see cref="RotateStartDegrees"/>. Below that the values are held back (and posted
-    /// when the stream opens), so noise in the other component does not open a second stream: Preview follows only the
-    /// stream that began first and ignored a rotation whose near-zero magnify stream opened with it.
-    /// </summary>
-    private const double MagnifyStartThreshold = 0.02;
-
-    /// <summary>See <see cref="MagnifyStartThreshold"/>.</summary>
-    private const double RotateStartDegrees = 2;
-
     private const uint ScrollUnitPixel = 0; // kCGScrollEventUnitPixel
     private const uint ButtonRight = (uint)CGMouseButton.Right;
     private const uint HidEventTap = (uint)CGEventTapLocation.HID;
@@ -95,10 +84,9 @@ internal sealed class CGEventGestureInjector : IDisposable
     private double _remainderX;
     private double _remainderY;
     private bool _pinchActive;
-    private bool _magnifyOpen;
-    private bool _rotateOpen;
-    private double _heldMagnification;
-    private double _heldDegrees;
+
+    // Which of the magnify/rotate streams are open, and the held-back amounts (dominance decides the first stream).
+    private readonly TransformStreams _transform = new();
 
     private Timer? _coastTimer;
     private long _coastGeneration;
@@ -231,10 +219,7 @@ internal sealed class CGEventGestureInjector : IDisposable
         _momentum.Reset();
         _scrollOpen = false;
         _pinchActive = false;
-        _magnifyOpen = false;
-        _rotateOpen = false;
-        _heldMagnification = 0;
-        _heldDegrees = 0;
+        _transform.Reset();
         if (_postedScrollOpen)
         {
             CancelScroll();
@@ -351,65 +336,66 @@ internal sealed class CGEventGestureInjector : IDisposable
     }
 
     /// <summary>
-    /// Posts the magnify and rotate parts of a transform step. Each stream begins (Began, value 0) once its
-    /// accumulated value passes its start threshold, then posts what was held back as its first Changed; a pure zoom
-    /// posts no rotate events and a pure turn no magnify events.
+    /// Posts the magnify and rotate parts of a transform step. Core's <see cref="TransformStreams"/> decides when each
+    /// stream begins (Began, value 0) and what each posts: the dominant component opens first, the other only past a
+    /// larger amount (Preview follows only the stream that began first); a pure zoom posts no rotate events and a pure
+    /// turn no magnify events.
     /// </summary>
     private void PostTransform(in GestureEvent e)
     {
-        double magnification = GestureOutput.ToMagnification(e.ScaleDelta);
-        if (double.IsFinite(magnification) && magnification != 0)
+        TransformStreamStep step = _transform.Step(
+            GestureOutput.ToMagnification(e.ScaleDelta), GestureOutput.ToCounterClockwiseDegrees(e.RotationDelta));
+        if (step.RotateFirst)
         {
-            if (!_magnifyOpen)
-            {
-                _heldMagnification += magnification;
-                if (Math.Abs(_heldMagnification) >= MagnifyStartThreshold)
-                {
-                    _magnifyOpen = true;
-                    PostGesture(HidZoom, PhaseBegan, FieldGestureMagnification, 0);
-                    PostGesture(HidZoom, PhaseChanged, FieldGestureMagnification, _heldMagnification);
-                }
-            }
-            else
-            {
-                PostGesture(HidZoom, PhaseChanged, FieldGestureMagnification, magnification);
-            }
+            PostRotateStep(step);
+            PostMagnifyStep(step);
+        }
+        else
+        {
+            PostMagnifyStep(step);
+            PostRotateStep(step);
+        }
+    }
+
+    private void PostMagnifyStep(in TransformStreamStep step)
+    {
+        if (step.MagnifyBegins)
+        {
+            PostGesture(HidZoom, PhaseBegan, FieldGestureMagnification, 0);
         }
 
-        double degrees = GestureOutput.ToCounterClockwiseDegrees(e.RotationDelta);
-        if (double.IsFinite(degrees) && degrees != 0)
+        if (step.PostMagnify)
         {
-            if (!_rotateOpen)
-            {
-                _heldDegrees += degrees;
-                if (Math.Abs(_heldDegrees) >= RotateStartDegrees)
-                {
-                    _rotateOpen = true;
-                    PostGesture(HidRotation, PhaseBegan, FieldGestureRotation, 0);
-                    PostGesture(HidRotation, PhaseChanged, FieldGestureRotation, _heldDegrees);
-                }
-            }
-            else
-            {
-                PostGesture(HidRotation, PhaseChanged, FieldGestureRotation, degrees);
-            }
+            PostGesture(HidZoom, PhaseChanged, FieldGestureMagnification, step.Magnification);
+        }
+    }
+
+    private void PostRotateStep(in TransformStreamStep step)
+    {
+        if (step.RotateBegins)
+        {
+            PostGesture(HidRotation, PhaseBegan, FieldGestureRotation, 0);
+        }
+
+        if (step.PostRotate)
+        {
+            PostGesture(HidRotation, PhaseChanged, FieldGestureRotation, step.Degrees);
         }
     }
 
     private void ClosePinch(long phase)
     {
         _pinchActive = false;
-        _heldMagnification = 0;
-        _heldDegrees = 0;
-        if (_magnifyOpen)
+        bool magnifyOpen = _transform.MagnifyOpen;
+        bool rotateOpen = _transform.RotateOpen;
+        _transform.Reset();
+        if (magnifyOpen)
         {
-            _magnifyOpen = false;
             PostGesture(HidZoom, phase, FieldGestureMagnification, 0);
         }
 
-        if (_rotateOpen)
+        if (rotateOpen)
         {
-            _rotateOpen = false;
             PostGesture(HidRotation, phase, FieldGestureRotation, 0);
         }
     }
