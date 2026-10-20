@@ -213,6 +213,7 @@ With the pen away from the screen, use fingers like a trackpad. Gestures act whe
 | 4 | Spread / pinch | Show desktop / Apps launcher |
 
 - Zoom, rotate and smart zoom reach only the frontmost app, as on a trackpad.
+- Known issue: a twist often turns into a zoom, because the app follows whichever of the two starts first ([#214](https://github.com/Blake11/PenBridge/issues/214)). Until the fix ships, turning **Zoom** off in the gesture settings leaves the twist as rotate only.
 - Four-finger gestures fire once per gesture through the default Mission Control keyboard shortcuts (⌃↑ ⌃↓ ⌃← ⌃→, and F11 for show desktop), so those need to be on in **System Settings → Keyboard → Keyboard Shortcuts → Mission Control**.
 
 #### 5. Settings
