@@ -61,7 +61,7 @@ The bootstrap script never runs sudo. It prints these commands for you instead.
    ```bash
    cd <repo> && sudo dotnet workload install macos android ios
    ```
-   Run it from the repo so `global.json` selects the right SDK band. Afterwards, run `dotnet workload update` (also with sudo) to move to newer workload sets.
+   Run it from the repo so `global.json` selects the right SDK band. CI pins the workload set in `.github/toolchain.env`; install that set locally with `--version` if you want to match it, and avoid `dotnet workload update` unless you also bump the pin (see the Xcode note below).
 2. **Xcode.** Install it from the App Store, launch it once, then:
    ```bash
    sudo xcode-select -s /Applications/Xcode.app/Contents/Developer

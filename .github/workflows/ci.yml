@@ -72,6 +72,7 @@ jobs:
               - '.github/actions/**'
               - 'scripts/**'
               - '.githooks/**'
+              - '.github/toolchain.env'
             core: &core
               - *infra
               - 'src/PenBridge.Core/**'
@@ -100,6 +101,7 @@ jobs:
             ios:
               - '.github/workflows/**'
               - '.github/actions/**'
+              - '.github/toolchain.env'
               - 'global.json'
               - 'scripts/check-bundle.sh'
               - 'src/PenBridge.iOS/**'
