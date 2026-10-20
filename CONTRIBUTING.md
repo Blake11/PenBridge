@@ -58,18 +58,18 @@ gh pr create --fill          # then edit the title and body to match the templat
 
 Full runs:
 
-- **Nightly** (`schedule`, 03:23 UTC Monday to Saturday): every job except the iOS placeholder.
+- **Nightly** (`schedule`, 03:23 UTC Monday to Saturday): every job except the iOS placeholder, plus the macOS Debug build and the icon check.
 - **Sunday** (`schedule`, 03:23 UTC): every job, iOS included.
-- **Manual** (`workflow_dispatch`, Actions tab or `gh workflow run ci.yml`): every job.
+- **Manual** (`workflow_dispatch`, Actions tab or `gh workflow run ci.yml`): every job, plus the macOS Debug build and the icon check.
 
 A new push to a PR cancels that PR's running CI. Runs on `main` are never cancelled.
 
-The macOS, Android and iOS jobs cache the installed workload packs (`.github/actions/dotnet-workload`). The cache key covers the runner OS and arch, the Xcode version, the SDK version and the workload set version. Only runs on `main` save the cache; PRs only restore it.
+The macOS and iOS jobs cache the installed workload packs (`.github/actions/dotnet-workload`). The cache key covers the runner OS and arch, the Xcode version, the SDK version and the workload set version. Only runs on `main` save the cache; PRs only restore it. The Android job installs its workload every time: the packs are about 3 GB, and restoring the cache entry (about 1 GB) took as long as the install (about 45 s against 41 s).
 
 | Job (required check) | Runner | Covers |
 |---|---|---|
 | Core tests | ubuntu | `dotnet test --project tests/PenBridge.Core.Tests`, SimClient build, trimmed pairing smoke test |
-| macOS build | macos (`xcode-27`) | `gen-icons.sh --check` (generated icons match `assets/icon`), Release publish (NativeAOT) and Debug build (the only compile of the `#if DEBUG` code), `check-bundle.sh --mac` |
+| macOS build | macos (`xcode-27`) | Release publish (NativeAOT), `check-bundle.sh --mac Release`. Only when icon inputs or outputs changed (see below) and on nightly and manual runs: `gen-icons.sh --check` (generated icons match `assets/icon`). Only on nightly and manual runs: Debug build (the only compile of the `#if DEBUG` code) and `check-bundle.sh --mac Debug` |
 | Android build | ubuntu | Release APK (unsigned), `check-bundle.sh --android` |
 | iOS build (placeholder) | macos (`xcode-27`) | Simulator build (unsigned), `check-bundle.sh --ios`. It is a required check, but it builds only for iOS and CI changes, on Sundays and on manual runs. Otherwise it reports "skipped". |
 | Conventional Commit title | ubuntu | PR title check (`pr-title.yml`), runs on every PR |
@@ -80,17 +80,20 @@ All five are required checks. Which paths trigger which jobs:
 |---|---|---|---|---|
 | `.github/workflows/**`, `.github/actions/**` | yes | yes | yes | yes |
 | `global.json`, `scripts/check-bundle.sh` | yes | yes | yes | yes |
-| other `scripts/**`, `.githooks/**` | yes | yes | yes | |
+| other scripts that CI and the release workflow run: `scripts/test.sh`, `gen-icons.sh`, `mac-sign.sh`, `smoke-trimmed-pairing.sh`, `scripts/lib/common.sh`, `scripts/lib/*.cs`, `scripts/lib/*.swift`; `.githooks/**` | yes | yes | yes | |
+| dev-only scripts (`ship-pr.sh`, `verify-release.sh`, `device-*`, `android-*`, `mac-run.sh`, `doctor.sh`, `bootstrap.sh`, `lib/device.sh`, ...) | | | | |
 | other core: `src/PenBridge.Core/**`, `tests/**`, `tools/**`, `build/**`, `**/Directory.Build.*`, `**/Directory.Packages.props`, `PenBridge.slnx`, `.editorconfig` | yes | yes | yes | |
 | `src/PenBridge.Mac/**` | | yes | | |
-| `assets/icon/**`, generated Android icons (`src/PenBridge.Android/Resources/drawable/ic_launcher_*.xml`, `.../mipmap-anydpi-v26/ic_launcher*.xml`) | | yes | | |
+| `assets/icon/**`, generated Android icons (`src/PenBridge.Android/Resources/drawable/ic_launcher_*.xml`, `.../mipmap-anydpi-v26/ic_launcher*.xml`); also runs the icon check | | yes | | |
 | `src/PenBridge.Android/**` | | | yes | |
 | `src/PenBridge.iOS/**` | | | | yes |
 | anything else (`docs/**`, root `*.md`, `.claude/**`, `LICENSE`, issue/PR templates, `dependabot.yml`) | | | | |
 
 Most Core changes skip iOS on purpose: the Sunday run catches anything that breaks the placeholder. SDK pin (`global.json`) and bundle check changes still build it. A release PR changes `Directory.Build.props`, so Core tests, macOS and Android run on it, and iOS reports "skipped".
 
-Markdown files under a matched path (for example `src/PenBridge.Mac/README.md`) still trigger that path's jobs. When you add a project or a build-affecting root file, add it to the filters in `ci.yml` and to this table.
+Markdown files under a matched path (for example `src/PenBridge.Mac/README.md`) still trigger that path's jobs. The icon check (`gen-icons.sh --check`, a macOS job step) has its own `icons` filter: `assets/icon/**`, `scripts/gen-icons.sh`, `scripts/lib/{common.sh,gen-icons.cs,car-to-iconset.swift}`, the generated Android icons and everything generated under `src/PenBridge.Mac/Resources` (`AppIcon.icon`, `AppIconLegacy.icns*`, `Assets.xcassets`), plus `ci.yml` and `.github/toolchain.env`. Other macOS runs skip it.
+
+When you add a project or a build-affecting root file, add it to the filters in `ci.yml` and to this table. When a workflow starts running another script (or a script starts sourcing another file), add it to the `infra` filter.
 
 Before pushing, run `scripts/test.sh` locally.
 

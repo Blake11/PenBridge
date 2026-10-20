@@ -27,6 +27,15 @@ inputs:
     required: false
     default: "true"
 
+  cache:
+    description: >
+      "false" skips the cache and always installs. Use it where the archive is so large that
+      restoring it takes as long as the install: the android workload is about 3 GB unpacked
+      (a 1 GB compressed cache entry) and its restore, 45 s, was no faster than the 41 s
+      install. The macOS and iOS workloads are small and restore in a few seconds.
+    required: false
+    default: "true"
+
 outputs:
   cache-hit:
     description: '"true" when the workloads came from the cache'
@@ -69,6 +78,7 @@ runs:
 
     - name: Restore workload cache
       id: restore
+      if: inputs.cache != 'false'
       uses: actions/cache/restore@v6
       with:
         path: ${{ steps.plan.outputs.archive }}
@@ -112,7 +122,7 @@ runs:
         WORKLOAD_SET: ${{ steps.plan.outputs.workload-set }}
         ARCHIVE: ${{ steps.plan.outputs.archive }}
         # Snapshot (and save) on a miss and after a rejected restore, so a bad entry is replaced.
-        SNAPSHOT: ${{ inputs.save == 'true' }}
+        SNAPSHOT: ${{ inputs.save == 'true' && inputs.cache != 'false' }}
         RESTORED: ${{ steps.restore.outputs.cache-matched-key != '' }}
       run: |
         set -euo pipefail
