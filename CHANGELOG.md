@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.2.1](https://github.com/Blake11/PenBridge/compare/v1.2.0...v1.2.1) (2026-10-20)
+
+
+### Features
+
+* **android:** editable values, steppers and a default snap on settings sliders ([#221](https://github.com/Blake11/PenBridge/issues/221)) ([a2e2462](https://github.com/Blake11/PenBridge/commit/a2e2462f1978a91b7458fea76ea0a9084ddc2a58)), closes [#217](https://github.com/Blake11/PenBridge/issues/217) [#212](https://github.com/Blake11/PenBridge/issues/212)
+* **core:** add a slider model for setting sliders ([#218](https://github.com/Blake11/PenBridge/issues/218)) ([fc48328](https://github.com/Blake11/PenBridge/commit/fc483289a496713b0281f6efc049386a48331ae9)), closes [#215](https://github.com/Blake11/PenBridge/issues/215) [#212](https://github.com/Blake11/PenBridge/issues/212)
+* **mac:** editable values, steppers and a default snap on settings sliders ([#223](https://github.com/Blake11/PenBridge/issues/223)) ([9f0608e](https://github.com/Blake11/PenBridge/commit/9f0608ec179e6f6722cf7f3b31ce749959be4eb9)), closes [#216](https://github.com/Blake11/PenBridge/issues/216) [#212](https://github.com/Blake11/PenBridge/issues/212)
+
+
+### Bug Fixes
+
+* **core:** let a deliberate twist rotate instead of zooming ([#224](https://github.com/Blake11/PenBridge/issues/224)) ([78e422c](https://github.com/Blake11/PenBridge/commit/78e422cd38cfeb1fd50ca50502daaf6bcc86e5dd)), closes [#214](https://github.com/Blake11/PenBridge/issues/214)
+* **core:** stabilise the surface test and drop negative zero from sliders ([#222](https://github.com/Blake11/PenBridge/issues/222)) ([e38aa8e](https://github.com/Blake11/PenBridge/commit/e38aa8ee8015f6edd506abeb84442a4a9b86ea3e))
+* **mac:** put tip feel's soft and firm labels under the slider ([#226](https://github.com/Blake11/PenBridge/issues/226)) ([c23ef6b](https://github.com/Blake11/PenBridge/commit/c23ef6be742110508ba4ba3345dfc9036e122538)), closes [#225](https://github.com/Blake11/PenBridge/issues/225)
+
+
+### Documentation
+
+* update the readme for 1.2.1 ([#228](https://github.com/Blake11/PenBridge/issues/228)) ([2a3e006](https://github.com/Blake11/PenBridge/commit/2a3e006fa8155de03d2a623a6faeadbe39dbc8ab)), closes [#212](https://github.com/Blake11/PenBridge/issues/212)
+
 ## [1.2.0](https://github.com/Blake11/PenBridge/compare/v1.1.0...v1.2.0) (2026-10-20)
 
 
