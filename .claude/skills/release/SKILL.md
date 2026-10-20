@@ -23,6 +23,7 @@ Details: `docs/releasing.md`, `.github/workflows/release-please.yml`, `.github/w
 5. `build-release.yml` builds the macOS `.zip` + `.dmg` (ad-hoc) and the release-signed APK (checked with `apksigner`: debug-key APKs fail), writes `SHA256SUMS`, uploads to the release.
 
 ## Verify the published assets
+One command: `scripts/verify-release.sh vX.Y.Z` (or `--run <dry-run-id>`; `--keep` keeps the download). It checks SHA256SUMS (releases only), the .zip/.dmg app version, bundle id, ad-hoc signature and universal archs, and the APK package, versionName, versionCode and release-cert SHA-256 (JDK via `resolve_java_home`); non-zero on any mismatch. Manual equivalent:
 ```bash
 gh release download vX.Y.Z -R Blake11/PenBridge -D /tmp/rel && cd /tmp/rel
 shasum -a 256 -c SHA256SUMS
