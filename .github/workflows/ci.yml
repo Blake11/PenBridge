@@ -111,15 +111,15 @@ jobs:
             android:
               - *core
               - 'src/PenBridge.Android/**'
-            # The iOS placeholder is never released: only its own sources, the CI definition, the
-            # SDK pin and the bundle check it runs trigger it on a PR or push. Other Core-side
-            # breakage still surfaces in the Sunday full run.
             # Inputs and outputs of gen-icons.sh --check: the masters, the generator and its
             # helpers, and every file it writes (a hand edit would otherwise go unchecked). The
             # check is a macOS job step, and every path here also triggers that job.
             icons:
               - '.github/workflows/ci.yml'
               - '.github/toolchain.env'
+              - '.github/actions/select-xcode/**'
+              - 'global.json'
+              - '**/Directory.Build.*'
               - 'assets/icon/**'
               - 'scripts/gen-icons.sh'
               - 'scripts/lib/common.sh'
@@ -130,12 +130,16 @@ jobs:
               - 'src/PenBridge.Mac/Resources/AppIcon.icon/**'
               - 'src/PenBridge.Mac/Resources/AppIconLegacy.icns*'
               - 'src/PenBridge.Mac/Resources/Assets.xcassets/**'
+            # The iOS placeholder is never released: only its own sources, the CI definition, the
+            # SDK pin and the bundle check it runs trigger it on a PR or push. Other Core-side
+            # breakage still surfaces in the Sunday full run.
             ios:
               - '.github/workflows/**'
               - '.github/actions/**'
               - '.github/toolchain.env'
               - 'global.json'
               - 'scripts/check-bundle.sh'
+              - 'scripts/lib/check-bundle.cs'
               - 'src/PenBridge.iOS/**'
 
   core-tests:
