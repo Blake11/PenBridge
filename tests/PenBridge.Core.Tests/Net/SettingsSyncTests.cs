@@ -124,13 +124,22 @@ public class SettingsSyncTests
         PenBridgeClient client = await PairAsync(h, c => c.ActiveAreaReceived += (_, e) => areas.Enqueue(e.Area));
         await Wait.Until(() => !areas.IsEmpty, "the area after pairing");
         await PingRoundTripAsync(h);
+        await DisplayListBarrierAsync(h, client);
+        return (client, areas);
+    }
+
+    /// <summary>
+    /// An ordering barrier that leaves the single-use ping free: two display lists (the second differs from the first,
+    /// and the list before them is neither), so once both arrived every earlier push, area included, has arrived.
+    /// </summary>
+    private static async Task DisplayListBarrierAsync(NetHarness h, PenBridgeClient client)
+    {
         DisplayListEntry[] first = [Displays[1]];
         await h.Server.SendDisplayListAsync(first);
         await Wait.Until(() => client.LastDisplayList is { } l && l.Count == 1 && l[0] == first[0], "the first settling list");
         DisplayListEntry[] second = [Displays[0]];
         await h.Server.SendDisplayListAsync(second);
         await Wait.Until(() => client.LastDisplayList is { } l && l.Count == 1 && l[0] == second[0], "the second settling list");
-        return (client, areas);
     }
 
     [Fact]
@@ -159,7 +168,8 @@ public class SettingsSyncTests
 
         h.Server.SendActiveArea(client.LastActiveArea!.Value); // unchanged: deduped
         h.Server.SendActiveArea(Marker); // ordering marker behind it
-        await Wait.Until(() => client.LastActiveArea is { } a && Math.Abs(a.Y - Marker.Y) < 1e-3, "the marker");
+        // The area event is raised after LastActiveArea is stored: wait on the queue the assertion counts.
+        await Wait.Until(() => areas.Count > baseline, "the marker");
 
         Assert.Equal(1, areas.Count - baseline);
     }
@@ -168,10 +178,8 @@ public class SettingsSyncTests
     public async Task The_active_area_reaches_the_phone_and_only_changes_are_sent()
     {
         await using NetHarness h = Harness();
-        var areas = new ConcurrentQueue<NormalizedRect>();
-        PenBridgeClient client = await PairAsync(h, c => c.ActiveAreaReceived += (_, e) => areas.Enqueue(e.Area));
-        await Wait.Until(() => !areas.IsEmpty, "the area after SurfaceInfo");
-        areas.Clear();
+        (PenBridgeClient client, ConcurrentQueue<NormalizedRect> areas) = await PairSettledAsync(h);
+        areas.Clear(); // every pairing-time push has arrived: only the sends below count
 
         var first = new NormalizedRect(0.125, 0, 0.75, 1);
         h.Server.SendActiveArea(first);
@@ -179,7 +187,7 @@ public class SettingsSyncTests
         h.Server.SendActiveArea(first); // unchanged: not sent again
         h.Server.SendActiveArea(NormalizedRect.Full);
         await Wait.Until(() => areas.Count >= 2 && client.LastActiveArea == NormalizedRect.Full, "active areas");
-        await PingRoundTripAsync(h);
+        await DisplayListBarrierAsync(h, client); // a stray extra area would arrive before the second list
 
         NormalizedRect[] got = [.. areas];
         Assert.Equal(2, got.Length);
