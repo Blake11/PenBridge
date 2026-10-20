@@ -22,14 +22,8 @@ namespace PenBridge.Android.Connect;
 internal sealed class MacSettingsSection
 #pragma warning restore CA1001
 {
-    /// <summary>While a slider is dragged, at most one update per this interval (the Mac caps updates at 20/s).</summary>
-    private const long DragSendIntervalMs = 100;
-
     /// <summary>After a slider is released, how long older snapshot values are ignored while waiting for the reply.</summary>
     private const long ReleaseHoldMs = 1000;
-
-    /// <summary>Speed sliders: log2 steps of a twentieth of an octave, so 1× sits in the middle of 0.25×..4×.</summary>
-    private const double SpeedStepsPerOctave = 20;
 
     private readonly Context _ctx;
     private readonly ClientHost _host;
@@ -83,9 +77,9 @@ internal sealed class MacSettingsSection
         _root.AddView(Ui.Text(context, "Side button", TextRole.Title), Ui.FullWidthLp(context, 12));
         AddChoices(MacSettingKey.SideButton);
         _root.AddView(Ui.Text(context, "Pressure", TextRole.Title), Ui.FullWidthLp(context, 12));
-        AddFloatSlider(MacSettingKey.TipFeel, "Tip feel", 0.05, FormatTipFeel);
-        AddFloatSlider(MacSettingKey.ClickThreshold, "Click threshold: below it the pen hovers", 0.01, FormatPercent);
-        AddFloatSlider(MacSettingKey.FullPressureAt, "Full pressure at", 0.01, FormatPercent);
+        AddSlider(MacSettingKey.TipFeel, "Tip feel", FormatTipFeel);
+        AddSlider(MacSettingKey.ClickThreshold, "Click threshold: below it the pen hovers", FormatPercent, ParsePercent);
+        AddSlider(MacSettingKey.FullPressureAt, "Full pressure at", FormatPercent, ParsePercent);
 
         // Gestures (ADR-0033).
         _root.AddView(Ui.Text(context, "Gestures", TextRole.Title), Ui.FullWidthLp(context, 16));
@@ -259,142 +253,89 @@ internal sealed class MacSettingsSection
         return toggle;
     }
 
-    /// <summary>0.25×..4× on a log scale.</summary>
-    private LinearLayout AddSpeedSlider(MacSettingKey key, string title)
-    {
-        MacSettingDescriptor d = MacSettings.Get(key);
-        double lo = Math.Log2(d.Min);
-        int steps = (int)Math.Round((Math.Log2(d.Max) - lo) * SpeedStepsPerOctave);
-        return AddSlider(
-            key,
-            title,
-            steps,
-            step => Math.Clamp((float)Math.Pow(2, lo + (step / SpeedStepsPerOctave)), d.Min, d.Max),
-            value => (int)Math.Round((Math.Log2(value) - lo) * SpeedStepsPerOctave),
-            static value => value.ToString("0.00", CultureInfo.InvariantCulture) + "×");
-    }
-
-    /// <summary>A linear slider over the key's range in steps of <paramref name="step"/>.</summary>
-    private LinearLayout AddFloatSlider(MacSettingKey key, string title, double step, Func<float, string> format)
-    {
-        MacSettingDescriptor d = MacSettings.Get(key);
-        int steps = (int)Math.Round((d.Max - d.Min) / step);
-        return AddSlider(
-            key,
-            title,
-            steps,
-            s => Math.Clamp((float)(d.Min + (s * step)), d.Min, d.Max),
-            value => (int)Math.Round((value - d.Min) / step),
-            format);
-    }
+    private LinearLayout AddSpeedSlider(MacSettingKey key, string title) => AddSlider(key, title, FormatSpeed);
 
     /// <summary>
-    /// A slider for a Float key. Sends while dragging (throttled) and on release; a snapshot doesn't move it while
+    /// A slider for a Float key, shaped by Core's <see cref="SettingSliders"/> spec. Sends while dragging (throttled by
+    /// <see cref="SliderField"/>) and on release; a typed value or a −/+ tap sends once. A snapshot doesn't move it while
     /// the finger is on it. The pressure pair is held valid here (<see cref="MacSettings.IsPressurePairValid"/>), so
     /// the slider stops where the Mac would reject the value.
     /// </summary>
-    private LinearLayout AddSlider(MacSettingKey key, string title, int steps, Func<int, float> toValue, Func<float, int> toStep, Func<float, string> format)
+    private LinearLayout AddSlider(MacSettingKey key, string title, Func<double, string> format, Func<string, double?>? parse = null)
     {
+        if (!SettingSliders.TryGet(key, out SliderSpec spec))
+        {
+            throw new InvalidOperationException("No slider spec for " + key);
+        }
+
         LinearLayout column = Ui.Column(_ctx);
         column.AddView(Ui.Text(_ctx, title), Ui.FullWidthLp(_ctx, 0));
-        LinearLayout row = Ui.Row(_ctx);
-        var seek = new SeekBar(_ctx) { Max = steps, Min = 0 };
-        TextView label = Ui.Text(_ctx, null, TextRole.Title);
-        bool tracking = false;
-        long lastSent = 0;
 
         // After a release, snapshots that still carry an older (mid-drag) value are ignored until the reply with the
         // released value arrives or the hold times out; then the latest snapshot is applied.
         long holdUntil = 0;
         float heldValue = 0;
+        SliderField? field = null;
 
-        void Apply(MacSettingValues v)
-        {
-            float value = v.Get(key).FloatValue;
-            seek.Progress = Math.Clamp(toStep(value), 0, steps);
-            label.Text = format(value);
-        }
-
-        int Valid(int step)
+        double Valid(double value)
         {
             if (_values is not { } v)
             {
-                return step;
+                return value;
             }
 
             if (key == MacSettingKey.ClickThreshold)
             {
-                while (step > 0 && !MacSettings.IsPressurePairValid(toValue(step), v.FullPressureAt))
+                while (value > spec.Min && !MacSettings.IsPressurePairValid((float)value, v.FullPressureAt))
                 {
-                    step--;
+                    value = spec.StepDown(value);
                 }
             }
             else if (key == MacSettingKey.FullPressureAt)
             {
-                while (step < steps && !MacSettings.IsPressurePairValid(v.ClickThreshold, toValue(step)))
+                while (value < spec.Max && !MacSettings.IsPressurePairValid(v.ClickThreshold, (float)value))
                 {
-                    step++;
+                    value = spec.StepUp(value);
                 }
             }
 
-            return step;
+            return value;
         }
 
-        void SendStep(int step)
+        void Changed(double value, bool final)
         {
-            lastSent = SystemClock.UptimeMillis();
-            float value = toValue(step);
-            if (!tracking)
+            if (_updating)
             {
-                heldValue = value;
-                holdUntil = lastSent + ReleaseHoldMs;
-                seek.PostDelayed(
+                return;
+            }
+
+            if (final)
+            {
+                long now = SystemClock.UptimeMillis();
+                heldValue = (float)value;
+                holdUntil = now + ReleaseHoldMs;
+                column.PostDelayed(
                     () =>
                     {
-                        if (!tracking && holdUntil != 0 && SystemClock.UptimeMillis() >= holdUntil)
+                        if (field is { Tracking: false } && holdUntil != 0 && SystemClock.UptimeMillis() >= holdUntil)
                         {
                             holdUntil = 0;
                             if (_values is { } latest)
                             {
-                                Apply(latest);
+                                field.SetValue(latest.Get(key).FloatValue);
                             }
                         }
                     },
                     ReleaseHoldMs);
             }
 
-            Send(SettingEntry.Float(key, value));
+            Send(SettingEntry.Float(key, (float)value));
         }
 
-        seek.ProgressChanged += (_, e) =>
-        {
-            int step = e.Progress;
-            if (e.FromUser && !_updating)
-            {
-                int valid = Valid(step);
-                if (valid != step)
-                {
-                    seek.Progress = valid; // re-enters with FromUser false
-                    return;
-                }
-
-                if (!tracking || SystemClock.UptimeMillis() - lastSent >= DragSendIntervalMs)
-                {
-                    SendStep(step);
-                }
-            }
-
-            label.Text = format(toValue(step));
-        };
-        seek.StartTrackingTouch += (_, _) => tracking = true;
-        seek.StopTrackingTouch += (_, _) =>
-        {
-            tracking = false;
-            SendStep(seek.Progress);
-        };
+        field = new SliderField(_ctx, spec, format, Changed, Valid, parse);
         _binders.Add(v =>
         {
-            if (tracking)
+            if (field.Tracking)
             {
                 return;
             }
@@ -409,11 +350,9 @@ internal sealed class MacSettingsSection
                 holdUntil = 0;
             }
 
-            Apply(v);
+            field.SetValue(v.Get(key).FloatValue);
         });
-        row.AddView(seek, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
-        row.AddView(label, new LinearLayout.LayoutParams(Ui.Dp(_ctx, 96), ViewGroup.LayoutParams.WrapContent));
-        column.AddView(row, Ui.FullWidthLp(_ctx, 0));
+        column.AddView(field.View, Ui.FullWidthLp(_ctx, 0));
         _root.AddView(column, Ui.FullWidthLp(_ctx, 8));
         return column;
     }
@@ -441,10 +380,14 @@ internal sealed class MacSettingsSection
         _ => name,
     };
 
-    private static string FormatPercent(float value) =>
+    private static string FormatSpeed(double value) => value.ToString("0.00", CultureInfo.InvariantCulture) + "×";
+
+    private static string FormatPercent(double value) =>
         Math.Round(value * 100).ToString(CultureInfo.InvariantCulture) + " %";
 
-    private static string FormatTipFeel(float value) =>
-        Math.Abs(value) < 0.005f ? "Linear"
-        : value.ToString("+0.00;-0.00", CultureInfo.InvariantCulture) + (value < 0 ? " soft" : " firm");
+    /// <summary>Typed percent ("5", "5 %") to the fraction the setting holds.</summary>
+    private static double? ParsePercent(string text) => SliderField.ParseNumber(text) / 100;
+
+    private static string FormatTipFeel(double value) =>
+        Math.Abs(value) < 0.005 ? "0" : value.ToString("+0.00;−0.00", CultureInfo.InvariantCulture);
 }
