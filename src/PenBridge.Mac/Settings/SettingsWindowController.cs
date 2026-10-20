@@ -226,17 +226,14 @@ public sealed class SettingsWindowController : IDisposable
             }
         });
         _stylusMode.ToolTip = "Pen: the phone maps onto the display. Mouse: the hovering pen moves the cursor from where it is.";
-        _mouseSpeed = SpeedSlider(v => Commit(() => _store.MouseSpeed = v));
+        _mouseSpeed = SpeedSlider(MacSettingKey.MouseSpeed, v => Commit(() => _store.MouseSpeed = v));
         _mouseAcceleration = Checkbox("Acceleration", v => _store.MouseAcceleration = v);
         _sideButton = Popup(() => _store.SideButton = (SideButtonAction)(int)_sideButton.IndexOfSelectedItem, SideButtonTitles);
 
-        MacSettingDescriptor tipFeel = MacSettings.Get(MacSettingKey.TipFeel);
-        MacSettingDescriptor threshold = MacSettings.Get(MacSettingKey.ClickThreshold);
-        MacSettingDescriptor full = MacSettings.Get(MacSettingKey.FullPressureAt);
-        _tipFeel = new SliderRow(tipFeel.Min, tipFeel.Max, v => Commit(() => _store.TipFeel = (float)v), OnCurveSliding, v => v.ToString("+0.00;−0.00;0", CultureInfo.CurrentCulture), "Soft", "Firm");
-        _clickThreshold = new SliderRow(threshold.Min, threshold.Max, v => Commit(() => _store.ClickThreshold = (float)v), OnCurveSliding, Percent);
+        _tipFeel = new SliderRow(MacSettingKey.TipFeel, v => Commit(() => _store.TipFeel = (float)v), OnCurveSliding, TipFeelText, false, "Soft", "Firm");
+        _clickThreshold = new SliderRow(MacSettingKey.ClickThreshold, v => Commit(() => _store.ClickThreshold = (float)v), OnCurveSliding, Percent, true);
         _clickThreshold.Slider.ToolTip = "Below this pressure the pen hovers instead of touching (0: the phone decides).";
-        _fullPressureAt = new SliderRow(full.Min, full.Max, v => Commit(() => _store.FullPressureAt = (float)v), OnCurveSliding, Percent);
+        _fullPressureAt = new SliderRow(MacSettingKey.FullPressureAt, v => Commit(() => _store.FullPressureAt = (float)v), OnCurveSliding, Percent, true);
         _fullPressureAt.Slider.ToolTip = "Pressing this hard already gives full pressure.";
 
         _pad = new PressureTestPad();
@@ -294,8 +291,8 @@ public sealed class SettingsWindowController : IDisposable
     {
         _smartZoom = Popup(() => _store.SmartZoom = (SmartZoomMode)(int)_smartZoom.IndexOfSelectedItem, SmartZoomTitles);
         _smartZoom.ToolTip = "Two-finger double tap. Follow macOS uses the trackpad's Smart zoom setting.";
-        _pointerSpeed = SpeedSlider(v => Commit(() => _store.PointerSpeed = v));
-        _scrollSpeed = SpeedSlider(v => Commit(() => _store.ScrollSpeed = v));
+        _pointerSpeed = SpeedSlider(MacSettingKey.PointerSpeed, v => Commit(() => _store.PointerSpeed = v));
+        _scrollSpeed = SpeedSlider(MacSettingKey.ScrollSpeed, v => Commit(() => _store.ScrollSpeed = v));
         _zoom = Checkbox("Zoom (pinch)", v => _store.Zoom = v);
         _rotate = Checkbox("Rotate", v => _store.Rotate = v);
         _threeFingerDrag = Checkbox("Three-finger drag", v => _store.ThreeFingerDrag = v);
@@ -358,7 +355,7 @@ public sealed class SettingsWindowController : IDisposable
             RefreshDisplay();
 
             _stylusMode.SelectedSegment = _store.StylusMode == StylusMode.Mouse ? 1 : 0;
-            _mouseSpeed.SetValue(Math.Log2(_store.MouseSpeed));
+            _mouseSpeed.SetValue(_store.MouseSpeed);
             SetCheck(_mouseAcceleration, _store.MouseAcceleration);
             _sideButton.SelectItem((nint)(int)_store.SideButton);
             _tipFeel.SetValue(_store.TipFeel);
@@ -367,8 +364,8 @@ public sealed class SettingsWindowController : IDisposable
             _curve.SetCurve(_store.TipFeel, _store.ClickThreshold, _store.FullPressureAt);
 
             _smartZoom.SelectItem((nint)(int)_store.SmartZoom);
-            _pointerSpeed.SetValue(Math.Log2(_store.PointerSpeed));
-            _scrollSpeed.SetValue(Math.Log2(_store.ScrollSpeed));
+            _pointerSpeed.SetValue(_store.PointerSpeed);
+            _scrollSpeed.SetValue(_store.ScrollSpeed);
             SetCheck(_zoom, _store.Zoom);
             SetCheck(_rotate, _store.Rotate);
             SetCheck(_threeFingerDrag, _store.ThreeFingerDrag);
@@ -641,11 +638,12 @@ public sealed class SettingsWindowController : IDisposable
         return popup;
     }
 
-    // Speeds are 0.25..4 on a log2 slider (−2..2) so 1× sits in the middle.
-    private static SliderRow SpeedSlider(Action<float> commit) =>
-        new(Math.Log2(MacSettings.Get(MacSettingKey.MouseSpeed).Min), Math.Log2(MacSettings.Get(MacSettingKey.MouseSpeed).Max), v => commit((float)Math.Pow(2, v)), null, v => Math.Pow(2, v).ToString("0.00", CultureInfo.CurrentCulture) + "×");
+    private static SliderRow SpeedSlider(MacSettingKey key, Action<float> commit) =>
+        new(key, v => commit((float)v), null, v => v.ToString("0.00", CultureInfo.CurrentCulture) + "×");
 
-    private static string Percent(double v) => Math.Round(v * 100).ToString(CultureInfo.CurrentCulture) + "%";
+    private static string TipFeelText(double v) => (v == 0 ? 0 : v).ToString("+0.00;−0.00;0", CultureInfo.CurrentCulture);
+
+    private static string Percent(double v) => Math.Round(v * 100).ToString(CultureInfo.CurrentCulture) + " %";
 
     private static void SetCheck(NSButton button, bool on) => button.State = on ? NSCellStateValue.On : NSCellStateValue.Off;
 
@@ -689,32 +687,100 @@ public sealed class SettingsWindowController : IDisposable
         return grid;
     }
 
-    /// <summary>A slider with a value label (and optional end labels). Commits on release or per keyboard step.</summary>
+    /// <summary>
+    /// A slider, an editable value field and a stepper over one <see cref="SliderSpec"/>. The slider runs 0..1 along the
+    /// spec's track; dragging snaps at the default. The slider commits on release or per keyboard step, the field on Return
+    /// or focus-out, the stepper and the field's ↑/↓ keys per step. Values always go through the spec.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001", Justification = "The views belong to the window, which disposes them; the delegate is released with the row.")]
     private sealed class SliderRow
     {
-        private readonly NSTextField _value;
+        private readonly SliderSpec _spec;
         private readonly Func<double, string> _format;
+        private readonly bool _percent;
+        private readonly Action<double> _commit;
+        private readonly Action? _sliding;
+        private readonly NSTextField _field;
+        private readonly NSStepper _stepper;
+        private readonly FieldDelegate _fieldDelegate;
+        private double _value;
 
-        public SliderRow(double min, double max, Action<double> commit, Action? sliding, Func<double, string> format, string? minLabel = null, string? maxLabel = null)
+        public SliderRow(MacSettingKey key, Action<double> commit, Action? sliding, Func<double, string> format, bool percent = false, string? minLabel = null, string? maxLabel = null)
         {
-            _format = format;
-            _value = NSTextField.CreateLabel(string.Empty);
-            _value.Font = NSFont.MonospacedDigitSystemFontOfSize(NSFont.SystemFontSize, NSFontWeight.Regular)!;
-            _value.WidthAnchor.ConstraintGreaterThanOrEqualTo(48).Active = true;
-            Slider = NSSlider.FromValue(min, min, max, () =>
+            if (!SettingSliders.TryGet(key, out _spec))
             {
-                _value.StringValue = _format(Slider!.DoubleValue);
-                sliding?.Invoke();
+                throw new ArgumentException("No slider spec for " + key, nameof(key));
+            }
+
+            _format = format;
+            _percent = percent;
+            _commit = commit;
+            _sliding = sliding;
+            _value = _spec.Default;
+
+            _field = new NSTextField
+            {
+                Editable = true,
+                Selectable = true,
+                Bezeled = true,
+                BezelStyle = NSTextFieldBezelStyle.Square,
+                DrawsBackground = true,
+                Alignment = NSTextAlignment.Right,
+                Font = NSFont.MonospacedDigitSystemFontOfSize(NSFont.SystemFontSize, NSFontWeight.Regular)!,
+                TranslatesAutoresizingMaskIntoConstraints = false,
+            };
+            _field.WidthAnchor.ConstraintEqualTo(64).Active = true;
+            _fieldDelegate = new FieldDelegate(this);
+            _field.Delegate = _fieldDelegate;
+            _field.Activated += (_, _) => CommitText();
+
+            // The stepper only reports a direction: it rests at 1 inside 0..2 and is put back after each click.
+            _stepper = new NSStepper
+            {
+                MinValue = 0,
+                MaxValue = 2,
+                Increment = 1,
+                DoubleValue = 1,
+                ValueWraps = false,
+                Autorepeat = true,
+                TranslatesAutoresizingMaskIntoConstraints = false,
+            };
+            _stepper.Activated += (_, _) =>
+            {
+                double d = _stepper.DoubleValue - 1;
+                _stepper.DoubleValue = 1;
+                if (d != 0)
+                {
+                    Step(d > 0);
+                }
+            };
+
+            Slider = NSSlider.FromValue(_spec.ToPosition(_spec.Default), 0, 1, () =>
+            {
                 NSEventType? type = NSApplication.SharedApplication.CurrentEvent?.Type;
+                bool mouse = type is NSEventType.LeftMouseDragged or NSEventType.LeftMouseDown or NSEventType.LeftMouseUp;
+                if (!mouse && type == NSEventType.KeyDown)
+                {
+                    // An arrow key moves the thumb by a sliver of the track, which the default snap would swallow: step in value units.
+                    _value = Slider!.DoubleValue >= _spec.ToPosition(_value) ? _spec.StepUp(_value) : _spec.StepDown(_value);
+                }
+                else
+                {
+                    _value = _spec.FromPosition(Slider!.DoubleValue);
+                }
+
+                Slider.DoubleValue = _spec.ToPosition(_value); // the thumb sticks to the snapped value
+                _field.StringValue = _format(_value);
+                _sliding?.Invoke();
                 if (type is not NSEventType.LeftMouseDragged and not NSEventType.LeftMouseDown)
                 {
-                    commit(Slider.DoubleValue);
+                    _commit(_value);
                 }
             });
             Slider.Continuous = true;
             Slider.WidthAnchor.ConstraintEqualTo((nfloat)SliderWidth).Active = true;
 
-            var views = new List<NSView>(4);
+            var views = new List<NSView>(5);
             if (minLabel is not null)
             {
                 views.Add(SmallLabel(minLabel));
@@ -726,20 +792,95 @@ public sealed class SettingsWindowController : IDisposable
                 views.Add(SmallLabel(maxLabel));
             }
 
-            views.Add(_value);
+            views.Add(_field);
+            views.Add(_stepper);
             View = Row([.. views]);
+            View.SetCustomSpacing(4, _field);
         }
 
         public NSSlider Slider { get; }
 
         public NSStackView View { get; }
 
-        public double Value => Slider.DoubleValue;
+        /// <summary>The current value in the spec's units (what a drag or edit would commit).</summary>
+        public double Value => _value;
 
         public void SetValue(double value)
         {
-            Slider.DoubleValue = value;
-            _value.StringValue = _format(value);
+            _value = _spec.Coerce(value);
+            Slider.DoubleValue = _spec.ToPosition(value);
+            if (_field.CurrentEditor is null) // do not overwrite text the user is typing
+            {
+                _field.StringValue = _format(_value);
+            }
+        }
+
+        private void Step(bool up)
+        {
+            _value = up ? _spec.StepUp(_value) : _spec.StepDown(_value);
+            Slider.DoubleValue = _spec.ToPosition(_value);
+            _field.StringValue = _format(_value);
+            _sliding?.Invoke();
+            _commit(_value);
+        }
+
+        private void CommitText()
+        {
+            if (TryParse(_field.StringValue, out double typed))
+            {
+                double coerced = _spec.Coerce(typed);
+                if (coerced != _value)
+                {
+                    _value = coerced;
+                    Slider.DoubleValue = _spec.ToPosition(_value);
+                    _sliding?.Invoke();
+                    _commit(_value); // the store may clamp; the window's Refresh then shows what it kept
+                }
+            }
+
+            _field.StringValue = _format(_value); // also reverts invalid text
+        }
+
+        private void Revert() => _field.StringValue = _format(_value);
+
+        private bool TryParse(string text, out double value)
+        {
+            Span<char> buffer = stackalloc char[Math.Min(text.Length, 32)];
+            int n = 0;
+            foreach (char c in text)
+            {
+                if (n == buffer.Length)
+                {
+                    value = 0;
+                    return false;
+                }
+
+                if (c is '×' or 'x' or 'X' or '%' || char.IsWhiteSpace(c))
+                {
+                    continue;
+                }
+
+                buffer[n++] = c == '−' ? '-' : c;
+            }
+
+            ReadOnlySpan<char> number = buffer[..n];
+            Span<char> dotted = stackalloc char[n];
+            number.Replace(dotted, ',', '.');
+            if ((double.TryParse(number, NumberStyles.Float, CultureInfo.CurrentCulture, out value)
+                    || double.TryParse(number, NumberStyles.Float, CultureInfo.InvariantCulture, out value)
+                    || double.TryParse(dotted, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+                && double.IsFinite(value))
+            {
+                if (_percent)
+                {
+                    value /= 100;
+                }
+
+                return true;
+            }
+
+            value = 0;
+            return false;
         }
 
         private static NSTextField SmallLabel(string text)
@@ -748,6 +889,32 @@ public sealed class SettingsWindowController : IDisposable
             label.Font = NSFont.SystemFontOfSize(NSFont.SmallSystemFontSize)!;
             label.TextColor = NSColor.SecondaryLabel;
             return label;
+        }
+
+        private sealed class FieldDelegate(SliderRow owner) : NSTextFieldDelegate
+        {
+            public override void EditingEnded(NSNotification notification) => owner.CommitText();
+
+            public override bool DoCommandBySelector(NSControl control, NSTextView textView, ObjCRuntime.Selector commandSelector)
+            {
+                switch (commandSelector.Name)
+                {
+                    case "moveUp:":
+                        owner.CommitText();
+                        owner.Step(true);
+                        return true;
+                    case "moveDown:":
+                        owner.CommitText();
+                        owner.Step(false);
+                        return true;
+                    case "cancelOperation:":
+                        owner.Revert(); // Esc leaves the field instead of closing the window
+                        control.Window?.MakeFirstResponder(null);
+                        return true;
+                    default:
+                        return false;
+                }
+            }
         }
     }
 
