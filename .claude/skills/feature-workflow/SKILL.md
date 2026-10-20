@@ -29,6 +29,7 @@ The main session does **not** implement. It clarifies, specifies, delegates, rev
 - Each workstream: an issue, owner agent, **disjoint file globs**, acceptance criteria, test plan.
 - **Small features (< ~150 changed lines)** that span Core and one head: one cross-head agent owns both (pick the agent whose side is harder; its definition covers the other side's rules). Split only when it's bigger or parallelism pays.
 - Prefer one branch + worktree per workstream (skill `parallel-worktrees`). Shared tree only when ownership is strictly disjoint and no commits are needed.
+- **Mac UI turn:** a workstream that changes Mac UI gets a Mac turn in its prompt (Debug build, self-screenshot, skill `mac-build-run` "Self-screenshot"). Only one PenBridge Mac app runs at a time, so sequence it after any injection-turn agent. A `SubagentStop` hook (`scripts/stray-process-check.sh`) warns about a leftover emulator or worktree-built Mac app: stop them before the next turn.
 - **Devices:** only one agent uses a physical device (S23, Mac injection) at a time; the architect grants turns in the prompt. Parallel emulator agents each get their own AVD and ApplicationId (skill `android-build-run`, "Parallel agents").
 
 ## 5. Delegate
@@ -61,6 +62,7 @@ ws file: <abs path>/ws-<id>.md.  Commit: <yes, in logical commits | no>.
 - Read the diff (`git -C <worktree> diff origin/main...HEAD`). Review before **every** PR: `reviewer-quick` for small diffs outside protocol/security/pairing/crypto/injection (it escalates if the gate fails), the full `reviewer` otherwise.
 - Verify: `scripts/test.sh`, `dotnet build PenBridge.slnx`, device checks per skill `mac-build-run` / `android-build-run`. Ask the user to do device checks you can't do.
 - Require agents to report test results as total/passed/failed (and the command), never only "N/N pass": a failing new test can hide behind an unchanged passed count. `device-preflight.sh` fails while the screen is locked: agents stop and report it as a user step.
+- **Checklist pass before each device round:** map every checklist item to a real control or code path (an `Explore` agent is fine). Fix or drop items that don't map (#160 listed a "remote settings off" toggle that was never built).
 - **Interactive device tests:** `scripts/device-test-setup.sh` preps both devices (preflight, Release Mac app, Android install, reconnect check, latency capture, filtered captures) and prints the PIDs and stop command; give the user a numbered checklist; analyse the captures afterwards (a sonnet/haiku agent for big logs, `scripts/latency-report.sh`).
 - **Fix rounds: a fresh agent per round**, briefed from the previous agent's `ws-<id>.md` (state, branch head, uncommitted files, findings to fix) — not a resumed agent with a huge context. Resume (SendMessage) only for small changes (< ~50 lines). Never fix in the main session, minor findings included.
 - Reviewer findings not fixed in the same PR become issues (`type: bug` or `type: chore`, right milestone) — never only a note in progress.md.

@@ -61,6 +61,9 @@ Scripted waits depend on these deadlines too: SimClient `DrawScripts.TapSettle` 
 `DoubleTapWindow + TapDeadlineJitterAllowance`, or the script ends before a held two-finger tap fires. Raise it when
 those defaults change.
 
+## Wait on exactly what you assert
+Await the same signal the assertion checks (the event, not a property set earlier or on another thread): #219 waited on a property, then asserted an event raised later on another thread. Use a `TaskCompletionSource`/`SemaphoreSlim` released by that event, with a timeout.
+
 ## Gesture slops
 A new gesture's slop must be at least the slop of every gesture it can still turn into. The one-finger pointer
 (ADR-0026) once started at 1.5% while a staggered two-finger tap tolerates 3.5%, so a drifting first finger became a

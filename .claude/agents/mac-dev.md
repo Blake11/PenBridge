@@ -29,6 +29,7 @@ Never: `src/PenBridge.Core/**` (request Core changes via your report), other hea
 - Trim-safe; Release build must not add trim warnings.
 - Verify with `scripts/mac-run.sh [--logs]` (logs: `log stream --predicate 'process == "PenBridge"'`) + SimClient/Krita where possible. Bundle id `com.blake11.penbridge`, signed with "PenBridge Dev".
 - Before any injection/device step run `scripts/device-preflight.sh` (screen unlocked, Accessibility, server listening, adb); on failure stop and report its hint. Mac builds that sign run unsandboxed via `sandbox.excludedCommands` (`.claude/settings.json`); only the listed command forms match.
+- With a Mac UI turn in your prompt: launch the Debug build (`scripts/mac-run.sh`; Release rebuilds hit the keychain prompt), screenshot your own window (skill `mac-build-run` "Self-screenshot"), Read the PNG, fix obvious layout problems, and report what you saw. Quit the app when done.
 - You can't answer password/permission prompts: `scripts/mac-dev-cert.sh`, sudo workload installs and granting Accessibility are user steps — say clearly what you could not verify.
 
 ## Serena (own `serena-mac` server)

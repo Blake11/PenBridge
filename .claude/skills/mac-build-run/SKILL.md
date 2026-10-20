@@ -50,6 +50,11 @@ scripts/device-test-setup.sh       # device-test round: preflight, Release app, 
 - Verify headless: `lsappinfo info "$(lsappinfo find bundleid=com.blake11.penbridge)"` shows `type="UIElement"` (no Dock icon). Agents can't confirm the status item: `screencapture` needs Screen Recording ("could not create image from display") and `osascript`/System Events needs Accessibility for the terminal — ask the user to look.
 - Idle: 0.0% CPU. Memory: section "Memory and startup" below.
 
+## Self-screenshot (Mac UI turn)
+`screencapture` works from an agent's Bash here (the terminal host already has Screen Recording). If it ever returns only wallpaper/menu bar, granting Screen Recording to the host app is a one-time user step: say so, don't pretend.
+- Run the Debug build (`scripts/mac-run.sh`), open the window under test, then capture just it: `screencapture -x -o -l <windowId> $SCRATCH/w.png`. Get the id with a swift script over `CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)` filtered on `kCGWindowOwnerName == "PenBridge"` (`kCGWindowNumber`; ~2 s; python has no Quartz). Only this window form (`screencapture -x -o -l …`) is auto-allowed; anything else prompts the user.
+- Never capture the full screen: it holds the user's other windows. Write PNGs under the scratchpad, Read them, fix clipped or overlapping layout, quit the app after.
+
 ## App icon
 - Put an Icon Composer `.icon` folder in `src/PenBridge.Mac/Resources/` and set `<AppIcon>AppIcon</AppIcon>` in the csproj. The SDK picks up `**/*.icon` and `**/*.xcassets`; actool emits `Assets.car` (macOS 26+) and `AppIcon.icns` (macOS 14/15) plus both Info.plist keys. actool's `AppIcon.icns` stops at 256 px, so the csproj target `PenBridgeUseFullSizeLegacyIcon` swaps in the committed `Resources/AppIconLegacy.icns` (16..1024 px, rendered from `Assets.car` by `scripts/lib/car-to-iconset.swift` via `gen-icons.sh`; `--check` asserts a 1024 px representation). Commit it after any icon change (#109).
 - Universal publish = an outer build plus per-RID inner builds. Workload-internal items (actool output in `_BundleResourceWithLogicalName`) exist only in the outer build, so custom targets must tolerate empty lists in inner builds and fail only when actool produced resources but no `AppIcon.icns`. `qlmanage` on a `.icon` hangs; `touch` on a nonexistent path creates a file.

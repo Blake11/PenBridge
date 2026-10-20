@@ -46,6 +46,7 @@ scripts/android-device.sh pair <ip:port> <code> | connect <ip:port>|--auto | lis
 scripts/android-run.sh [--emulator|--device <ip:port>] [--apk] [--app-id <id>] [--logs|--logs-only]   # AVD_NAME=… per agent
 scripts/device-preflight.sh [--mac] [--android <serial>|--android-auto] [--gh]   # no flags = all checks; screen unlocked, adb device, Accessibility, server listening, gh scopes; non-zero + hint (run before device/injection work)
 scripts/device-test-setup.sh --round <dir> [--device <serial>|--auto] [--release] [--no-build] | --stop <dir>   # --release = Release APK (the Mac app is always Release); exit 3 = pairing needed; preflight + Release Mac app + Android install + reconnect check + latency/log captures; prints PIDs and stop command
+scripts/stray-process-check.sh [--json]   # SubagentStop hook: warns about a leftover emulator or worktree-built Mac app (silent otherwise)
 scripts/ship-pr.sh <worktree> --title "<type>(scope): subject" --body-file <f> [--merge] [--no-test] [--dry-run]   # rebase, attribution check, test, push, PR, wait for checks, (merge), copy ws-*.md, remove worktree
 ```
 
