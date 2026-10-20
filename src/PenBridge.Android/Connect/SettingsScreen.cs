@@ -6,6 +6,7 @@ using PenBridge.Android.Pad;
 using PenBridge.Android.Services;
 using PenBridge.Core;
 using PenBridge.Core.Input;
+using PenBridge.Core.Settings;
 
 namespace PenBridge.Android.Connect;
 
@@ -26,7 +27,6 @@ internal sealed class SettingsScreen : Screen
     private LinearLayout? _paired;
     private MacSettingsSection? _mac;
     private bool _listening;
-    private TextView? _pressureValue;
 
     public SettingsScreen(MainActivity activity)
         : base(activity)
@@ -85,11 +85,10 @@ internal sealed class SettingsScreen : Screen
         content.AddView(backgroundGroup, Ui.FullWidthLp(ctx, 0));
         content.AddView(Ui.Text(ctx, "Marker opacity: the corner ticks and the centre cross."), Ui.FullWidthLp(ctx, 8));
         content.AddView(SliderRow(
-            (int)MathF.Round(SurfaceLook.MinMarkerOpacity * 100),
-            100,
-            (int)MathF.Round(settings.MarkerOpacity * 100),
+            new SliderSpec(MathF.Round(SurfaceLook.MinMarkerOpacity * 100), 100, MathF.Round(SurfaceLook.DefaultMarkerOpacity * 100), 1, false),
+            MathF.Round(settings.MarkerOpacity * 100),
             FormatPercent,
-            step => settings.MarkerOpacity = step / 100f), Ui.FullWidthLp(ctx, 8));
+            value => settings.MarkerOpacity = (float)value / 100f), Ui.FullWidthLp(ctx, 8));
         content.AddView(SwitchRow("Centre marker", settings.CentreMarker, on => settings.CentreMarker = on), Ui.FullWidthLp(ctx, 8));
 #if DEBUG
         content.AddView(
@@ -114,38 +113,27 @@ internal sealed class SettingsScreen : Screen
         // Finger pressure (used when no stylus is present and a single finger draws).
         content.AddView(Ui.Text(ctx, "Finger drawing", TextRole.Label));
         content.AddView(Ui.Text(ctx, "Pressure used when you draw with a finger instead of the S Pen."));
-        LinearLayout pressureRow = Ui.Row(ctx);
-        var seek = new SeekBar(ctx) { Max = 100, Min = MinPressurePercent };
-        seek.Progress = ToPercent(settings.FingerPressure);
-        _pressureValue = Ui.Text(ctx, FormatPercent(seek.Progress), TextRole.Title);
-        seek.ProgressChanged += (_, e) =>
-        {
-            _pressureValue.Text = FormatPercent(e.Progress);
-            if (e.FromUser)
-            {
-                settings.FingerPressure = FromPercent(e.Progress);
-            }
-        };
-        pressureRow.AddView(seek, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
-        pressureRow.AddView(_pressureValue, new LinearLayout.LayoutParams(Ui.Dp(ctx, 56), ViewGroup.LayoutParams.WrapContent));
-        content.AddView(pressureRow, Ui.FullWidthLp(ctx, 8));
+        content.AddView(SliderRow(
+            new SliderSpec(MinPressurePercent, 100, 50, 1, false),
+            ToPercent(settings.FingerPressure),
+            FormatPercent,
+            value => settings.FingerPressure = FromPercent((int)value)), Ui.FullWidthLp(ctx, 8));
 
         // Finger and palm filtering (InputFilter): tune on the phone with the touch-size readout.
         content.AddView(Ui.Text(ctx, "Fingers and palm", TextRole.Label));
         content.AddView(Ui.Text(ctx, "Finger hold before drawing: a second finger in this time starts a gesture instead of a stroke."));
         content.AddView(SliderRow(
-            0,
-            SettingsStore.MaxFingerArmDelayMs / ArmStepMs,
-            settings.FingerArmDelayMs / ArmStepMs,
-            static step => (step * ArmStepMs).ToString(CultureInfo.InvariantCulture) + " ms",
-            step => settings.FingerArmDelayMs = step * ArmStepMs), Ui.FullWidthLp(ctx, 8));
+            new SliderSpec(0, SettingsStore.MaxFingerArmDelayMs, (int)new InputFilterOptions().FingerFallbackArmDelay.TotalMilliseconds, ArmStepMs, false),
+            settings.FingerArmDelayMs,
+            static value => value.ToString("0", CultureInfo.InvariantCulture) + " ms",
+            value => settings.FingerArmDelayMs = (int)value), Ui.FullWidthLp(ctx, 8));
         content.AddView(Ui.Text(ctx, "Palm size: a contact at least this large (0 to 1 of the sensor range) is ignored as a palm. Higher lets bigger fingers through."), Ui.FullWidthLp(ctx, 12));
         content.AddView(SliderRow(
-            (int)(SettingsStore.MinPalmSizeThreshold * 100),
-            PalmOffStep,
-            settings.PalmSizeThreshold > 1f ? PalmOffStep : (int)MathF.Round(settings.PalmSizeThreshold * 100),
-            static step => step >= PalmOffStep ? "Off" : (step / 100.0).ToString("0.00", CultureInfo.InvariantCulture),
-            step => settings.PalmSizeThreshold = step >= PalmOffStep ? SettingsStore.PalmSizeThresholdOff : step / 100f), Ui.FullWidthLp(ctx, 8));
+            new SliderSpec((int)(SettingsStore.MinPalmSizeThreshold * 100), PalmOffStep, MathF.Round(new InputFilterOptions().PalmSizeThreshold * 100), 1, false),
+            settings.PalmSizeThreshold > 1f ? PalmOffStep : MathF.Round(settings.PalmSizeThreshold * 100),
+            static value => value >= PalmOffStep ? "Off" : (value / 100.0).ToString("0.00", CultureInfo.InvariantCulture),
+            value => settings.PalmSizeThreshold = value >= PalmOffStep ? SettingsStore.PalmSizeThresholdOff : (float)value / 100f,
+            ParsePalm), Ui.FullWidthLp(ctx, 8));
         content.AddView(
             SwitchRow("Show touch size on the pad (for tuning)", settings.ShowTouchSize, on => settings.ShowTouchSize = on),
             Ui.FullWidthLp(ctx, 8));
@@ -188,25 +176,15 @@ internal sealed class SettingsScreen : Screen
 
     private void OnMacSettingsChanged(object? sender, EventArgs e) => _mac?.Refresh();
 
-    /// <summary>A slider with a value label; <paramref name="changed"/> runs on user changes only.</summary>
-    private LinearLayout SliderRow(int min, int max, int value, Func<int, string> format, Action<int> changed)
+    /// <summary>
+    /// A phone-only slider: value field, −/+ and the default snap. <paramref name="changed"/> runs on user changes (see
+    /// <see cref="SliderField"/>); settings are cheap to write, so the drag throttle is enough.
+    /// </summary>
+    private View SliderRow(SliderSpec spec, double value, Func<double, string> format, Action<double> changed, Func<string, double?>? parse = null)
     {
-        var ctx = Activity;
-        LinearLayout row = Ui.Row(ctx);
-        var seek = new SeekBar(ctx) { Max = max, Min = min };
-        seek.Progress = Math.Clamp(value, min, max);
-        TextView label = Ui.Text(ctx, format(seek.Progress), TextRole.Title);
-        seek.ProgressChanged += (_, e) =>
-        {
-            label.Text = format(e.Progress);
-            if (e.FromUser)
-            {
-                changed(e.Progress);
-            }
-        };
-        row.AddView(seek, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
-        row.AddView(label, new LinearLayout.LayoutParams(Ui.Dp(ctx, 72), ViewGroup.LayoutParams.WrapContent));
-        return row;
+        var field = new SliderField(Activity, spec, format, (v, _) => changed(v), parse: parse);
+        field.SetValue(value);
+        return field.View;
     }
 
     /// <summary>A labelled switch; <paramref name="changed"/> runs on every toggle.</summary>
@@ -320,5 +298,17 @@ internal sealed class SettingsScreen : Screen
 
     private static ushort FromPercent(int percent) => (ushort)Math.Clamp((int)Math.Round(percent * ushort.MaxValue / 100.0), 1, ushort.MaxValue);
 
-    private static string FormatPercent(int percent) => percent.ToString(CultureInfo.InvariantCulture) + " %";
+    /// <summary>"off", a fraction ("0.3") or a percent ("30", above 1 up to 100) to hundredths.</summary>
+    private static double? ParsePalm(string text)
+    {
+        if (text.Trim().StartsWith("off", StringComparison.OrdinalIgnoreCase))
+        {
+            return PalmOffStep;
+        }
+
+        double? n = SliderField.ParseNumber(text);
+        return n is > 1 and <= 100 ? n : n * 100;
+    }
+
+    private static string FormatPercent(double percent) => percent.ToString("0", CultureInfo.InvariantCulture) + " %";
 }
