@@ -780,22 +780,43 @@ public sealed class SettingsWindowController : IDisposable
             Slider.Continuous = true;
             Slider.WidthAnchor.ConstraintEqualTo((nfloat)SliderWidth).Active = true;
 
-            var views = new List<NSView>(5);
+            NSStackView controls = Row(Slider, _field, _stepper);
+            controls.SetCustomSpacing(4, _field);
+            if (minLabel is null && maxLabel is null)
+            {
+                View = controls;
+                return;
+            }
+
+            // End labels sit under the track, so the track, field and stepper line up with every other slider row.
+            var ends = new NSView { TranslatesAutoresizingMaskIntoConstraints = false };
+            ends.WidthAnchor.ConstraintEqualTo((nfloat)SliderWidth).Active = true;
             if (minLabel is not null)
             {
-                views.Add(SmallLabel(minLabel));
+                NSTextField min = SmallLabel(minLabel);
+                ends.AddSubview(min);
+                min.LeadingAnchor.ConstraintEqualTo(ends.LeadingAnchor).Active = true;
+                min.TopAnchor.ConstraintEqualTo(ends.TopAnchor).Active = true;
+                min.BottomAnchor.ConstraintEqualTo(ends.BottomAnchor).Active = true;
             }
 
-            views.Add(Slider);
             if (maxLabel is not null)
             {
-                views.Add(SmallLabel(maxLabel));
+                NSTextField max = SmallLabel(maxLabel);
+                ends.AddSubview(max);
+                max.TrailingAnchor.ConstraintEqualTo(ends.TrailingAnchor).Active = true;
+                max.TopAnchor.ConstraintEqualTo(ends.TopAnchor).Active = true;
+                max.BottomAnchor.ConstraintEqualTo(ends.BottomAnchor).Active = true;
             }
 
-            views.Add(_field);
-            views.Add(_stepper);
-            View = Row([.. views]);
-            View.SetCustomSpacing(4, _field);
+            View = new NSStackView
+            {
+                Orientation = NSUserInterfaceLayoutOrientation.Vertical,
+                Alignment = NSLayoutAttribute.Leading,
+                Spacing = 2,
+            };
+            View.AddArrangedSubview(controls);
+            View.AddArrangedSubview(ends);
         }
 
         public NSSlider Slider { get; }
@@ -888,6 +909,7 @@ public sealed class SettingsWindowController : IDisposable
             NSTextField label = NSTextField.CreateLabel(text);
             label.Font = NSFont.SystemFontOfSize(NSFont.SmallSystemFontSize)!;
             label.TextColor = NSColor.SecondaryLabel;
+            label.TranslatesAutoresizingMaskIntoConstraints = false;
             return label;
         }
 
