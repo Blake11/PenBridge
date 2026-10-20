@@ -27,6 +27,17 @@ inputs:
     required: false
     default: "true"
 
+  exclude:
+    description: >
+      Space-separated tar patterns (relative to DOTNET_ROOT, starting with "./") left out of
+      the cache archive, for packs no build here uses. The archive size is the restore time:
+      the Android packs are 3 GB unpacked and a full archive restored no faster than the
+      install itself. A build that does need an excluded pack fails with a missing-pack error.
+      A non-empty list gets its own cache key (suffix -slim).
+      GNU tar only (Linux runners).
+    required: false
+    default: ""
+
 outputs:
   cache-hit:
     description: '"true" when the workloads came from the cache'
@@ -40,6 +51,7 @@ runs:
       shell: bash
       env:
         WORKLOADS: ${{ inputs.workloads }}
+        EXCLUDE: ${{ inputs.exclude }}
       run: |
         set -euo pipefail
         if [ -z "${DOTNET_ROOT:-}" ] || [ ! -d "$DOTNET_ROOT" ]; then
@@ -62,7 +74,7 @@ runs:
         ids=$(printf '%s' "$WORKLOADS" | tr -s ' ' '+')
         {
           echo "workload-set=$ws"
-          echo "base-key=dotnet-workloads-v2-${RUNNER_OS}-${RUNNER_ARCH}-xcode${xcode}-sdk${sdk}-ws${ws}-${ids}"
+          echo "base-key=dotnet-workloads-v2-${RUNNER_OS}-${RUNNER_ARCH}-xcode${xcode}-sdk${sdk}-ws${ws}-${ids}${EXCLUDE:+-slim}"
           echo "archive=${RUNNER_TEMP}/dotnet-workloads.tar"
         } >> "$GITHUB_OUTPUT"
         echo "SDK ${sdk}, workload set ${ws}, Xcode ${xcode}"
@@ -111,6 +123,7 @@ runs:
         WORKLOADS: ${{ inputs.workloads }}
         WORKLOAD_SET: ${{ steps.plan.outputs.workload-set }}
         ARCHIVE: ${{ steps.plan.outputs.archive }}
+        EXCLUDE: ${{ inputs.exclude }}
         # Snapshot (and save) on a miss and after a rejected restore, so a bad entry is replaced.
         SNAPSHOT: ${{ inputs.save == 'true' }}
         RESTORED: ${{ steps.restore.outputs.cache-matched-key != '' }}
@@ -139,8 +152,11 @@ runs:
               (cd "$DOTNET_ROOT" && find ./metadata/workloads \( -type f -o -type l \))
             fi
           } | LC_ALL=C sort -u > "$added"
-          tar -cf "$ARCHIVE" -C "$DOTNET_ROOT" -T "$added"
-          echo "Workload cache: $(wc -l < "$added" | tr -d ' ') files, $(du -h "$ARCHIVE" | cut -f1)"
+          excludes=()
+          # shellcheck disable=SC2086 # EXCLUDE is a space-separated list of patterns
+          for pattern in $EXCLUDE; do excludes+=("--exclude=$pattern"); done
+          tar -cf "$ARCHIVE" -C "$DOTNET_ROOT" ${excludes[@]+"${excludes[@]}"} -T "$added"
+          echo "Workload cache: $(tar -tf "$ARCHIVE" | wc -l | tr -d ' ') files, $(du -h "$ARCHIVE" | cut -f1)"
           echo "archived=true" >> "$GITHUB_OUTPUT"
         fi
 

@@ -286,7 +286,9 @@ jobs:
         uses: ./.github/actions/dotnet-workload
         with:
           workloads: android
-          save: ${{ github.event_name != 'pull_request' }}
+          # The AOT cross compilers are half of the archive and only AOT builds use them.
+          exclude: "./packs/Microsoft.NETCore.App.Runtime.AOT.*"
+          save: true # TEMP: prove the cache on this PR
 
       - name: DIAG workload sizes
         run: |
