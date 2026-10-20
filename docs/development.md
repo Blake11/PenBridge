@@ -61,14 +61,14 @@ The bootstrap script never runs sudo. It prints these commands for you instead.
    ```bash
    cd <repo> && sudo dotnet workload install macos android ios
    ```
-   Run it from the repo so `global.json` selects the right SDK band. Afterwards, run `dotnet workload update` (also with sudo) to move to newer workload sets.
+   Run it from the repo so `global.json` selects the right SDK band. CI pins the workload set in `.github/toolchain.env`; install that set locally with `--version` if you want to match it, and avoid `dotnet workload update` unless you also bump the pin (see the Xcode note below).
 2. **Xcode.** Install it from the App Store, launch it once, then:
    ```bash
    sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
    sudo xcodebuild -license accept
    sudo xcodebuild -runFirstLaunch
    ```
-   The `macos` workload is built against one specific Xcode. The current workload set ships the macOS 27.0 SDK pack, which targets Xcode 27. If the build reports an Xcode version mismatch, install the Xcode it names. As a temporary escape hatch for a minor mismatch, use `-p:ValidateXcodeVersion=false`.
+   The `macos` workload is built against one specific Xcode. The current workload set ships the macOS 27.0 SDK pack, which targets Xcode 27. If the build reports an Xcode version mismatch, install the Xcode it names. As a temporary escape hatch for a minor mismatch, use `-p:ValidateXcodeVersion=false`. CI and release builds pin the workload set and Xcode together in `.github/toolchain.env`; a local `dotnet workload update` can move past it, so if a local build wants a newer Xcode than CI uses, install that Xcode or return to the pinned set with `sudo dotnet workload update --version <set>`.
 3. **Mac dev signing identity** (once, no sudo): run `scripts/mac-dev-cert.sh` (see below).
 
 ## Daily workflows

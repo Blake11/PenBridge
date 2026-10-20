@@ -1,14 +1,15 @@
 name: Install .NET workloads (cached)
 description: >
-  Installs .NET workloads with a cache. Run it after actions/setup-dotnet (and
+  Installs .NET workloads with a cache, at the workload set pinned in
+  .github/toolchain.env. Run it after actions/setup-dotnet (and
   select-xcode on macOS). The cache holds only the files that
   `dotnet workload install` added under DOTNET_ROOT (packs, manifests, the
   workload set, install records), captured by listing DOTNET_ROOT before and
   after the install. The key covers the runner OS and arch, the selected Xcode,
-  the exact SDK version and the latest workload set for its band, so a new SDK,
+  the exact SDK version and the pinned workload set, so a new SDK,
   workload set or Xcode is a cache miss. The install pins that same workload
-  set (`--version`), so a hit and a miss give the same packs. If the workload
-  set lookup fails, it installs without the cache. After a restore it checks
+  set (`--version`), so a hit and a miss give the same packs. If the pinned workload
+  set is missing or malformed, it fails hard. After a restore it checks
   `dotnet workload list` and installs normally if anything is missing. Each
   save gets a unique key (base key plus run id) and a restore takes the newest
   entry under the base key, so a bad entry heals: the run that rejects it
@@ -46,11 +47,12 @@ runs:
           exit 1
         fi
         sdk=$(dotnet --version)
-        # Latest workload set for this SDK's feature band; empty (no cache) if the lookup fails.
-        ws=$(dotnet workload search version --take 1 2>/dev/null | tail -n 1 | tr -d '[:space:]' || true)
+        # The workload set is pinned in .github/toolchain.env (shared with select-xcode), so a new
+        # set can never change what main or a release builds with; bumping it is an explicit edit.
+        ws=$(sed -n 's/^WORKLOAD_SET=//p' "${GITHUB_WORKSPACE}/.github/toolchain.env" | tr -d '[:space:]')
         if ! printf '%s' "$ws" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
-          echo "::warning::Could not resolve the workload set version (got '${ws}'); installing without the workload cache."
-          ws=""
+          echo "::error::WORKLOAD_SET in .github/toolchain.env is missing or malformed (got '${ws}')."
+          exit 1
         fi
         xcode=none
         if command -v xcodebuild >/dev/null 2>&1; then
@@ -60,14 +62,13 @@ runs:
         ids=$(printf '%s' "$WORKLOADS" | tr -s ' ' '+')
         {
           echo "workload-set=$ws"
-          echo "base-key=dotnet-workloads-v2-${RUNNER_OS}-${RUNNER_ARCH}-xcode${xcode}-sdk${sdk}-ws${ws:-none}-${ids}"
+          echo "base-key=dotnet-workloads-v2-${RUNNER_OS}-${RUNNER_ARCH}-xcode${xcode}-sdk${sdk}-ws${ws}-${ids}"
           echo "archive=${RUNNER_TEMP}/dotnet-workloads.tar"
         } >> "$GITHUB_OUTPUT"
-        echo "SDK ${sdk}, workload set ${ws:-unknown}, Xcode ${xcode}"
+        echo "SDK ${sdk}, workload set ${ws}, Xcode ${xcode}"
 
     - name: Restore workload cache
       id: restore
-      if: steps.plan.outputs.workload-set != ''
       uses: actions/cache/restore@v6
       with:
         path: ${{ steps.plan.outputs.archive }}
@@ -111,7 +112,7 @@ runs:
         WORKLOAD_SET: ${{ steps.plan.outputs.workload-set }}
         ARCHIVE: ${{ steps.plan.outputs.archive }}
         # Snapshot (and save) on a miss and after a rejected restore, so a bad entry is replaced.
-        SNAPSHOT: ${{ inputs.save == 'true' && steps.plan.outputs.workload-set != '' }}
+        SNAPSHOT: ${{ inputs.save == 'true' }}
         RESTORED: ${{ steps.restore.outputs.cache-matched-key != '' }}
       run: |
         set -euo pipefail
@@ -128,11 +129,7 @@ runs:
           fi
         fi
         # shellcheck disable=SC2086 # WORKLOADS is a space-separated list of IDs
-        if [ -n "$WORKLOAD_SET" ]; then
-          dotnet workload install $WORKLOADS --version "$WORKLOAD_SET"
-        else
-          dotnet workload install $WORKLOADS
-        fi
+        dotnet workload install $WORKLOADS --version "$WORKLOAD_SET"
         if [ "$SNAPSHOT" = "true" ]; then
           # New files, plus all install records (some may exist already and only change).
           added="${RUNNER_TEMP}/dotnet-files-added.txt"

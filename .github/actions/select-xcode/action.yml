@@ -3,24 +3,34 @@ description: >
   Selects the exact Xcode that the installed .NET macos/ios workload packs
   require and fails fast when the runner image does not have it. The workload
   validates Xcode major.minor, so "latest-stable" on a generic macOS image is
-  not enough. Bump `xcode-version` (and the job's runner label) together with
-  the workload.
+  not enough. The version comes from XCODE_VERSION in .github/toolchain.env,
+  next to the WORKLOAD_SET pin it must match; bump both together (and the
+  job's runner label if the image lacks that Xcode).
 
 inputs:
   xcode-version:
-    description: Xcode version to select (matches /Applications/Xcode_<version>.app)
+    description: >
+      Xcode version to select (matches /Applications/Xcode_<version>.app).
+      Empty = XCODE_VERSION from .github/toolchain.env.
     required: false
-    default: "27.0"
+    default: ""
 
 runs:
   using: composite
   steps:
-    - name: Select Xcode ${{ inputs.xcode-version }}
+    - name: Select Xcode
       shell: bash
       env:
         XCODE_VERSION: ${{ inputs.xcode-version }}
       run: |
         set -euo pipefail
+        if [ -z "$XCODE_VERSION" ]; then
+          XCODE_VERSION=$(sed -n 's/^XCODE_VERSION=//p' "${GITHUB_WORKSPACE}/.github/toolchain.env" | tr -d '[:space:]')
+        fi
+        if ! printf '%s' "$XCODE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+$'; then
+          echo "::error::XCODE_VERSION is missing or malformed in .github/toolchain.env (got '${XCODE_VERSION}')."
+          exit 1
+        fi
         app="/Applications/Xcode_${XCODE_VERSION}.app"
         if [ ! -d "$app" ]; then
           echo "::error::Xcode ${XCODE_VERSION} not found at $app on runner image '${ImageOS:-unknown}' (${ImageVersion:-unknown}). The .NET macos/ios workload needs it; use a runner label whose image ships it (see actions/runner-images README). Installed:"
