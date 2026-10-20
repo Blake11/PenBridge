@@ -286,15 +286,8 @@ jobs:
         uses: ./.github/actions/dotnet-workload
         with:
           workloads: android
-          # The AOT cross compilers are half of the archive and only AOT builds use them.
-          exclude: "./packs/Microsoft.NETCore.App.Runtime.AOT.*"
-          save: true # TEMP: prove the cache on this PR
-
-      - name: DIAG workload sizes
-        run: |
-          du -sh "$DOTNET_ROOT"/* | sort -h | tail -8
-          du -sh "$DOTNET_ROOT"/packs/* | sort -h | tail -12
-          df -h /home/runner | tail -1
+          # The archive is ~1 GB compressed and restoring it takes as long as the install.
+          cache: "false"
 
       - name: Install Android SDK dependencies
         run: >
