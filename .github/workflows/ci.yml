@@ -151,8 +151,9 @@ jobs:
     name: macOS build
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.mac == 'true') }}
-    # The .NET macos/ios workload packs require Xcode 27.0; macos-latest (macos-26) ships
-    # only Xcode 26.x. xcode-27 is the hosted image with Xcode 27 (preview label).
+    # The .NET macos/ios workload packs require the Xcode pinned next to the workload set in
+    # .github/toolchain.env; macos-latest (macos-26) ships only Xcode 26.x. xcode-27 is the
+    # hosted image with Xcode 27 (preview label).
     runs-on: xcode-27
     timeout-minutes: 30
     steps:
@@ -265,8 +266,9 @@ jobs:
     name: iOS build (placeholder)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.ios == 'true') }}
-    # The .NET macos/ios workload packs require Xcode 27.0; macos-latest (macos-26) ships
-    # only Xcode 26.x. xcode-27 is the hosted image with Xcode 27 (preview label).
+    # The .NET macos/ios workload packs require the Xcode pinned next to the workload set in
+    # .github/toolchain.env; macos-latest (macos-26) ships only Xcode 26.x. xcode-27 is the
+    # hosted image with Xcode 27 (preview label).
     runs-on: xcode-27
     timeout-minutes: 30
     # The iOS head is a placeholder that is never released, but it is a required

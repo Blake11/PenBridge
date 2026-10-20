@@ -68,7 +68,7 @@ The bootstrap script never runs sudo. It prints these commands for you instead.
    sudo xcodebuild -license accept
    sudo xcodebuild -runFirstLaunch
    ```
-   The `macos` workload is built against one specific Xcode. The current workload set ships the macOS 27.0 SDK pack, which targets Xcode 27. If the build reports an Xcode version mismatch, install the Xcode it names. As a temporary escape hatch for a minor mismatch, use `-p:ValidateXcodeVersion=false`.
+   The `macos` workload is built against one specific Xcode. The current workload set ships the macOS 27.0 SDK pack, which targets Xcode 27. If the build reports an Xcode version mismatch, install the Xcode it names. As a temporary escape hatch for a minor mismatch, use `-p:ValidateXcodeVersion=false`. CI and release builds pin the workload set and Xcode together in `.github/toolchain.env`; a local `dotnet workload update` can move past it, so if a local build wants a newer Xcode than CI uses, install that Xcode or return to the pinned set with `sudo dotnet workload update --version <set>`.
 3. **Mac dev signing identity** (once, no sudo): run `scripts/mac-dev-cert.sh` (see below).
 
 ## Daily workflows
