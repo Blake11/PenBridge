@@ -49,6 +49,10 @@ jobs:
       mac: ${{ (github.event_name != 'pull_request' && github.event_name != 'push') || steps.filter.outputs.mac == 'true' }}
       android: ${{ (github.event_name != 'pull_request' && github.event_name != 'push') || steps.filter.outputs.android == 'true' }}
       ios: ${{ (github.event_name != 'pull_request' && github.event_name != 'push' && github.event.schedule != '23 3 * * 1-6') || steps.filter.outputs.ios == 'true' }}
+      # Inputs and outputs of gen-icons.sh --check, a step of the macOS job.
+      icons: ${{ (github.event_name != 'pull_request' && github.event_name != 'push') || steps.filter.outputs.icons == 'true' }}
+      # The Debug Mac build is the only compile of the `#if DEBUG` code; PRs and pushes skip it.
+      full: ${{ github.event_name != 'pull_request' && github.event_name != 'push' }}
     steps:
       # On pull_request the filter lists the PR's files through the API, so it needs no
       # checkout. On push it diffs against the commit before the push with git, so it needs the
@@ -67,10 +71,22 @@ jobs:
         if: env.FILTERED == 'true'
         with:
           filters: |
+            # `scripts/` lists only what CI and build-release.yml run (test.sh, check-bundle.sh,
+            # gen-icons.sh, mac-sign.sh, smoke-trimmed-pairing.sh) and what they source or run
+            # (lib/common.sh, lib/*.cs, lib/*.swift). Dev-only scripts (ship-pr, verify-release,
+            # device-*, android-*, doctor, bootstrap, mac-run, ...) trigger no build. When a
+            # workflow starts running another script, add it here.
             infra: &infra
               - '.github/workflows/**'
               - '.github/actions/**'
-              - 'scripts/**'
+              - 'scripts/test.sh'
+              - 'scripts/check-bundle.sh'
+              - 'scripts/gen-icons.sh'
+              - 'scripts/mac-sign.sh'
+              - 'scripts/smoke-trimmed-pairing.sh'
+              - 'scripts/lib/common.sh'
+              - 'scripts/lib/*.cs'
+              - 'scripts/lib/*.swift'
               - '.githooks/**'
               - '.github/toolchain.env'
             core: &core
@@ -98,6 +114,22 @@ jobs:
             # The iOS placeholder is never released: only its own sources, the CI definition, the
             # SDK pin and the bundle check it runs trigger it on a PR or push. Other Core-side
             # breakage still surfaces in the Sunday full run.
+            # Inputs and outputs of gen-icons.sh --check: the masters, the generator and its
+            # helpers, and every file it writes (a hand edit would otherwise go unchecked). The
+            # check is a macOS job step, and every path here also triggers that job.
+            icons:
+              - '.github/workflows/ci.yml'
+              - '.github/toolchain.env'
+              - 'assets/icon/**'
+              - 'scripts/gen-icons.sh'
+              - 'scripts/lib/common.sh'
+              - 'scripts/lib/gen-icons.cs'
+              - 'scripts/lib/car-to-iconset.swift'
+              - 'src/PenBridge.Android/Resources/drawable/ic_launcher_*.xml'
+              - 'src/PenBridge.Android/Resources/mipmap-anydpi-v26/ic_launcher*.xml'
+              - 'src/PenBridge.Mac/Resources/AppIcon.icon/**'
+              - 'src/PenBridge.Mac/Resources/AppIconLegacy.icns*'
+              - 'src/PenBridge.Mac/Resources/Assets.xcassets/**'
             ios:
               - '.github/workflows/**'
               - '.github/actions/**'
@@ -175,7 +207,9 @@ jobs:
 
       # Generated icons (Android drawables, Mac AppIcon.icon + MenuBar imagesets) must match the
       # masters in assets/icon (issue #103). Needs actool, not the workload, so it runs first.
+      # Runs only when an icon input or output changed, and in scheduled and manual runs.
       - name: Check generated icons
+        if: ${{ needs.changes.result != 'success' || needs.changes.outputs.icons == 'true' }}
         run: |
           if ! scripts/gen-icons.sh --check; then
             echo "::error title=gen-icons.sh --check failed::See the log (stale icons: run scripts/gen-icons.sh and commit the result)"
@@ -207,6 +241,7 @@ jobs:
       # compile of it. Debug also runs ILLink (copy mode), which once dropped BouncyCastle from
       # the bundle (issue #46); the Debug app is what scripts/mac-run.sh runs by default.
       - name: Build (Debug)
+        if: ${{ needs.changes.result != 'success' || needs.changes.outputs.full == 'true' }}
         run: dotnet build src/PenBridge.Mac/PenBridge.Mac.csproj -c Debug
 
       # NativeAOT: J-PAKE code compiled into the executable (dSYM symbols, UUID-matched), the ILLink
@@ -214,7 +249,14 @@ jobs:
       # hits NSObject's unread preload fields). Debug: the bundled assemblies. The head pairs, so
       # pairing must be present.
       - name: Check app bundles
-        run: scripts/check-bundle.sh --require-pairing --mac Release --mac Debug
+        env:
+          FULL: ${{ needs.changes.result != 'success' || needs.changes.outputs.full == 'true' }}
+        run: |
+          if [ "$FULL" = "true" ]; then
+            scripts/check-bundle.sh --require-pairing --mac Release --mac Debug
+          else
+            scripts/check-bundle.sh --require-pairing --mac Release
+          fi
 
   android-build:
     name: Android build
@@ -245,6 +287,12 @@ jobs:
         with:
           workloads: android
           save: ${{ github.event_name != 'pull_request' }}
+
+      - name: DIAG workload sizes
+        run: |
+          du -sh "$DOTNET_ROOT"/* | sort -h | tail -8
+          du -sh "$DOTNET_ROOT"/packs/* | sort -h | tail -12
+          df -h /home/runner | tail -1
 
       - name: Install Android SDK dependencies
         run: >
