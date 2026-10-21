@@ -8,10 +8,10 @@ using PenBridge.Mac.Services;
 namespace PenBridge.Mac.Settings;
 
 /// <summary>
-/// Owns the one picker overlay: the region drag (ADR-0031, ADR-0035; Settings → Set region… and the menu's Display ▸
-/// Region…) and the window click picker (ADR-0036, Display ▸ Window…), so at most one of them exists. The region
-/// overlay covers the display the region applies to (the resolved target) and stores the dragged rect as that
-/// display's region; the window picker hands the clicked window to <see cref="WindowTarget"/>.
+/// Owns the one picker overlay: the region editor (ADR-0031, ADR-0035 and its #243 amendment; Settings → Set region…
+/// and the menu's Display ▸ Region…) and the window click picker (ADR-0036, Display ▸ Window…), so at most one of them exists. The region
+/// editor covers the display the region applies to (the resolved target, which is a window target's display) and on
+/// Done stores the selection as that display's region and ends a window target; the window picker hands the clicked window to <see cref="WindowTarget"/>.
 /// </summary>
 /// <remarks>Main thread only. A display reconfiguration or a target change cancels an open overlay (its screen may be
 /// gone). Nothing is observed beyond the resolver's events.</remarks>
@@ -95,23 +95,23 @@ public sealed class RegionPicker : IDisposable
             return false;
         }
 
-        // Picking a region ends a window target (ADR-0036); the overlay then edits the display's stored region.
-        _windowTarget.Clear();
-
-        double? aspect = null;
-        if (_store.RegionAspectLock)
-        {
-            CGRect frame = screen.Frame;
-            aspect = _phoneSurfaceAspect?.Invoke() ?? (frame.Width / frame.Height);
-        }
-
+        // The aspect lock keeps the phone surface's ratio, else the display's; the bar's toggle writes the setting.
+        CGRect frame = screen.Frame;
+        double aspect = _phoneSurfaceAspect?.Invoke() ?? (frame.Width / frame.Height);
         string uuid = display.Uuid;
         RegionOverlay? overlay = null;
         overlay = new RegionOverlay(
             screen,
             _store.GetRegion(uuid),
             aspect,
-            region => _store.SetRegion(uuid, region),
+            _store.RegionAspectLock,
+            locked => _store.RegionAspectLock = locked,
+            region =>
+            {
+                // Done picks a region, which ends a window target (ADR-0036); Cancel keeps it.
+                _windowTarget.Clear();
+                _store.SetRegion(uuid, region);
+            },
             () => OnOverlayClosed(overlay!, closed));
         _overlay = overlay;
         OpenChanged?.Invoke(this, EventArgs.Empty);
