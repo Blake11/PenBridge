@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.3.0](https://github.com/Blake11/PenBridge/compare/v1.2.1...v1.3.0) (2026-10-21)
+
+
+### Features
+
+* **mac:** edit the region like the macos selection tool ([#245](https://github.com/Blake11/PenBridge/issues/245)) ([68f8c00](https://github.com/Blake11/PenBridge/commit/68f8c004ede8ab6a25710c5d286e46b3699e362c))
+* **mac:** map the pad to a picked window that it follows ([#242](https://github.com/Blake11/PenBridge/issues/242)) ([26c1798](https://github.com/Blake11/PenBridge/commit/26c1798fb5960621ac2f32ed50975650695329ed))
+* **mac:** order the display menu and let the region editor move the selection ([#248](https://github.com/Blake11/PenBridge/issues/248)) ([03ceb50](https://github.com/Blake11/PenBridge/commit/03ceb5054a55b7ff235de3cf9e0a8643fcc39d1b))
+* **mac:** pick a region from the menu bar and tint outside it ([#240](https://github.com/Blake11/PenBridge/issues/240)) ([b9891ff](https://github.com/Blake11/PenBridge/commit/b9891ff6896d08acc24ce31aff1eba6daec67ade))
+* **mac:** pick a region or window while all displays is the target ([#251](https://github.com/Blake11/PenBridge/issues/251)) ([d0ab6fe](https://github.com/Blake11/PenBridge/commit/d0ab6fecaaf8483989ec6c8e7149fe3f2a961e4f))
+
+
+### Documentation
+
+* drop the driverkit digitizer from the roadmap ([#244](https://github.com/Blake11/PenBridge/issues/244)) ([c3e4bc0](https://github.com/Blake11/PenBridge/commit/c3e4bc09c9b26e04b7f91d48b5daf48f5c85dd93)), closes [#17](https://github.com/Blake11/PenBridge/issues/17)
+* milestone setup step and test-wait learnings ([#237](https://github.com/Blake11/PenBridge/issues/237)) ([bddce80](https://github.com/Blake11/PenBridge/commit/bddce80e2825b7c9ad377275031cdb0fe90ecdfe)), closes [#18](https://github.com/Blake11/PenBridge/issues/18) [#28](https://github.com/Blake11/PenBridge/issues/28) [#230](https://github.com/Blake11/PenBridge/issues/230)
+* readme for 1.3.0 ([#253](https://github.com/Blake11/PenBridge/issues/253)) ([85a3a45](https://github.com/Blake11/PenBridge/commit/85a3a455365dcd79f69a737d48dd8254ff01e198))
+
 ## [1.2.1](https://github.com/Blake11/PenBridge/compare/v1.2.0...v1.2.1) (2026-10-20)
 
 
