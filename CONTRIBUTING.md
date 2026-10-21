@@ -97,6 +97,8 @@ When you add a project or a build-affecting root file, add it to the filters in 
 
 Before pushing, run `scripts/test.sh` locally.
 
+The Core tests job publishes the test report and Core coverage in the run's job summary, with the JUnit and HTML coverage reports as artifacts (`core-test-results`, `core-coverage-report`). Coverage is informational, not a gate. Locally: `scripts/test.sh --coverage --coverage-output-format cobertura`.
+
 ## Issues and progress tracking
 
 GitHub issues are the plan of record (ADR-0014). Each roadmap phase is an epic issue with a matching milestone, each workstream has its own issue, and bugs are `type: bug` issues. Every PR references its issue with `Closes #N` (or `Refs #N`).

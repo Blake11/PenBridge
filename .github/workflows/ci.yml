@@ -168,6 +168,39 @@ jobs:
           dotnet test --project tests/PenBridge.Core.Tests
           -c Release
           --results-directory TestResults
+          --report-xunit-junit --report-xunit-markdown
+          --coverage --coverage-output-format cobertura --coverage-output coverage.cobertura.xml
+          --long-running 60
+          --timeout 10m
+
+      - name: Test report summary
+        if: always()
+        run: |
+          shopt -s globstar nullglob
+          for f in TestResults/**/*.md; do cat "$f" >> "$GITHUB_STEP_SUMMARY"; done
+
+      # Coverage of PenBridge.Core only (the heads can't run tests in CI). Informational: no gate.
+      - name: Coverage report
+        if: always() && hashFiles('TestResults/**/*.cobertura.xml') != ''
+        uses: danielpalme/ReportGenerator-GitHub-Action@v5
+        with:
+          reports: TestResults/**/*.cobertura.xml
+          targetdir: coverage-report
+          reporttypes: MarkdownSummaryGithub;HtmlInline
+          assemblyfilters: '+PenBridge.Core'
+          title: PenBridge.Core coverage
+
+      - name: Coverage summary
+        if: always() && hashFiles('coverage-report/SummaryGithub.md') != ''
+        run: cat coverage-report/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: always() && hashFiles('coverage-report/**') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: core-coverage-report
+          path: coverage-report
+          if-no-files-found: ignore
 
       - name: Build SimClient
         run: dotnet build tools/PenBridge.SimClient -c Release
