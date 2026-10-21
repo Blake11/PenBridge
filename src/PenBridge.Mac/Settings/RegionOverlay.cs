@@ -50,6 +50,10 @@ internal sealed class RegionOverlay : IDisposable
             IsOpaque = false,
             BackgroundColor = NSColor.Clear,
             HasShadow = false,
+
+            // A non-opaque window passes clicks through its fully transparent pixels unless this is set explicitly:
+            // the clear selection would let a move-drag fall through to the app below.
+            IgnoresMouseEvents = false,
             CollectionBehavior = NSWindowCollectionBehavior.CanJoinAllSpaces | NSWindowCollectionBehavior.FullScreenAuxiliary,
         };
 
@@ -357,6 +361,14 @@ internal sealed class RegionOverlay : IDisposable
 
                 NSColor.Black.ColorWithAlphaComponent(0.45f).SetFill();
                 dim.Fill();
+            }
+
+            if (selection.Width > 0 && selection.Height > 0)
+            {
+                // Imperceptible, but not fully transparent, so the window server also routes clicks inside the
+                // selection to the overlay (belt and braces with IgnoresMouseEvents = false).
+                NSColor.Black.ColorWithAlphaComponent(0.01f).SetFill();
+                NSGraphics.RectFill(selection);
             }
 
             if (selection.Width <= 0 || selection.Height <= 0)
