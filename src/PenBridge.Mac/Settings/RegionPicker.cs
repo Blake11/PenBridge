@@ -214,9 +214,13 @@ public sealed class RegionPicker : IDisposable
                 return;
             }
 
+            bool followed = picked is not null && _windowTarget.Track(picked);
+
+            // Before the modal alert, so the Settings window's area choice is already back on the current target.
+            OpenChanged?.Invoke(this, EventArgs.Empty);
             if (picked is not null)
             {
-                if (_windowTarget.Track(picked))
+                if (followed)
                 {
                     ActivateApp(picked.Pid);
                 }
@@ -225,8 +229,6 @@ public sealed class RegionPicker : IDisposable
                     ShowCannotFollow(picked.OwnerName);
                 }
             }
-
-            OpenChanged?.Invoke(this, EventArgs.Empty);
         });
     }
 

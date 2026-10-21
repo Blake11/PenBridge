@@ -72,7 +72,7 @@ public sealed partial class AppDelegate : NSApplicationDelegate
 
         _regionPicker = new RegionPicker(_settings, _resolver, _windowTarget, () => _host.PhoneSurfaceAspect);
         _regionTint = new RegionTint(_settings, _resolver, _host, _regionPicker, _windowTarget);
-        _settingsWindow = new SettingsWindowController(_settings, _resolver, _host, _regionPicker, _windowTarget);
+        _settingsWindow = new SettingsWindowController(_settings, _resolver, _host, _injector, _regionPicker, _windowTarget);
         _statusItem = new StatusItemController(_host, _injector, _resolver, _settings, _pairing, _hotkey, _settingsWindow, _regionPicker, _windowTarget, _loggers.CreateLogger<StatusItemController>());
         Log.Launched(_log, NSBundle.MainBundle.ObjectForInfoDictionary("CFBundleShortVersionString")?.ToString() ?? "?");
 

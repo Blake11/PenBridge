@@ -34,6 +34,7 @@ public sealed class SettingsWindowController : IDisposable
     private readonly SettingsStore _store;
     private readonly DisplayTargetResolver _resolver;
     private readonly ServerHost _host;
+    private readonly CGEventTabletInjector _injector;
     private readonly RegionPicker _picker;
     private readonly WindowTarget _windowTarget;
     private readonly List<string> _targetValues = [];
@@ -80,18 +81,21 @@ public sealed class SettingsWindowController : IDisposable
     /// <param name="store">The settings.</param>
     /// <param name="resolver">Displays for the target popup and the region overlay; driven like the menu does.</param>
     /// <param name="host">For "Allow takeover", which the host applies and persists.</param>
+    /// <param name="injector">Its Accessibility changes re-enable or disable the Window… choice.</param>
     /// <param name="picker">The one region overlay, shared with the menu's Display ▸ Region….</param>
     /// <param name="windowTarget">The window target (ADR-0036), one of the three area choices.</param>
-    public SettingsWindowController(SettingsStore store, DisplayTargetResolver resolver, ServerHost host, RegionPicker picker, WindowTarget windowTarget)
+    public SettingsWindowController(SettingsStore store, DisplayTargetResolver resolver, ServerHost host, CGEventTabletInjector injector, RegionPicker picker, WindowTarget windowTarget)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(resolver);
         ArgumentNullException.ThrowIfNull(host);
+        ArgumentNullException.ThrowIfNull(injector);
         ArgumentNullException.ThrowIfNull(picker);
         ArgumentNullException.ThrowIfNull(windowTarget);
         _store = store;
         _resolver = resolver;
         _host = host;
+        _injector = injector;
         _picker = picker;
         _windowTarget = windowTarget;
     }
@@ -113,6 +117,7 @@ public sealed class SettingsWindowController : IDisposable
             _picker.OpenChanged += OnDisplaysChanged;
             _windowTarget.Changed += OnDisplaysChanged;
             _windowTarget.FrameChanged += OnWindowFrameChanged;
+            _injector.AccessibilityChanged += OnDisplaysChanged; // Window… needs the grant
             Refresh();
             _window!.Center();
         }
@@ -573,6 +578,7 @@ public sealed class SettingsWindowController : IDisposable
         _picker.OpenChanged -= OnDisplaysChanged;
         _windowTarget.Changed -= OnDisplaysChanged;
         _windowTarget.FrameChanged -= OnWindowFrameChanged;
+        _injector.AccessibilityChanged -= OnDisplaysChanged;
         _pad.PressureSampled -= OnPadSampled;
 
         SettingsWindow? window = _window;
