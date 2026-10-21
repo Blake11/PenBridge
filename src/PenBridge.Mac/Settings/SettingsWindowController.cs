@@ -45,11 +45,10 @@ public sealed class SettingsWindowController : IDisposable
 
     // Display
     private NSPopUpButton _target = null!;
-    private NSGridRow _windowRow = null!;
-    private NSTextField _windowText = null!;
+    private NSButton _areaFull = null!;
+    private NSButton _areaWindow = null!;
+    private NSButton _areaRegion = null!;
     private NSTextField _regionText = null!;
-    private NSButton _setRegion = null!;
-    private NSButton _fullDisplay = null!;
     private NSButton _aspectLock = null!;
     private NSButton _regionTint = null!;
 
@@ -82,7 +81,7 @@ public sealed class SettingsWindowController : IDisposable
     /// <param name="resolver">Displays for the target popup and the region overlay; driven like the menu does.</param>
     /// <param name="host">For "Allow takeover", which the host applies and persists.</param>
     /// <param name="picker">The one region overlay, shared with the menu's Display ▸ Region….</param>
-    /// <param name="windowTarget">The window target (ADR-0036), shown with a "Use display" button while active.</param>
+    /// <param name="windowTarget">The window target (ADR-0036), one of the three area choices.</param>
     public SettingsWindowController(SettingsStore store, DisplayTargetResolver resolver, ServerHost host, RegionPicker picker, WindowTarget windowTarget)
     {
         ArgumentNullException.ThrowIfNull(store);
@@ -208,12 +207,15 @@ public sealed class SettingsWindowController : IDisposable
     private NSGridView BuildDisplayTab()
     {
         _target = Popup(OnTargetChosen);
-        _windowText = NSTextField.CreateLabel(string.Empty);
-        NSButton useDisplay = NSButton.CreateButton("Use display", () => _windowTarget.Clear());
-        useDisplay.ToolTip = "Stop following the window and map the pen to its display again.";
+
+        // The area (#247), as in the menu's Display ▸: exactly one of the three is selected (Refresh sets it from the
+        // state, so a cancelled picker leaves the old choice). Clicking Window… or Region… again picks anew.
+        _areaFull = Radio("Full display", () => _picker.UseFullDisplay());
+        _areaFull.ToolTip = "Map the pen to the whole display.";
+        _areaWindow = Radio("Window…", OnPickWindow);
+        _areaRegion = Radio("Region…", OnSetRegion);
+        _areaRegion.ToolTip = "Drag the part of the display the pen maps to. Esc cancels.";
         _regionText = NSTextField.CreateLabel(string.Empty);
-        _setRegion = NSButton.CreateButton("Set region…", OnSetRegion);
-        _fullDisplay = NSButton.CreateButton("Full display", () => SetRegion(NormalizedRect.Full));
         _aspectLock = Checkbox("Keep the phone's aspect ratio", v => _store.RegionAspectLock = v);
         _aspectLock.ToolTip = "The dragged rectangle keeps the phone surface's aspect ratio (the display's while no phone is connected).";
         _regionTint = Checkbox("Tint outside the region", v => _store.RegionTint = v);
@@ -221,13 +223,13 @@ public sealed class SettingsWindowController : IDisposable
 
         NSGridView grid = Grid(
             [Label("Map the pen to:"), _target],
-            [Empty(), Row(_windowText, useDisplay)],
-            [Label("Region:"), _regionText],
-            [Empty(), Row(_setRegion, _fullDisplay)],
+            [Label("Area:"), _areaFull],
+            [Empty(), _areaWindow],
+            [Empty(), _areaRegion],
+            [Label("Mapped:"), _regionText],
             [Empty(), _aspectLock],
             [Empty(), _regionTint],
-            [Empty(), Note("The region applies to the chosen display; All displays always uses the whole desktop.")]);
-        _windowRow = grid.GetRow(1);
+            [Empty(), Note("The area applies to the chosen display; All displays always uses the whole desktop.")]);
         return grid;
     }
 
@@ -395,6 +397,7 @@ public sealed class SettingsWindowController : IDisposable
         string target = _store.TargetDisplay;
         _target.RemoveAllItems();
         _targetValues.Clear();
+        AddTarget("All displays", MacSettings.AllDisplays);
         AddTarget("Main display", MacSettings.MainDisplay);
         bool found = target.Length == 0 || target == MacSettings.AllDisplays;
         foreach (DisplayInfo d in _resolver.Displays)
@@ -408,7 +411,6 @@ public sealed class SettingsWindowController : IDisposable
             AddTarget("Disconnected display (using main)", target);
         }
 
-        AddTarget("All displays", MacSettings.AllDisplays);
         for (int i = 0; i < _targetValues.Count; i++)
         {
             if (string.Equals(_targetValues[i], target, StringComparison.OrdinalIgnoreCase))
@@ -418,16 +420,24 @@ public sealed class SettingsWindowController : IDisposable
             }
         }
 
-        // Window target (ADR-0036): the popup keeps naming its display; the row below says which window it follows.
-        _windowRow.Hidden = !_windowTarget.IsActive;
-        _windowText.StringValue = _windowTarget.IsActive ? "Window: " + _windowTarget.AppName : string.Empty;
-
         DisplayInfo? display = RegionDisplay();
         bool all = target == MacSettings.AllDisplays;
         NormalizedRect region = display is null ? NormalizedRect.Full : _store.GetRegion(display.Uuid);
         RefreshRegionText(display, region, all);
-        _setRegion.Enabled = _picker.CanOpen;
-        _fullDisplay.Enabled = display is not null && !SettingsStore.IsFull(region);
+
+        // The area (#247): the popup keeps naming the window's display while a window is the target (ADR-0036).
+        MappingArea area = _picker.Area;
+        _areaWindow.Title = _windowTarget.IsActive ? "Window: " + _windowTarget.AppName : "Window…";
+        _areaWindow.ToolTip = all ? "Pick a display first: All displays always uses the whole desktop."
+            : !AccessibilityStatus.IsTrusted() ? "Needs the Accessibility permission to follow the window."
+            : _windowTarget.IsActive ? "The pen follows this window. Click to pick another one."
+            : "Click a window to map the pen to it; it follows the window's moves and resizes. Esc cancels.";
+        _areaFull.Enabled = !all && display is not null && !_picker.IsOpen;
+        _areaWindow.Enabled = !all && _picker.CanPickWindow;
+        _areaRegion.Enabled = !all && _picker.CanOpen;
+        SetCheck(_areaFull, area == MappingArea.FullDisplay);
+        SetCheck(_areaWindow, area == MappingArea.Window);
+        SetCheck(_areaRegion, area == MappingArea.Region);
         _aspectLock.Enabled = !all;
         SetCheck(_aspectLock, _store.RegionAspectLock);
         _regionTint.Enabled = !all;
@@ -521,9 +531,17 @@ public sealed class SettingsWindowController : IDisposable
 
     private void OnSetRegion()
     {
-        if (_picker.Open(OnOverlayClosed))
+        if (!_picker.Open(OnOverlayClosed))
         {
-            _setRegion.Enabled = false;
+            Refresh(); // not opened: put the radio back on the current area
+        }
+    }
+
+    private void OnPickWindow()
+    {
+        if (!_picker.OpenWindowPicker())
+        {
+            Refresh();
         }
     }
 
@@ -534,16 +552,6 @@ public sealed class SettingsWindowController : IDisposable
             Refresh();
             NSApplication.SharedApplication.Activate();
             _window.MakeKeyAndOrderFront(null);
-        }
-    }
-
-    private void SetRegion(NormalizedRect region)
-    {
-        DisplayInfo? display = RegionDisplay();
-        if (display is not null)
-        {
-            _windowTarget.Clear(); // a region choice ends a window target (ADR-0036)
-            _store.SetRegion(display.Uuid, region);
         }
     }
 
@@ -617,6 +625,19 @@ public sealed class SettingsWindowController : IDisposable
             }
         });
         return box;
+    }
+
+    private NSButton Radio(string title, Action chosen)
+    {
+        // The radios share a superview and an action selector, so AppKit keeps one of them on at a time.
+        NSButton radio = NSButton.CreateRadioButton(title, () =>
+        {
+            if (!_refreshing)
+            {
+                chosen();
+            }
+        });
+        return radio;
     }
 
     private NSPopUpButton Popup(Action changed, string[]? titles = null)

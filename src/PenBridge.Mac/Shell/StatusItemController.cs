@@ -412,6 +412,11 @@ public sealed partial class StatusItemController : IDisposable
         IReadOnlyList<DisplayInfo> displays = _resolver.Displays;
         bool all = _settings.TargetDisplay == MacSettings.AllDisplays;
         bool window = _windowTarget.IsActive;
+        NSMenuItem allDisplays = Action("All displays", () => ChooseDisplay(MacSettings.AllDisplays));
+        allDisplays.State = all && !window ? NSCellStateValue.On : NSCellStateValue.Off;
+        allDisplays.ToolTip = "Every display together, as one desktop.";
+        submenu.AddItem(allDisplays);
+
         if (displays.Count == 0)
         {
             submenu.AddItem(Disabled("No displays"));
@@ -426,29 +431,34 @@ public sealed partial class StatusItemController : IDisposable
             submenu.AddItem(entry);
         }
 
-        NSMenuItem allDisplays = Action("All displays", () => ChooseDisplay(MacSettings.AllDisplays));
-        allDisplays.State = all && !window ? NSCellStateValue.On : NSCellStateValue.Off;
-        allDisplays.ToolTip = "Every display together, as one desktop.";
-        submenu.AddItem(allDisplays);
-
-        // Region… (ADR-0035): the Settings window's drag overlay for the target display; checked while it has a region.
+        // The area of the target display (#247): Full display, Window… (ADR-0036) or Region… (ADR-0035); exactly one is
+        // checked. All displays always uses the whole desktop, so none of them can be picked there.
         submenu.AddItem(NSMenuItem.SeparatorItem);
-        DisplayInfo? regionDisplay = _regionPicker.RegionDisplay();
-        NSMenuItem region = Action("Region…", PickRegion);
-        region.Enabled = _regionPicker.CanOpen;
-        region.State = !window && regionDisplay is not null && !SettingsStore.IsFull(_settings.GetRegion(regionDisplay.Uuid)) ? NSCellStateValue.On : NSCellStateValue.Off;
-        region.ToolTip = all ? "Regions don't apply to All displays." : "Drag the part of the display the pen maps to. Esc cancels.";
-        submenu.AddItem(region);
+        MappingArea area = _regionPicker.Area;
+        bool single = !all && _regionPicker.RegionDisplay() is not null;
 
-        // Window… (ADR-0036): click a window to map the pen to it; it follows the window until another target is picked.
+        NSMenuItem full = Action("Full display", () => _regionPicker.UseFullDisplay());
+        full.Enabled = single && !_regionPicker.IsOpen;
+        full.State = area == MappingArea.FullDisplay ? NSCellStateValue.On : NSCellStateValue.Off;
+        full.ToolTip = all ? "All displays always uses the whole desktop." : "Map the pen to the whole display.";
+        submenu.AddItem(full);
+
+        // Window…: click a window to map the pen to it; it follows the window until another target is picked.
         NSMenuItem windowItem = Action(window ? "Window: " + _windowTarget.AppName : "Window…", PickWindow);
-        windowItem.Enabled = _regionPicker.CanPickWindow;
-        windowItem.State = window ? NSCellStateValue.On : NSCellStateValue.Off;
-        windowItem.ToolTip = AccessibilityMissing
-            ? "Needs the Accessibility permission to follow the window."
-            : window ? "The pen follows this window. Click to pick another one; pick a display to stop."
+        windowItem.Enabled = !all && _regionPicker.CanPickWindow;
+        windowItem.State = area == MappingArea.Window ? NSCellStateValue.On : NSCellStateValue.Off;
+        windowItem.ToolTip = all ? "Pick a display first: All displays always uses the whole desktop."
+            : AccessibilityMissing ? "Needs the Accessibility permission to follow the window."
+            : window ? "The pen follows this window. Click to pick another one; pick Full display or a display to stop."
             : "Click a window to map the pen to it; it follows the window's moves and resizes. Esc cancels.";
         submenu.AddItem(windowItem);
+
+        // Region…: the drag overlay for the target display.
+        NSMenuItem region = Action("Region…", PickRegion);
+        region.Enabled = !all && _regionPicker.CanOpen;
+        region.State = area == MappingArea.Region ? NSCellStateValue.On : NSCellStateValue.Off;
+        region.ToolTip = all ? "Regions don't apply to All displays." : "Drag the part of the display the pen maps to. Esc cancels.";
+        submenu.AddItem(region);
 
         if (_resolver.IsUsingFallback)
         {

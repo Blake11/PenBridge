@@ -1,6 +1,7 @@
 using AppKit;
 using CoreGraphics;
 using Foundation;
+using PenBridge.Core.Input;
 using PenBridge.Core.Settings;
 using PenBridge.Mac.Input;
 using PenBridge.Mac.Services;
@@ -8,7 +9,7 @@ using PenBridge.Mac.Services;
 namespace PenBridge.Mac.Settings;
 
 /// <summary>
-/// Owns the one picker overlay: the region editor (ADR-0031, ADR-0035 and its #243 amendment; Settings → Set region…
+/// Owns the one picker overlay: the region editor (ADR-0031, ADR-0035 and its #243 amendment; Settings → Area: Region…
 /// and the menu's Display ▸ Region…) and the window click picker (ADR-0036, Display ▸ Window…), so at most one of them exists. The region
 /// editor covers the display the region applies to (the store's TargetDisplay as resolved; while a window is the target
 /// that setting names the window's display, the resolver itself ignores <see cref="WindowTarget"/>) and on Done stores
@@ -67,6 +68,29 @@ public sealed class RegionPicker : IDisposable
     /// </summary>
     public DisplayInfo? RegionDisplay() =>
         _store.TargetDisplay == MacSettings.AllDisplays || _resolver.IsAllDisplays || !_resolver.HasDisplay ? null : _resolver.Target;
+
+    /// <summary>
+    /// Which of the three mutually exclusive areas (#247) the pen maps to: <see cref="MappingArea.Window"/> while a
+    /// window is the target, <see cref="MappingArea.Region"/> while the region display has a region, else
+    /// <see cref="MappingArea.FullDisplay"/> (also for All displays, which always uses the whole desktop).
+    /// </summary>
+    public MappingArea Area =>
+        _windowTarget.IsActive ? MappingArea.Window
+        : RegionDisplay() is { } display && !SettingsStore.IsFull(_store.GetRegion(display.Uuid)) ? MappingArea.Region
+        : MappingArea.FullDisplay;
+
+    /// <summary>
+    /// Full display (#247): ends a window target and resets the region display's region to the whole display. Does
+    /// nothing for All displays or no display.
+    /// </summary>
+    public void UseFullDisplay()
+    {
+        if (RegionDisplay() is { } display)
+        {
+            _windowTarget.Clear(); // a region choice ends a window target (ADR-0036)
+            _store.SetRegion(display.Uuid, NormalizedRect.Full);
+        }
+    }
 
     /// <summary>The NSScreen of a display (by CGDirectDisplayID), or null if AppKit doesn't list it.</summary>
     public static NSScreen? ScreenFor(DisplayInfo display)
