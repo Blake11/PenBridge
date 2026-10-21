@@ -36,10 +36,12 @@ public class TimeoutAndProtocolTests
     {
         await using var h = new NetHarness(Timeouts(handshake: TimeSpan.FromSeconds(10), read: TimeSpan.FromHours(1)));
         await using RawClient raw = await RawClient.ConnectTcpAsync(h.Port);
-        await Wait.Until(() => h.Server.ConnectionCount == 1, "connection accepted");
+        TimeSpan handshake = TimeSpan.FromSeconds(10);
+        await Wait.Until(() => h.Time.CountDeadlines((s, armedFor, _) => s is ControlChannel && armedFor == handshake) == 1, "handshake deadline armed");
 
+        // Timers fire only inside Advance: still armed with 1 s left means it didn't fire.
         h.Time.Advance(TimeSpan.FromSeconds(9));
-        await Task.Delay(50);
+        Assert.Equal(1, h.Time.CountDeadlines((s, armedFor, remaining) => s is ControlChannel && armedFor == handshake && remaining == TimeSpan.FromSeconds(1)));
         Assert.False(raw.IsClosed);
 
         h.Time.Advance(TimeSpan.FromSeconds(1));
@@ -83,7 +85,7 @@ public class TimeoutAndProtocolTests
         h.Time.Advance(TimeSpan.FromSeconds(20)); // the raw client never sends Round2
 
         await Wait.Until(() => raw.IsClosed, "stalled pairing closed");
-        Assert.Equal(2, h.Server.PairingAttemptsLeft);
+        await Wait.Until(() => h.Server.PairingAttemptsLeft, left => left == 2, "the strike for the stalled attempt");
         PenBridgeClient client = h.CreateClient();
         await client.PairWithPinAsync("127.0.0.1", h.Port, pin).Bounded();
         Assert.True(client.IsConnected);
@@ -93,7 +95,7 @@ public class TimeoutAndProtocolTests
     public async Task A_silent_session_peer_is_dropped_after_the_peer_timeout_and_its_input_released()
     {
         await using var h = new NetHarness(Timeouts(peer: TimeSpan.FromSeconds(6), ping: Timeout.InfiniteTimeSpan));
-        var ended = new TaskCompletionSource<SessionEndedEventArgs>();
+        var ended = new TaskCompletionSource<SessionEndedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         h.Server.SessionEnded += (_, e) => ended.TrySetResult(e);
         PenBridgeClient client = await h.PairAsync(configure: o => new PenBridgeClientOptions
         {

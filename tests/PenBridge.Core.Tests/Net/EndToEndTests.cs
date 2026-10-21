@@ -231,7 +231,7 @@ public class EndToEndTests
         await using var h = new NetHarness();
         var store = new InMemorySecretStore();
         PenBridgeClient client = await h.PairAsync(store);
-        var disconnected = new TaskCompletionSource<ClientDisconnectedEventArgs>();
+        var disconnected = new TaskCompletionSource<ClientDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         client.Disconnected += (_, e) => disconnected.TrySetResult(e);
 
         Assert.True(h.Server.ForgetDevice(client.DeviceId));
@@ -286,7 +286,7 @@ public class EndToEndTests
         var ended = new List<SessionEndedEventArgs>();
         h.Server.SessionEnded += (_, e) => { lock (ended) { ended.Add(e); } };
         PenBridgeClient first = await h.PairAsync();
-        var firstGone = new TaskCompletionSource<ClientDisconnectedEventArgs>();
+        var firstGone = new TaskCompletionSource<ClientDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         first.Disconnected += (_, e) => firstGone.TrySetResult(e);
         first.SendState(Pens.Contact(2000, 2000), []);
         await Wait.Until(() => h.Sink.PenKinds().Contains(PenEventKind.Down), "first device's Down");
@@ -406,7 +406,7 @@ public class EndToEndTests
     {
         var h = new NetHarness();
         PenBridgeClient client = await h.PairAsync();
-        var gone = new TaskCompletionSource<ClientDisconnectedEventArgs>();
+        var gone = new TaskCompletionSource<ClientDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         client.Disconnected += (_, e) => gone.TrySetResult(e);
 
         await h.Server.DisposeAsync(); // only the server: the client must read the Bye itself
@@ -496,11 +496,11 @@ public class EndToEndTests
             Port = 0,
             TimeProvider = o.TimeProvider,
         });
-        var ended = new TaskCompletionSource<SessionEndedEventArgs>();
+        var ended = new TaskCompletionSource<SessionEndedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         h.Server.SessionEnded += (_, e) => ended.TrySetResult(e);
         var store = new InMemorySecretStore();
         PenBridgeClient first = await h.PairAsync(store);
-        var gone = new TaskCompletionSource<ClientDisconnectedEventArgs>();
+        var gone = new TaskCompletionSource<ClientDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         first.Disconnected += (_, e) => gone.TrySetResult(e);
 
         first.SendState(Pens.Hover(1000, 1000), []); // the sink throws on ProximityEnter

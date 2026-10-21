@@ -330,7 +330,7 @@ public class InputChannelTests
             DatagramFilter = o.DatagramFilter,
             TcpSendBufferSize = 4096,
         });
-        var gone = new TaskCompletionSource<ClientDisconnectedEventArgs>();
+        var gone = new TaskCompletionSource<ClientDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         client.Disconnected += (_, e) => gone.TrySetResult(e);
         h.Server.OpenPairingWindow();
         await client.PairWithPinAsync("127.0.0.1", proxy.Port, h.Server.CurrentPin!).Bounded();
@@ -341,10 +341,10 @@ public class InputChannelTests
 
         // Client → server stalls (server → client still flows). Flood until a write is really stuck.
         proxy.Paused = true;
-        var deadline = DateTime.UtcNow + Wait.Limit;
+        var flooding = System.Diagnostics.Stopwatch.StartNew();
         for (int i = 0; client.ControlWriteInFlightFor is not { } age || age < TimeSpan.FromMilliseconds(300); i++)
         {
-            Assert.True(DateTime.UtcNow < deadline, "the writer never stalled");
+            Assert.True(flooding.Elapsed < Wait.Limit, "the writer never stalled");
             client.SendState(Pens.Contact((ushort)(i % 60000), 1000, 30000), []);
             if (i % 100 == 99)
             {
@@ -354,7 +354,9 @@ public class InputChannelTests
 
         Assert.True(client.IsConnected);
         h.Time.Advance(ControlChannel.WriteTimeout - TimeSpan.FromMilliseconds(1));
-        await Task.Delay(50);
+        // Timers fire only inside Advance: the stalled write's deadline still armed with 1 ms left means it didn't fire.
+        Assert.Equal(1, h.Time.CountDeadlines(static (s, armedFor, remaining) =>
+            s is ControlChannel && armedFor == ControlChannel.WriteTimeout && remaining == TimeSpan.FromMilliseconds(1)));
         Assert.True(client.IsConnected);
 
         h.Time.Advance(TimeSpan.FromMilliseconds(1));
@@ -434,11 +436,13 @@ public class InputChannelTests
             worst = TimeSpan.FromTicks(Math.Max(worst.Ticks, (long)((watch.ElapsedTicks - t0) * (TimeSpan.TicksPerSecond / (double)System.Diagnostics.Stopwatch.Frequency))));
         }
 
-        Assert.True(worst < TimeSpan.FromMilliseconds(500), "SendState blocked for " + worst);
-        var stallDeadline = DateTime.UtcNow + Wait.Limit;
+        // A SendState that waited on the stalled write would block at least until its write deadline (never here: the
+        // deadline counts fake time). Bounding against that deadline, not a guess, keeps a slow runner from failing it.
+        Assert.True(worst < ControlChannel.WriteTimeout, "SendState blocked for " + worst);
+        var stalling = System.Diagnostics.Stopwatch.StartNew();
         for (int i = 0; client.ControlWriteInFlightFor is not { } age || age < TimeSpan.FromMilliseconds(300); i++)
         {
-            Assert.True(DateTime.UtcNow < stallDeadline, "the writer never stalled, so the test would prove nothing");
+            Assert.True(stalling.Elapsed < Wait.Limit, "the writer never stalled, so the test would prove nothing");
             long t0 = watch.ElapsedTicks;
             Assert.True(client.SendState(Pens.Contact((ushort)(i % 60000), 1000, 30000), []));
             worst = TimeSpan.FromTicks(Math.Max(worst.Ticks, (long)((watch.ElapsedTicks - t0) * (TimeSpan.TicksPerSecond / (double)System.Diagnostics.Stopwatch.Frequency))));
@@ -448,7 +452,7 @@ public class InputChannelTests
             }
         }
 
-        Assert.True(worst < TimeSpan.FromMilliseconds(500), "SendState blocked for " + worst);
+        Assert.True(worst < ControlChannel.WriteTimeout, "SendState blocked for " + worst);
         for (int i = 0; i < 1000; i++)
         {
             Assert.True(client.SendState(Pens.Contact((ushort)i, 1000, 30000), [])); // still never blocks
@@ -458,6 +462,8 @@ public class InputChannelTests
 
         var dispose = System.Diagnostics.Stopwatch.StartNew();
         await client.DisposeAsync().AsTask().Bounded();
-        Assert.True(dispose.Elapsed < TimeSpan.FromSeconds(2), "DisposeAsync took " + dispose.Elapsed);
+        // Dispose aborts the socket and waits at most the farewell bound (1 s real, like LingerTimeout) for the in-flight
+        // write to observe it; one that waited for the stalled write itself would not end before its write deadline.
+        Assert.True(dispose.Elapsed < ControlChannel.LingerTimeout + ControlChannel.WriteTimeout, "DisposeAsync took " + dispose.Elapsed);
     }
 }
