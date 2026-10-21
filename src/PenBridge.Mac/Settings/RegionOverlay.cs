@@ -11,37 +11,36 @@ namespace PenBridge.Mac.Settings;
 /// full-screen window over one display that opens with the current region selected and tints the rest. The selection
 /// moves by its inside, resizes by 8 handles, and a drag outside it draws a new one; a size readout shows while
 /// dragging. A floating bar offers Full display, the aspect lock, Cancel and Done. Done (or Return) commits the
-/// selection as a rect normalized to the display (top-left origin, y down); Esc, Cancel or the overlay losing focus
-/// cancels, and nothing applies before Done. The geometry is Core's <see cref="RegionEditGeometry"/>.
+/// selection as a rect normalized to the display (top-left origin, y down) together with the bar's aspect lock; Esc,
+/// Cancel or the overlay losing focus cancels, and nothing (region or lock) applies before Done. The geometry is Core's <see cref="RegionEditGeometry"/>.
 /// </summary>
 /// <remarks>Main thread only. Event-driven (no timers); one instance per edit session, closed by <see cref="Close"/>.</remarks>
 internal sealed class RegionOverlay : IDisposable
 {
     private readonly OverlayWindow _window;
     private readonly OverlayView _view;
-    private readonly Action<bool> _aspectLockChanged;
-    private readonly Action<NormalizedRect> _committed;
+    private readonly Action<NormalizedRect, bool> _committed;
     private readonly Action _closed;
     private bool _closedRaised;
 
     /// <param name="screen">The display to cover.</param>
     /// <param name="current">The display's current region, selected when the editor opens.</param>
     /// <param name="aspect">Width / height the aspect lock keeps (the phone surface's, else the display's).</param>
-    /// <param name="aspectLock">Whether the aspect lock starts on.</param>
-    /// <param name="aspectLockChanged">Called when the bar's aspect-lock toggle changes (the setting applies at once).</param>
-    /// <param name="committed">Called with the new region on Done (then the overlay closes).</param>
+    /// <param name="aspectLock">Whether the aspect lock starts on (then the selection is fitted to the ratio).</param>
+    /// <param name="committed">
+    /// Called on Done with the new region and the bar's aspect-lock state (then the overlay closes). The toggle is local
+    /// to the editor until then.
+    /// </param>
     /// <param name="closed">Called once when the overlay closes, committed or cancelled.</param>
     public RegionOverlay(
         NSScreen screen,
         NormalizedRect current,
         double aspect,
         bool aspectLock,
-        Action<bool> aspectLockChanged,
-        Action<NormalizedRect> committed,
+        Action<NormalizedRect, bool> committed,
         Action closed)
     {
         ArgumentNullException.ThrowIfNull(screen);
-        _aspectLockChanged = aspectLockChanged;
         _committed = committed;
         _closed = closed;
         CGRect frame = screen.Frame;
@@ -91,26 +90,38 @@ internal sealed class RegionOverlay : IDisposable
     public void Dispose()
     {
         Close();
-        _window.ContentView = new NSView();
+        using (var blank = new NSView())
+        {
+            _window.ContentView = blank; // detach the view before its wrapper goes
+        }
+
         _view.Dispose();
         _window.Dispose();
     }
 
-    private void Commit(ViewRect selection, CGSize size)
+    /// <summary>
+    /// Commits a valid selection (as the store accepts it: both sides at least <see cref="RegionEditGeometry.MinSide"/>
+    /// and <see cref="MacSettings.MinRegionSize"/> of the display) and closes. An invalid one keeps the editor open.
+    /// </summary>
+    /// <returns>False if the selection was refused.</returns>
+    private bool Commit(ViewRect selection, CGSize size, bool aspectLock)
     {
-        if (!_closedRaised)
+        if (_closedRaised)
         {
-            NormalizedRect region = RegionEditGeometry.ToRegion(selection, size.Width, size.Height);
-            if (region.Width > 0 && region.Height > 0)
-            {
-                _committed(region);
-            }
+            return true;
         }
 
-        Close();
-    }
+        NormalizedRect region = RegionEditGeometry.ToRegion(selection, size.Width, size.Height);
+        if (!RegionEditGeometry.IsBigEnough(selection, size.Width, size.Height)
+            || !(region.Width >= MacSettings.MinRegionSize && region.Height >= MacSettings.MinRegionSize))
+        {
+            return false;
+        }
 
-    private void AspectLockChanged(bool locked) => _aspectLockChanged(locked);
+        _committed(region, aspectLock);
+        Close();
+        return true;
+    }
 
     private static CGRect ToCG(ViewRect r) => new(r.X, r.Y, r.Width, r.Height);
 
@@ -196,6 +207,11 @@ internal sealed class RegionOverlay : IDisposable
             _ratio = ratio;
             ViewRect hole = RegionTintRule.HoleInView(current, frame.Width, frame.Height);
             _selection = hole.Width > 0 && hole.Height > 0 ? hole : new ViewRect(0, 0, frame.Width, frame.Height);
+            if (aspectLock)
+            {
+                // A region stored with the lock off (or another phone) may not have the ratio: show what Done would keep.
+                _selection = RegionEditGeometry.ApplyAspect(_selection, ratio, frame.Width, frame.Height);
+            }
 
             NSButton full = Button("Full display", () => SetSelection(new ViewRect(0, 0, Bounds.Width, Bounds.Height)));
             full.ToolTip = "Select the whole display.";
@@ -204,7 +220,7 @@ internal sealed class RegionOverlay : IDisposable
             _lock.State = aspectLock ? NSCellStateValue.On : NSCellStateValue.Off;
             _lock.ToolTip = "Keep the selection at the phone's aspect ratio.";
             NSButton cancel = Button("Cancel", () => _owner.Close());
-            NSButton done = Button("Done", () => _owner.Commit(_selection, Bounds.Size));
+            NSButton done = Button("Done", Done);
             done.KeyEquivalent = "\r";
 
             NSStackView stack = NSStackView.FromViews([full, _lock, Spacer(), cancel, done]);
@@ -261,7 +277,7 @@ internal sealed class RegionOverlay : IDisposable
                     _owner.Close();
                     return;
                 case ReturnKeyCode or EnterKeyCode:
-                    _owner.Commit(_selection, Bounds.Size);
+                    Done();
                     return;
                 default:
                     base.KeyDown(theEvent);
@@ -433,11 +449,18 @@ internal sealed class RegionOverlay : IDisposable
 
         private void OnLockToggled()
         {
-            bool locked = _lock.State == NSCellStateValue.On;
-            _owner.AspectLockChanged(locked);
-            if (locked)
+            // Local to the editor: the setting is stored with the region on Done.
+            if (_lock.State == NSCellStateValue.On)
             {
                 SetSelection(RegionEditGeometry.ApplyAspect(_selection, _ratio, Bounds.Width, Bounds.Height));
+            }
+        }
+
+        private void Done()
+        {
+            if (_drag != DragKind.None || !_owner.Commit(_selection, Bounds.Size, _lock.State == NSCellStateValue.On))
+            {
+                AppKitFramework.NSBeep(); // stays open: the selection isn't a valid region (or a drag is still going)
             }
         }
 

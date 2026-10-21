@@ -132,8 +132,11 @@ public static class RegionEditGeometry
             return new ViewRect(left, bottom, right - left, top - bottom);
         }
 
-        // Aspect locked: the smallest width that keeps both sides at their minimum.
-        double minWidth = Math.Max(minW, minH * ratio);
+        // Aspect locked: the smallest width that keeps both sides at their minimum, and the largest that fits the
+        // display. Room past the fixed corner or edge only limits the size down to the minimum; below that the rect is
+        // shifted back onto the display instead, so the result never gets under the minimum.
+        double maxWidth = Math.Min(width, height * ratio);
+        double minWidth = Math.Min(Math.Max(minW, minH * ratio), maxWidth);
         bool corner = (movesLeft || movesRight) && (movesBottom || movesTop);
         if (corner)
         {
@@ -142,12 +145,11 @@ public static class RegionEditGeometry
             double anchorY = movesBottom ? top : bottom;
             double w = movesLeft ? right - (left + dx) : right + dx - left;
             double h = movesBottom ? top - (bottom + dy) : top + dy - bottom;
-            w = Math.Max(Math.Max(w, h * ratio), minWidth);
             double roomX = movesLeft ? anchorX : width - anchorX;
             double roomY = movesBottom ? anchorY : height - anchorY;
-            w = Math.Min(w, Math.Min(roomX, roomY * ratio));
+            w = Math.Clamp(Math.Min(Math.Max(w, h * ratio), Math.Min(roomX, roomY * ratio)), minWidth, maxWidth);
             h = w / ratio;
-            return new ViewRect(movesLeft ? anchorX - w : anchorX, movesBottom ? anchorY - h : anchorY, w, h);
+            return OnDisplay(movesLeft ? anchorX - w : anchorX, movesBottom ? anchorY - h : anchorY, w, h, width, height);
         }
 
         if (movesLeft || movesRight)
@@ -155,21 +157,23 @@ public static class RegionEditGeometry
             // The opposite edge stays; the height follows, centred on the selection's middle.
             double w = movesLeft ? right - (left + dx) : right + dx - left;
             double room = movesLeft ? right : width - left;
-            w = Math.Min(Math.Max(w, minWidth), Math.Min(room, height * ratio));
+            w = Math.Clamp(Math.Min(w, room), minWidth, maxWidth);
             double h = w / ratio;
-            double y = Math.Clamp(start.Y + ((start.Height - h) / 2), 0, height - h);
-            return new ViewRect(movesLeft ? right - w : left, y, w, h);
+            return OnDisplay(movesLeft ? right - w : left, start.Y + ((start.Height - h) / 2), w, h, width, height);
         }
 
         {
             double h = movesBottom ? top - (bottom + dy) : top + dy - bottom;
             double room = movesBottom ? top : height - bottom;
-            h = Math.Min(Math.Max(h, minWidth / ratio), Math.Min(room, width / ratio));
+            h = Math.Clamp(Math.Min(h, room), minWidth / ratio, maxWidth / ratio);
             double w = h * ratio;
-            double x = Math.Clamp(start.X + ((start.Width - w) / 2), 0, width - w);
-            return new ViewRect(x, movesBottom ? top - h : bottom, w, h);
+            return OnDisplay(start.X + ((start.Width - w) / 2), movesBottom ? top - h : bottom, w, h, width, height);
         }
     }
+
+    // A rect no larger than the display, shifted onto it.
+    private static ViewRect OnDisplay(double x, double y, double w, double h, double width, double height) =>
+        new(Math.Clamp(x, 0, width - w), Math.Clamp(y, 0, height - h), w, h);
 
     /// <summary>
     /// A new selection dragged from the anchor (<paramref name="anchorX"/>, <paramref name="anchorY"/>) to

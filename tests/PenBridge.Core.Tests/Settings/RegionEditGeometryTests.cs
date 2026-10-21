@@ -230,6 +230,41 @@ public class RegionEditGeometryTests
         Equal(new ViewRect(600 - 62, 300 - 31, 62, 31), r);
     }
 
+    [Theory]
+    [InlineData(RegionHandle.TopRight, 10, 10)]
+    [InlineData(RegionHandle.TopLeft, -10, 10)]
+    [InlineData(RegionHandle.Top, 0, 10)]
+    [InlineData(RegionHandle.Right, 10, 0)]
+    public void A_locked_resize_from_an_off_ratio_selection_at_the_edge_never_gets_under_the_min(RegionHandle handle, double dx, double dy)
+    {
+        // Review case: 1920 × 1080, ratio 0.5, a 400 × 100 selection touching the top. Shrinking to the room above the
+        // fixed corner gave 50 × 100; the min width is max(97, 55 × 0.5) = 97, so it is shifted down instead.
+        const double dw = 1920;
+        const double dh = 1080;
+        var start = new ViewRect(500, 980, 400, 100);
+        ViewRect r = RegionEditGeometry.Resize(start, handle, dx, dy, dw, dh, aspect: 0.5);
+        Assert.Equal(0.5, r.Width / r.Height, Precision);
+        Assert.True(r.Width >= RegionEditGeometry.MinSide(dw) - 1e-9, $"{handle}: {r} under the min width");
+        Assert.True(r.Height >= RegionEditGeometry.MinSide(dh) - 1e-9, $"{handle}: {r} under the min height");
+        Assert.True(RegionEditGeometry.IsBigEnough(r, dw, dh));
+        Assert.True(r.X >= 0 && r.Y >= 0 && r.X + r.Width <= dw + 1e-9 && r.Y + r.Height <= dh + 1e-9, $"{r} off the display");
+    }
+
+    [Fact]
+    public void A_locked_top_right_drag_at_the_top_shifts_the_fixed_corner_down()
+    {
+        ViewRect r = RegionEditGeometry.Resize(new ViewRect(500, 980, 400, 100), RegionHandle.TopRight, 10, 10, 1920, 1080, aspect: 0.5);
+        Equal(new ViewRect(500, 1080 - 194, 97, 194), r);
+    }
+
+    [Fact]
+    public void A_locked_edge_without_room_is_shifted_back_at_the_min()
+    {
+        // Right edge of a 40-wide selection at the display's right side: no room, so the 62-wide minimum moves left.
+        ViewRect r = RegionEditGeometry.Resize(new ViewRect(960, 100, 40, 20), RegionHandle.Right, -30, 0, W, H, Ratio);
+        Equal(new ViewRect(W - 62, 100 + ((20 - 31) / 2.0), 62, 31), r);
+    }
+
     // ---------------------------------------------------------------- draw a new selection
 
     [Fact]
@@ -258,6 +293,16 @@ public class RegionEditGeometryTests
     {
         // 400 × 300 at 2:1 → 400 × 200, centred vertically (y 100 + 50).
         Equal(new ViewRect(200, 150, 400, 200), RegionEditGeometry.ApplyAspect(Sel, Ratio, W, H));
+    }
+
+    [Fact]
+    public void Opening_with_the_lock_on_fits_a_full_display_region_to_the_ratio()
+    {
+        // The editor applies ApplyAspect at open: a full 1000 × 600 display at 2:1 → 1000 × 500, centred.
+        Equal(new ViewRect(0, 50, 1000, 500), RegionEditGeometry.ApplyAspect(new ViewRect(0, 0, W, H), Ratio, W, H));
+        NormalizedRect region = RegionEditGeometry.ToRegion(RegionEditGeometry.ApplyAspect(new ViewRect(0, 0, W, H), 0.5, W, H), W, H);
+        Assert.Equal(0.3, region.Width, Precision); // 300 × 600 at 1:2
+        Assert.Equal(1, region.Height, Precision);
     }
 
     [Fact]
