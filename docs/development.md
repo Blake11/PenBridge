@@ -83,7 +83,7 @@ scripts/test.sh --filter-class "*Protocol*"  # xUnit v3 on Microsoft.Testing.Pla
 
 `global.json` opts into Microsoft.Testing.Platform, so the `--project` form is required. The old `dotnet test <path>` form is rejected.
 
-**Test reports and coverage.** CI writes the xUnit markdown report and a PenBridge.Core coverage summary (ReportGenerator) to the job summary, and uploads `core-test-results` (JUnit, markdown, cobertura) and `core-coverage-report` (HTML). Locally, coverage is opt-in: `scripts/test.sh --coverage --coverage-output-format cobertura` (output under `tests/PenBridge.Core.Tests/TestResults`). CI also reports tests running over 60 s (`--long-running 60`) and aborts the run after 10 minutes (`--timeout 10m`). Coverage is informational; there is no gate.
+**Test reports and coverage.** CI writes the xUnit markdown report and a PenBridge.Core coverage summary (ReportGenerator) to the job summary, and uploads `core-test-results` (JUnit, markdown, cobertura) and `core-coverage-report` (HTML). Locally, coverage is opt-in: `scripts/test.sh --coverage --coverage-output-format cobertura` (output under `tests/PenBridge.Core.Tests/TestResults`). CI also reports tests running over 60 s (`--long-running 60`) and aborts the run after 10 minutes (`--timeout 10m`); `--hangdump --hangdump-timeout 8m` writes a Mini dump first, uploaded as `core-hang-dump` (3 days) only when the job fails. Coverage is informational; there is no gate.
 
 ### Trimmed builds keep what Core needs
 
