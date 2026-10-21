@@ -75,6 +75,8 @@ Await the same signal the assertion checks (the event, not a property set earlie
   those frames caused (it runs `ServerConnection.RoundTripAsync`, an internal test hook: pushes drained, Ping, Pong, twice).
   Use it before a negative assertion ("nothing else arrived") and instead of ad-hoc barriers (pings via fake time,
   display-list pairs).
+  It orders **TLS control frames only**: UDP datagrams in flight and the UdpAcks they trigger aren't covered. Wait for
+  those explicitly (`Counters.Accepted`, `client.AcksReceived`, ack deadlines), as the 30 s streaming test does.
 - **`EventLog<T>`**: subscribe with `log.Add`, take `int mark = log.Mark()`, act, settle, assert on `log.Since(mark)`;
   `log.WaitFor(mark, n, because)` for a positive wait. Never count from a baseline taken before the session settled
   or after `Clear()`: a late event from setup then counts as new (#250).

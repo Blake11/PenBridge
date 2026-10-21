@@ -67,7 +67,7 @@ public class SettingsSyncTests
         var log = new ConcurrentQueue<string>();
         var snapshots = new ConcurrentQueue<IReadOnlyList<SettingEntry>>();
         var lists = new ConcurrentQueue<IReadOnlyList<DisplayListEntry>>();
-        PenBridgeClient client = await PairAsync(h, c =>
+        PenBridgeClient client = await ConnectAsync(h, c =>
         {
             c.SettingsSnapshotReceived += (_, e) =>
             {
@@ -117,7 +117,7 @@ public class SettingsSyncTests
     private static async Task<(PenBridgeClient Client, EventLog<NormalizedRect> Areas)> PairSettledAsync(NetHarness h)
     {
         var areas = new EventLog<NormalizedRect>();
-        PenBridgeClient client = await PairAsync(h, c => c.ActiveAreaReceived += (_, e) => areas.Add(e.Area));
+        PenBridgeClient client = await ConnectAsync(h, c => c.ActiveAreaReceived += (_, e) => areas.Add(e.Area));
         await h.SettleAsync();
         Assert.NotEqual(0, areas.Count); // the pairing-time area arrived
         return (client, areas);
@@ -192,7 +192,7 @@ public class SettingsSyncTests
     {
         await using NetHarness h = Harness(remoteSettings: false, activeArea: false);
         int received = 0;
-        PenBridgeClient client = await PairAsync(h, c =>
+        PenBridgeClient client = await ConnectAsync(h, c =>
         {
             c.SettingsSnapshotReceived += (_, _) => Interlocked.Increment(ref received);
             c.DisplayListReceived += (_, _) => Interlocked.Increment(ref received);
@@ -221,7 +221,7 @@ public class SettingsSyncTests
         int received = 0;
         var sessions = new ConcurrentQueue<SessionInfo>();
         h.Server.SessionStarted += (_, e) => sessions.Enqueue(e.Session);
-        PenBridgeClient client = await PairAsync(
+        PenBridgeClient client = await ConnectAsync(
             h,
             c =>
             {
@@ -246,7 +246,7 @@ public class SettingsSyncTests
     public async Task A_settings_update_without_the_capability_is_a_protocol_error()
     {
         await using NetHarness h = Harness();
-        PenBridgeClient client = await PairAsync(h, configure: WithCapabilities(OlderPhone));
+        PenBridgeClient client = await ConnectAsync(h, configure: WithCapabilities(OlderPhone));
         var ended = new TaskCompletionSource<ClientDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         client.Disconnected += (_, e) => ended.TrySetResult(e);
 
@@ -260,7 +260,7 @@ public class SettingsSyncTests
     public async Task A_phone_sending_a_server_message_is_a_protocol_error()
     {
         await using NetHarness h = Harness();
-        PenBridgeClient client = await PairAsync(h);
+        PenBridgeClient client = await ConnectAsync(h);
         var ended = new TaskCompletionSource<ClientDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         client.Disconnected += (_, e) => ended.TrySetResult(e);
 
@@ -293,7 +293,7 @@ public class SettingsSyncTests
             Interlocked.Increment(ref calls);
             throw new InvalidOperationException("UI bug");
         };
-        PenBridgeClient client = await PairAsync(h);
+        PenBridgeClient client = await ConnectAsync(h);
 
         Assert.True(await client.UpdateSettingsAsync([SettingEntry.Bool(MacSettingKey.Zoom, false)]));
         await Wait.Until(() => Volatile.Read(ref calls) == 1, "update handled");
@@ -313,7 +313,7 @@ public class SettingsSyncTests
             _ = h.Server.SendSettingsSnapshotAsync([SettingEntry.Int(MacSettingKey.SideButton, n)]);
         };
         var snapshots = new ConcurrentQueue<IReadOnlyList<SettingEntry>>();
-        PenBridgeClient client = await PairAsync(h, c => c.SettingsSnapshotReceived += (_, e) => snapshots.Enqueue(e.Entries));
+        PenBridgeClient client = await ConnectAsync(h, c => c.SettingsSnapshotReceived += (_, e) => snapshots.Enqueue(e.Entries));
 
         // Time stands still: the burst passes, the rest is dropped without ending the session.
         for (int i = 0; i < 100; i++)
@@ -346,7 +346,7 @@ public class SettingsSyncTests
         await using NetHarness h = Harness();
         var snapshots = new ConcurrentQueue<IReadOnlyList<SettingEntry>>();
         var areas = new ConcurrentQueue<NormalizedRect>();
-        PenBridgeClient client = await PairAsync(h, c =>
+        PenBridgeClient client = await ConnectAsync(h, c =>
         {
             c.SettingsSnapshotReceived += (_, e) => snapshots.Enqueue(e.Entries);
             c.ActiveAreaReceived += (_, e) => areas.Enqueue(e.Area);
@@ -379,7 +379,7 @@ public class SettingsSyncTests
         await h.Server.SendDisplayListAsync([Displays[0]]);
         await h.Server.SendSettingsSnapshotAsync(Snapshot(1));
         var log = new ConcurrentQueue<string>();
-        await PairAsync(h, c =>
+        await ConnectAsync(h, c =>
         {
             c.DisplayListReceived += (_, e) => log.Enqueue("displays " + e.Displays.Count);
             c.SettingsSnapshotReceived += (_, e) => log.Enqueue("snapshot " + e.Entries.Count);
@@ -435,7 +435,7 @@ public class SettingsSyncTests
         await using NetHarness h = Harness();
         var ended = new ConcurrentQueue<SessionEndReason>();
         h.Server.SessionEnded += (_, e) => ended.Enqueue(e.Reason);
-        await PairAsync(h);
+        await ConnectAsync(h);
         ServerConnection connection = h.Server.ActiveConnection!;
         connection.BeforePushDrain = _ => throw new ArgumentException("a bug in the drain");
 
@@ -456,7 +456,7 @@ public class SettingsSyncTests
         await Assert.ThrowsAsync<ArgumentException>(() => new PenBridgeClient(new PenBridgeClientOptions { SecretStore = new PenBridge.Core.Security.InMemorySecretStore(), Surface = NetHarness.Surface }).UpdateSettingsAsync([]));
     }
 
-    private static Task<PenBridgeClient> PairAsync(NetHarness h, Action<PenBridgeClient>? subscribe = null, Func<PenBridgeClientOptions, PenBridgeClientOptions>? configure = null) =>
+    private static Task<PenBridgeClient> ConnectAsync(NetHarness h, Action<PenBridgeClient>? subscribe = null, Func<PenBridgeClientOptions, PenBridgeClientOptions>? configure = null) =>
         h.ConnectPairedAsync(configure: configure, subscribe: subscribe);
 
     private static SettingEntry[] Snapshot(int count) =>

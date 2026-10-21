@@ -419,7 +419,9 @@ internal sealed class NetHarness : IAsyncDisposable
     /// <summary>
     /// The one ordering barrier for a running session (reusable, independent of fake time): completes once every
     /// control frame either side sent before it was handled by the other side, including the pushes those frames
-    /// caused. Events the phone raised for them are in their <see cref="EventLog{T}"/> by then.
+    /// caused. Events the phone raised for them are in their <see cref="EventLog{T}"/> by then. It orders TLS control
+    /// frames only: UDP datagrams in flight and the UdpAcks they trigger aren't covered, so wait for those explicitly
+    /// (accepted counts, acks received), as the streaming test does.
     /// </summary>
     public Task SettleAsync() =>
         (Server.ActiveConnection ?? throw new InvalidOperationException("No session to settle.")).RoundTripAsync().Bounded();

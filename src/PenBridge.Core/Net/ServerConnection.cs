@@ -116,7 +116,7 @@ internal sealed class ServerConnection
     /// order both ways, so after the first round the phone handled every frame written before it and the server read
     /// every frame the phone wrote before it answered; the second round delivers the pushes those frames requested.
     /// </summary>
-    /// <exception cref="InvalidOperationException">Another round trip is running, or the connection is closing.</exception>
+    /// <exception cref="InvalidOperationException">Another round trip is running, or the connection is closing or closed.</exception>
     internal async Task RoundTripAsync()
     {
         for (int round = 0; round < 2; round++)
@@ -135,7 +135,11 @@ internal sealed class ServerConnection
                     throw new InvalidOperationException("The connection is closing.");
                 }
 
-                await pong.Task.ConfigureAwait(false);
+                // No Pong can come once the connection is torn down: fail then instead of waiting out the caller's bound.
+                if (await Task.WhenAny(pong.Task, _done.Task).ConfigureAwait(false) != pong.Task)
+                {
+                    throw new InvalidOperationException("The connection closed during the round trip.");
+                }
             }
             finally
             {
