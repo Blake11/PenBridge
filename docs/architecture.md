@@ -33,6 +33,7 @@ Rule: platform apps contain only platform glue; anything testable without a devi
 ## macOS server
 
 - **Shell**: `NSApplication` with `ActivationPolicy.Accessory`, `NSStatusItem` icon in the menu bar. Menu: status (listening / connected device), Pair new device… (shows PIN + QR), Display ▸ (target display, All displays), Pen / Mouse mode, Settings… (⌘,), Quit. The **Settings window** (ADR-0030–0033) has Display (target, region, aspect lock), Pen (mode, mouse speed and acceleration, side button, tip feel, click threshold, full pressure, live test pad), Gestures (Smart Zoom, pointer and scroll speed, toggles) and General (run at startup, allow takeover) tabs. Settings are global and stored in `NSUserDefaults`.
+- **Region picker and tint** (ADR-0035): Display ▸ **Region…** opens the Settings region overlay for the target display; while a phone is connected in Pen mode and not paused, a click-through window dims that display outside its region ("Tint outside the region", default on, synced to the phone). The show/hide rule and the hole geometry live in Core (`RegionTintRule`).
 - **Run at startup**: `SMAppService.MainApp.Register()/Unregister()`.
 - **Resource budget**: idle ≈ 0% CPU and a small RSS (goal < 40 MB). No polling; everything is socket/event-driven. Trim the app; evaluate NativeAOT for the macOS head.
 - **Input injection** (`IInputInjector`, ADR-0003):

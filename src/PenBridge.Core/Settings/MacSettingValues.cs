@@ -12,11 +12,21 @@ namespace PenBridge.Core.Settings;
 public sealed class MacSettingValues
 {
     private readonly SettingEntry[] _values;
+    private readonly bool[] _carried;
 
     /// <summary>All settings at their defaults.</summary>
-    public MacSettingValues() => _values = [.. MacSettings.Defaults];
+    public MacSettingValues()
+    {
+        _values = [.. MacSettings.Defaults];
+        _carried = new bool[_values.Length];
+        Array.Fill(_carried, true);
+    }
 
-    private MacSettingValues(SettingEntry[] values) => _values = values;
+    private MacSettingValues(SettingEntry[] values, bool[] carried)
+    {
+        _values = values;
+        _carried = carried;
+    }
 
     /// <summary><see cref="MacSettings.MainDisplay"/>, <see cref="MacSettings.AllDisplays"/> or a display id.</summary>
     public string TargetDisplay => Get(MacSettingKey.TargetDisplay).StringValue;
@@ -67,8 +77,20 @@ public sealed class MacSettingValues
     public static MacSettingValues FromEntries(IReadOnlyList<SettingEntry> entries)
     {
         var values = new MacSettingValues();
+        Array.Clear(values._carried);
         values.Apply(entries, null);
         return values;
+    }
+
+    /// <summary>
+    /// False when these values came from a SettingsSnapshot (<see cref="FromEntries"/>) without a valid entry for
+    /// <paramref name="key"/>, e.g. an older Mac that doesn't have the setting (the value is then the default); true
+    /// otherwise. The phone hides controls for settings the Mac doesn't have.
+    /// </summary>
+    public bool Carries(MacSettingKey key)
+    {
+        int index = MacSettings.IndexOf((ushort)key);
+        return index < 0 ? throw new ArgumentOutOfRangeException(nameof(key)) : _carried[index];
     }
 
     public SettingEntry Get(MacSettingKey key)
@@ -104,7 +126,7 @@ public sealed class MacSettingValues
     /// <summary>Every setting, in key order: the content of a SettingsSnapshot.</summary>
     public IReadOnlyList<SettingEntry> ToEntries() => [.. _values];
 
-    public MacSettingValues Clone() => new([.. _values]);
+    public MacSettingValues Clone() => new([.. _values], [.. _carried]);
 
     /// <summary>Applies one entry if <see cref="MacSettings.TryValidate"/> accepts it against the current values and <paramref name="displays"/>.</summary>
     public bool TryApply(in SettingEntry entry, IReadOnlyList<DisplayListEntry> displays)
@@ -139,7 +161,9 @@ public sealed class MacSettingValues
         {
             if (MacSettings.TryValidateAlone(entry, out SettingEntry normalized, displays))
             {
-                candidate[MacSettings.IndexOf(normalized.Key)] = normalized;
+                int index = MacSettings.IndexOf(normalized.Key);
+                candidate[index] = normalized;
+                _carried[index] = true;
             }
         }
 

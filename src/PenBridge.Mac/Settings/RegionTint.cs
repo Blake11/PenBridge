@@ -1,6 +1,7 @@
 using AppKit;
 using CoreGraphics;
 using PenBridge.Core.Input;
+using PenBridge.Core.Settings;
 using PenBridge.Mac.Input;
 using PenBridge.Mac.Services;
 
@@ -11,13 +12,15 @@ namespace PenBridge.Mac.Settings;
 /// dims everything but the region at about 25 % black.
 /// </summary>
 /// <remarks>
-/// <para>Shown only while a phone session is active, input isn't paused, the target is one display whose region isn't
-/// the full display, the RegionTint setting is on and the region overlay is closed; other displays are never covered.</para>
-/// <para>Main thread only and event-driven: it re-evaluates on <see cref="SettingsStore.Changed"/>, the resolver's
+/// <para>When it shows is Core's <see cref="RegionTintRule.IsVisible"/> (session, pause, setting, overlay, one-display
+/// target, region, Pen mode); this class only feeds it the live state and draws. Other displays are never covered.</para>
+/// <para>Main thread only and event-driven: it re-evaluates on <see cref="SettingsStore.Changed"/> (target, region,
+/// tint setting, stylus mode), the resolver's
 /// target and display events, <see cref="ServerHost.StateChanged"/> and <see cref="RegionPicker.OpenChanged"/>, and
 /// redraws only when the display frame or the region changed. Nothing polls; hidden, it costs nothing.</para>
 /// <para>The region is normalized to the display with a top-left origin, y down (the store's and the mapper's
-/// convention); the view flips it into AppKit's bottom-left coordinates, in points, so Retina scaling is AppKit's.</para>
+/// convention); <see cref="RegionTintRule.HoleInView"/> flips it into AppKit's bottom-left view coordinates, in points,
+/// so Retina scaling is AppKit's.</para>
 /// </remarks>
 public sealed class RegionTint : IDisposable
 {
@@ -78,7 +81,8 @@ public sealed class RegionTint : IDisposable
 
     private void OnStoreChanged(object? sender, SettingChangedEventArgs e)
     {
-        if (e.Key is SettingsStore.Keys.TargetDisplay or SettingsStore.Keys.Region or SettingsStore.Keys.RegionTint)
+        if (e.Key is SettingsStore.Keys.TargetDisplay or SettingsStore.Keys.Region or SettingsStore.Keys.RegionTint
+            or SettingsStore.Keys.StylusMode)
         {
             Update();
         }
@@ -94,11 +98,17 @@ public sealed class RegionTint : IDisposable
         }
 
         ServerHostState state = _host.State;
-        DisplayInfo? display = state.Status == ServerHostStatus.Connected && !state.Paused && _store.RegionTint && !_picker.IsOpen
-            ? _picker.RegionDisplay()
-            : null;
+        DisplayInfo? display = _picker.RegionDisplay();
         NormalizedRect region = display is null ? NormalizedRect.Full : _store.GetRegion(display.Uuid);
-        NSScreen? screen = display is null || SettingsStore.IsFull(region) ? null : RegionPicker.ScreenFor(display);
+        var tint = new RegionTintState(
+            Connected: state.Status == ServerHostStatus.Connected,
+            Paused: state.Paused,
+            Enabled: _store.RegionTint,
+            OverlayOpen: _picker.IsOpen,
+            SingleDisplay: display is not null,
+            Region: region,
+            Mode: _store.StylusMode);
+        NSScreen? screen = display is not null && RegionTintRule.IsVisible(tint) ? RegionPicker.ScreenFor(display) : null;
         if (screen is null)
         {
             Hide();
@@ -183,13 +193,8 @@ public sealed class RegionTint : IDisposable
             NSColor.Clear.SetFill();
             NSGraphics.RectFill(bounds, NSCompositingOperation.Copy);
 
-            // Stored top-left, y down; the view is bottom-left, y up.
-            double h = Region.Height * bounds.Height;
-            var hole = new CGRect(
-                Region.X * bounds.Width,
-                bounds.Height - (Region.Y * bounds.Height) - h,
-                Region.Width * bounds.Width,
-                h);
+            ViewRect r = RegionTintRule.HoleInView(Region, bounds.Width, bounds.Height);
+            var hole = new CGRect(r.X, r.Y, r.Width, r.Height);
             using NSBezierPath dim = NSBezierPath.FromRect(bounds);
             using NSBezierPath holePath = NSBezierPath.FromRect(hole);
             dim.AppendPath(holePath);

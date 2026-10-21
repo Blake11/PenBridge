@@ -179,8 +179,7 @@ public sealed class SettingsStore
         && r.X + r.Width <= 1 + RegionEpsilon && r.Y + r.Height <= 1 + RegionEpsilon;
 
     /// <summary>True when the rectangle covers the whole display.</summary>
-    public static bool IsFull(NormalizedRect r) =>
-        r.X <= RegionEpsilon && r.Y <= RegionEpsilon && r.Width >= 1 - RegionEpsilon && r.Height >= 1 - RegionEpsilon;
+    public static bool IsFull(NormalizedRect r) => MacSettings.IsFullRegion(r);
 
     /// <summary>Region aspect lock (ADR-0031). Default false.</summary>
     public bool RegionAspectLock

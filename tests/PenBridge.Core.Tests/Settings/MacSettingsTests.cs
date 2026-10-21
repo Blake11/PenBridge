@@ -137,6 +137,37 @@ public class MacSettingsTests
     }
 
     [Fact]
+    public void A_snapshot_tells_which_settings_the_mac_has()
+    {
+        // An older Mac's snapshot without RegionTint: the value is the default, but it isn't carried.
+        MacSettingValues old = MacSettingValues.FromEntries(
+        [
+            SettingEntry.Bool(MacSettingKey.RegionAspectLock, true),
+            SettingEntry.Int(MacSettingKey.RegionTint, 0), // wrong type: not carried
+        ]);
+        Assert.True(old.Carries(MacSettingKey.RegionAspectLock));
+        Assert.False(old.Carries(MacSettingKey.RegionTint));
+        Assert.True(old.RegionTint);
+        Assert.False(old.Clone().Carries(MacSettingKey.RegionTint));
+
+        MacSettingValues current = MacSettingValues.FromEntries(new MacSettingValues().ToEntries());
+        Assert.True(current.Carries(MacSettingKey.RegionTint));
+
+        // The Mac's own values carry every setting.
+        Assert.True(new MacSettingValues().Carries(MacSettingKey.RegionTint));
+        Assert.Throws<ArgumentOutOfRangeException>(() => old.Carries((MacSettingKey)999));
+    }
+
+    [Fact]
+    public void Full_region_allows_a_tiny_epsilon()
+    {
+        Assert.True(MacSettings.IsFullRegion(NormalizedRect.Full));
+        Assert.True(MacSettings.IsFullRegion(new NormalizedRect(1e-7, 1e-7, 1 - 1e-7, 1 - 1e-7)));
+        Assert.False(MacSettings.IsFullRegion(new NormalizedRect(0.01, 0, 0.99, 1)));
+        Assert.False(MacSettings.IsFullRegion(new NormalizedRect(0, 0, 1, 0.5)));
+    }
+
+    [Fact]
     public void Region_is_pulled_exactly_inside_the_display()
     {
         Assert.True(Valid(SettingEntry.Rect(MacSettingKey.Region, new NormalizedRect(0.1, 0.2, 0.5, 0.5))));
