@@ -219,7 +219,6 @@ public sealed class SettingsWindowController : IDisposable
         _areaFull.ToolTip = "Map the pen to the whole display.";
         _areaWindow = Radio("Window…", OnPickWindow);
         _areaRegion = Radio("Region…", OnSetRegion);
-        _areaRegion.ToolTip = "Drag the part of the display the pen maps to. Esc cancels.";
         _regionText = NSTextField.CreateLabel(string.Empty);
         _aspectLock = Checkbox("Keep the phone's aspect ratio", v => _store.RegionAspectLock = v);
         _aspectLock.ToolTip = "The dragged rectangle keeps the phone surface's aspect ratio (the display's while no phone is connected).";
@@ -433,13 +432,15 @@ public sealed class SettingsWindowController : IDisposable
         // The area (#247): the popup keeps naming the window's display while a window is the target (ADR-0036).
         MappingArea area = _picker.Area;
         _areaWindow.Title = _windowTarget.IsActive ? "Window: " + _windowTarget.AppName : "Window…";
-        _areaWindow.ToolTip = all ? "Pick a display first: All displays always uses the whole desktop."
-            : !AccessibilityStatus.IsTrusted() ? "Needs the Accessibility permission to follow the window."
+        _areaWindow.ToolTip = !AccessibilityStatus.IsTrusted() ? "Needs the Accessibility permission to follow the window."
             : _windowTarget.IsActive ? "The pen follows this window. Click to pick another one."
+            : all ? "Click a window to map the pen to it; its display becomes the target. Esc cancels."
             : "Click a window to map the pen to it; it follows the window's moves and resizes. Esc cancels.";
+        _areaRegion.ToolTip = all ? "Drag a region on the display under the pointer; Done makes it the target. Esc cancels."
+            : "Drag the part of the display the pen maps to. Esc cancels.";
         _areaFull.Enabled = !all && display is not null && !_picker.IsOpen;
-        _areaWindow.Enabled = !all && _picker.CanPickWindow;
-        _areaRegion.Enabled = !all && _picker.CanOpen;
+        _areaWindow.Enabled = _picker.CanPickWindow; // also from All displays (ADR-0035 #249 amendment)
+        _areaRegion.Enabled = _picker.CanOpen;
         SetCheck(_areaFull, area == MappingArea.FullDisplay);
         SetCheck(_areaWindow, area == MappingArea.Window);
         SetCheck(_areaRegion, area == MappingArea.Region);
