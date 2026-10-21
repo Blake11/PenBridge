@@ -48,6 +48,7 @@ public sealed unsafe partial class WindowTarget : IDisposable
     private static readonly NSString SizeAttribute = new("AXSize");
     private static readonly NSString WindowsAttribute = new("AXWindows");
     private static readonly NSString MinimizedAttribute = new("AXMinimized");
+    private static readonly NSString[] PreferredWindowAttributes = [new("AXMainWindow"), new("AXFocusedWindow")];
 
     /// <summary><c>NSWorkspaceApplicationKey</c>: the NSRunningApplication in an NSWorkspace notification's userInfo.</summary>
     private static readonly NSString ApplicationKey = new("NSWorkspaceApplicationKey");
@@ -138,34 +139,36 @@ public sealed unsafe partial class WindowTarget : IDisposable
             return false;
         }
 
-        bool wasActive = IsActive;
-        Stop(StopReason.Replaced, raise: false);
-        if (!TryObserve(entry))
+        // Observe the new window first: if it can't be followed, the current target stays as it is.
+        if (!TryObserve(entry, out Observed next))
         {
-            if (wasActive)
-            {
-                Changed?.Invoke(this, EventArgs.Empty);
-            }
-
             return false;
         }
 
+        DisplayRect frame = ReadFrame(next.Window) ?? entry.Bounds;
+        if (!FitsADisplay(frame))
+        {
+            Release(next);
+            return false;
+        }
+
+        Stop(StopReason.Replaced, raise: false);
+        _window = next.Window;
+        _observer = next.Observer;
+        _source = next.Source;
+        _pid = entry.Pid;
+        _number = entry.Number;
         using (NSRunningApplication? app = NSRunningApplication.GetRunningApplication(entry.Pid))
         {
             AppName = string.IsNullOrEmpty(app?.LocalizedName) ? entry.OwnerName : app!.LocalizedName;
             _hidden = app?.Hidden ?? false;
         }
 
-        _frame = ReadFrame(_window) ?? entry.Bounds;
+        _frame = frame;
         _minimized = ReadMinimized(_window);
         _offSpace = false;
         ObserveWorkspace();
-        if (!Recompute(initial: true))
-        {
-            Stop(StopReason.OffDisplays, raise: wasActive);
-            return false;
-        }
-
+        _ = Recompute(initial: true); // fits (checked above), so a display is set
         Log.Tracking(_log, AppName ?? string.Empty, Display!.Name, _frame.X, _frame.Y, _frame.Width, _frame.Height);
         Changed?.Invoke(this, EventArgs.Empty);
         return true;
@@ -197,8 +200,12 @@ public sealed unsafe partial class WindowTarget : IDisposable
 
     // ---------------------------------------------------------------- native observation
 
-    private bool TryObserve(WindowListEntry entry)
+    /// <summary>A window element with its observer and run-loop source (on the main run loop); both refs +1.</summary>
+    private readonly record struct Observed(IntPtr Window, IntPtr Observer, IntPtr Source);
+
+    private bool TryObserve(WindowListEntry entry, out Observed observed)
     {
+        observed = default;
         IntPtr app = NativeMethods.AXUIElementCreateApplication(entry.Pid);
         if (app == IntPtr.Zero)
         {
@@ -209,11 +216,16 @@ public sealed unsafe partial class WindowTarget : IDisposable
         try
         {
             _ = NativeMethods.AXUIElementSetMessagingTimeout(app, MessagingTimeoutSeconds);
-            window = FindWindow(app, entry.Bounds);
+            window = FindWindow(app, entry.Bounds, out int matches);
             if (window == IntPtr.Zero)
             {
                 Log.NoAxWindow(_log, entry.OwnerName);
                 return false;
+            }
+
+            if (matches > 1)
+            {
+                Log.AmbiguousWindow(_log, entry.OwnerName, matches);
             }
 
             _ = NativeMethods.AXUIElementSetMessagingTimeout(window, MessagingTimeoutSeconds);
@@ -234,17 +246,14 @@ public sealed unsafe partial class WindowTarget : IDisposable
                 }
             }
 
-            _source = NativeMethods.AXObserverGetRunLoopSource(observer);
-            if (_source != IntPtr.Zero)
+            IntPtr source = NativeMethods.AXObserverGetRunLoopSource(observer);
+            if (source != IntPtr.Zero)
             {
-                NativeMethods.CFRunLoopAddSource(NativeMethods.CFRunLoopGetMain(), _source, CommonModes);
+                NativeMethods.CFRunLoopAddSource(NativeMethods.CFRunLoopGetMain(), source, CommonModes);
             }
 
-            _observer = observer;
-            _window = window;
-            window = IntPtr.Zero; // owned now
-            _pid = entry.Pid;
-            _number = entry.Number;
+            observed = new Observed(window, observer, source);
+            window = IntPtr.Zero; // owned by observed now
             return true;
         }
         finally
@@ -258,12 +267,44 @@ public sealed unsafe partial class WindowTarget : IDisposable
         }
     }
 
+    // Undoes TryObserve: notifications removed, source off the main run loop, both refs released.
+    private static void Release(Observed observed)
+    {
+        foreach (NSString name in WindowNotifications)
+        {
+            _ = NativeMethods.AXObserverRemoveNotification(observed.Observer, observed.Window, name.Handle);
+        }
+
+        if (observed.Source != IntPtr.Zero)
+        {
+            NativeMethods.CFRunLoopRemoveSource(NativeMethods.CFRunLoopGetMain(), observed.Source, CommonModes);
+        }
+
+        NativeMethods.CFRelease(observed.Observer);
+        NativeMethods.CFRelease(observed.Window);
+    }
+
+    private bool FitsADisplay(DisplayRect frame)
+    {
+        IReadOnlyList<DisplayInfo> displays = _resolver.Displays;
+        int count = displays.Count;
+        Span<DisplayRect> rects = count <= 16 ? stackalloc DisplayRect[count] : new DisplayRect[count];
+        for (int i = 0; i < count; i++)
+        {
+            rects[i] = displays[i].Bounds;
+        }
+
+        return WindowTargetGeometry.TryFit(frame, rects, out _, out _);
+    }
+
     private static IntPtr CommonModes => CFRunLoop.ModeCommon.Handle;
 
     // The app's AX window whose frame matches the window list's bounds (the window list has no AX handle and no
-    // titles without Screen Recording); the first match, front to back, wins. +1 retained, or zero.
-    private static IntPtr FindWindow(IntPtr app, DisplayRect bounds)
+    // titles without Screen Recording). Several windows with that frame: the app's main window, then its focused
+    // window, if one of them matches; else the first match, front to back. +1 retained, or zero.
+    private static IntPtr FindWindow(IntPtr app, DisplayRect bounds, out int matches)
     {
+        matches = 0;
         if (NativeMethods.AXUIElementCopyAttributeValue(app, WindowsAttribute.Handle, out IntPtr windows) != 0 || windows == IntPtr.Zero)
         {
             return IntPtr.Zero;
@@ -271,25 +312,49 @@ public sealed unsafe partial class WindowTarget : IDisposable
 
         try
         {
+            IntPtr first = IntPtr.Zero;
             nint count = NativeMethods.CFArrayGetCount(windows);
             for (nint i = 0; i < count; i++)
             {
                 IntPtr candidate = NativeMethods.CFArrayGetValueAtIndex(windows, i);
-                if (candidate != IntPtr.Zero && ReadFrame(candidate) is { } frame
-                    && Math.Abs(frame.X - bounds.X) <= FrameMatchTolerance && Math.Abs(frame.Y - bounds.Y) <= FrameMatchTolerance
-                    && Math.Abs(frame.Width - bounds.Width) <= FrameMatchTolerance && Math.Abs(frame.Height - bounds.Height) <= FrameMatchTolerance)
+                if (candidate != IntPtr.Zero && Matches(candidate, bounds))
                 {
-                    return NativeMethods.CFRetain(candidate);
+                    matches++;
+                    if (first == IntPtr.Zero)
+                    {
+                        first = candidate;
+                    }
                 }
             }
 
-            return IntPtr.Zero;
+            if (matches > 1)
+            {
+                foreach (NSString attribute in PreferredWindowAttributes)
+                {
+                    if (NativeMethods.AXUIElementCopyAttributeValue(app, attribute.Handle, out IntPtr preferred) == 0 && preferred != IntPtr.Zero)
+                    {
+                        if (Matches(preferred, bounds))
+                        {
+                            return preferred; // already +1 from the copy
+                        }
+
+                        NativeMethods.CFRelease(preferred);
+                    }
+                }
+            }
+
+            return first == IntPtr.Zero ? IntPtr.Zero : NativeMethods.CFRetain(first);
         }
         finally
         {
             NativeMethods.CFRelease(windows);
         }
     }
+
+    private static bool Matches(IntPtr element, DisplayRect bounds) =>
+        ReadFrame(element) is { } frame
+        && Math.Abs(frame.X - bounds.X) <= FrameMatchTolerance && Math.Abs(frame.Y - bounds.Y) <= FrameMatchTolerance
+        && Math.Abs(frame.Width - bounds.Width) <= FrameMatchTolerance && Math.Abs(frame.Height - bounds.Height) <= FrameMatchTolerance;
 
     /// <summary>The element's AXPosition and AXSize: global points, top-left origin (the window list's convention).</summary>
     private static DisplayRect? ReadFrame(IntPtr element)
@@ -371,7 +436,15 @@ public sealed unsafe partial class WindowTarget : IDisposable
         switch (name)
         {
             case DestroyedNotification:
-                Stop(StopReason.Closed, raise: true);
+                // Not inside the observer's own callback: tear it down from the next run-loop turn.
+                IntPtr window = _window;
+                NSApplication.SharedApplication.BeginInvokeOnMainThread(() =>
+                {
+                    if (!_disposed && _window == window && window != IntPtr.Zero)
+                    {
+                        Stop(StopReason.Closed, raise: true);
+                    }
+                });
                 return;
             case MiniaturizedNotification:
                 _minimized = true;
@@ -416,19 +489,26 @@ public sealed unsafe partial class WindowTarget : IDisposable
         if (IsOurApp(n) && _hidden != hidden)
         {
             _hidden = hidden;
+            if (!hidden && !_minimized)
+            {
+                // A Space change while hidden couldn't tell where the window is: ask again now it's shown.
+                _offSpace = WindowList.IsOnScreen(_number) == false;
+            }
+
             _ = Recompute(initial: false);
         }
     }
 
-    // A minimised or hidden window is off screen on every Space; keep the last answer until it's back.
+    // A minimised or hidden window is off screen on every Space, so the window list can't tell where it is; then
+    // assume this Space (deminiaturize and unhide re-check). Otherwise the window list's answer.
     private void OnSpaceChanged()
     {
-        if (!IsActive || _minimized || _hidden)
+        if (!IsActive)
         {
             return;
         }
 
-        _offSpace = WindowList.IsOnScreen(_number) == false;
+        _offSpace = !_minimized && !_hidden && WindowList.IsOnScreen(_number) == false;
         _ = Recompute(initial: false);
     }
 
@@ -439,19 +519,8 @@ public sealed unsafe partial class WindowTarget : IDisposable
             return;
         }
 
-        foreach (NSString name in WindowNotifications)
-        {
-            _ = NativeMethods.AXObserverRemoveNotification(_observer, _window, name.Handle);
-        }
-
-        if (_source != IntPtr.Zero)
-        {
-            NativeMethods.CFRunLoopRemoveSource(NativeMethods.CFRunLoopGetMain(), _source, CommonModes);
-            _source = IntPtr.Zero; // owned by the observer
-        }
-
-        NativeMethods.CFRelease(_observer);
-        NativeMethods.CFRelease(_window);
+        Release(new Observed(_window, _observer, _source));
+        _source = IntPtr.Zero; // owned by the observer
         _observer = IntPtr.Zero;
         _window = IntPtr.Zero;
 
@@ -634,6 +703,9 @@ public sealed unsafe partial class WindowTarget : IDisposable
 
         [LoggerMessage(4, LogLevel.Warning, "Window target: AXObserverCreate for {App} failed ({Error})")]
         public static partial void ObserverFailed(ILogger logger, string app, int error);
+
+        [LoggerMessage(6, LogLevel.Information, "Window target: {Count} windows of {App} have the picked frame; preferring the main or focused one")]
+        public static partial void AmbiguousWindow(ILogger logger, string app, int count);
 
         [LoggerMessage(5, LogLevel.Debug, "Window target: observing {Notification} failed ({Error})")]
         public static partial void NotificationFailed(ILogger logger, string notification, int error);

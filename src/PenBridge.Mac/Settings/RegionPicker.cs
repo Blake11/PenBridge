@@ -188,13 +188,32 @@ public sealed class RegionPicker : IDisposable
                 return;
             }
 
-            if (picked is not null && !_windowTarget.Track(picked))
+            if (picked is not null)
             {
-                ShowCannotFollow(picked.OwnerName);
+                if (_windowTarget.Track(picked))
+                {
+                    ActivateApp(picked.Pid);
+                }
+                else
+                {
+                    ShowCannotFollow(picked.OwnerName);
+                }
             }
 
             OpenChanged?.Invoke(this, EventArgs.Empty);
         });
+    }
+
+    // The click went to the picker, not the app: bring the picked window's app to the front, as a click on it would.
+    // PenBridge is active after the picker, so it yields activation first (cooperative activation, macOS 14+).
+    private static void ActivateApp(int pid)
+    {
+        using NSRunningApplication? app = NSRunningApplication.GetRunningApplication(pid);
+        if (app is not null)
+        {
+            NSApplication.SharedApplication.YieldActivation(app);
+            _ = app.Activate(NSApplicationActivationOptions.ActivateAllWindows);
+        }
     }
 
     // Started from a run-loop perform, so the modal doesn't stall the main queue (skill mac-build-run).

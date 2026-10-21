@@ -113,6 +113,7 @@ public sealed class SettingsWindowController : IDisposable
             _resolver.TargetChanged += OnDisplaysChanged;
             _picker.OpenChanged += OnDisplaysChanged;
             _windowTarget.Changed += OnDisplaysChanged;
+            _windowTarget.FrameChanged += OnWindowFrameChanged;
             Refresh();
             _window!.Center();
         }
@@ -424,11 +425,7 @@ public sealed class SettingsWindowController : IDisposable
         DisplayInfo? display = RegionDisplay();
         bool all = target == MacSettings.AllDisplays;
         NormalizedRect region = display is null ? NormalizedRect.Full : _store.GetRegion(display.Uuid);
-        _regionText.StringValue = all ? "Not used with All displays"
-            : display is null ? "No display connected"
-            : _resolver.IsUsingFallback ? "Not connected — using the main display: " + RegionText(region, display)
-            : RegionText(region, display);
-        _regionText.TextColor = display is null ? NSColor.SecondaryLabel : NSColor.Label;
+        RefreshRegionText(display, region, all);
         _setRegion.Enabled = _picker.CanOpen;
         _fullDisplay.Enabled = display is not null && !SettingsStore.IsFull(region);
         _aspectLock.Enabled = !all;
@@ -440,6 +437,34 @@ public sealed class SettingsWindowController : IDisposable
         {
             _target.AddItem(title);
             _targetValues.Add(value);
+        }
+    }
+
+    // While a window is the target the stored region isn't applied: show what the window maps instead (ADR-0036).
+    private void RefreshRegionText(DisplayInfo? display, NormalizedRect region, bool all)
+    {
+        if (_windowTarget is { IsActive: true, Display: { } windowDisplay })
+        {
+            _regionText.StringValue = _windowTarget.IsShown
+                ? "Following the window: " + RegionText(_windowTarget.Region, windowDisplay)
+                : "Whole display while the window is minimised, hidden or on another Space";
+            _regionText.TextColor = NSColor.Label;
+            return;
+        }
+
+        _regionText.StringValue = all ? "Not used with All displays"
+            : display is null ? "No display connected"
+            : _resolver.IsUsingFallback ? "Not connected — using the main display: " + RegionText(region, display)
+            : RegionText(region, display);
+        _regionText.TextColor = display is null ? NSColor.SecondaryLabel : NSColor.Label;
+    }
+
+    // A move or resize of the window target: only the region text changes.
+    private void OnWindowFrameChanged(object? sender, EventArgs e)
+    {
+        if (_window is not null)
+        {
+            RefreshRegionText(null, NormalizedRect.Full, all: false);
         }
     }
 
@@ -539,6 +564,7 @@ public sealed class SettingsWindowController : IDisposable
         _resolver.TargetChanged -= OnDisplaysChanged;
         _picker.OpenChanged -= OnDisplaysChanged;
         _windowTarget.Changed -= OnDisplaysChanged;
+        _windowTarget.FrameChanged -= OnWindowFrameChanged;
         _pad.PressureSampled -= OnPadSampled;
 
         SettingsWindow? window = _window;
