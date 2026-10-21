@@ -9,7 +9,6 @@ using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
 
 #pragma warning disable CA5359 // Test relay/raw clients deliberately accept any certificate (they are the attackers/probes).
-#pragma warning disable xUnit1051 // Network waits are bounded by Wait.Limit instead of the test token.
 
 namespace PenBridge.Core.Tests.Net;
 
@@ -211,6 +210,9 @@ internal static class Wait
 {
     public static readonly TimeSpan Limit = TimeSpan.FromSeconds(10);
 
+    /// <summary>The running test's token: a run timeout or Ctrl+C stops a wait at once instead of after <see cref="Limit"/>.</summary>
+    private static CancellationToken Token => TestContext.Current.CancellationToken;
+
     /// <summary>Polls <paramref name="condition"/> (real time, bounded) for effects of asynchronous network I/O.</summary>
     public static Task Until(Func<bool> condition, string because) => Until(condition, static ok => ok, because);
 
@@ -223,6 +225,7 @@ internal static class Wait
         var elapsed = Stopwatch.StartNew();
         for (int polls = 0; ; polls++)
         {
+            Token.ThrowIfCancellationRequested();
             T value = probe();
             if (ok(value))
             {
@@ -252,6 +255,7 @@ internal static class Wait
                 Assert.Fail("Timed out advancing: " + because);
             }
 
+            Token.ThrowIfCancellationRequested();
             time.Advance(step);
             await Poll(polls);
         }
@@ -266,7 +270,7 @@ internal static class Wait
         }
         else
         {
-            await Task.Delay(1);
+            await Task.Delay(1, Token);
         }
     }
 
@@ -334,9 +338,11 @@ internal static class Wait
         }
     }
 
-    public static Task<T> Bounded<T>(this Task<T> task) => task.WaitAsync(Limit);
+    /// <summary>Waits for <paramref name="task"/> at most <see cref="Limit"/>, and only while the test runs.</summary>
+    public static Task<T> Bounded<T>(this Task<T> task) => task.WaitAsync(Limit, Token);
 
-    public static Task Bounded(this Task task) => task.WaitAsync(Limit);
+    /// <inheritdoc cref="Bounded{T}(Task{T})"/>
+    public static Task Bounded(this Task task) => task.WaitAsync(Limit, Token);
 }
 
 /// <summary>A server on 127.0.0.1 (ephemeral port) with in-memory stores and a fake clock, plus client factories.</summary>

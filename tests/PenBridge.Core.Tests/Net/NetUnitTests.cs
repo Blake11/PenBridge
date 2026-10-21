@@ -6,8 +6,6 @@ using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
 using PenBridge.Core.Tests.Input;
 
-#pragma warning disable xUnit1051 // Network waits are bounded by Wait.Limit instead of the test token.
-
 namespace PenBridge.Core.Tests.Net;
 
 /// <summary>The server input path without sockets (<see cref="SessionInput"/>), allocation checks and small helpers.</summary>
@@ -337,7 +335,7 @@ public class NetUnitTests
         Assert.False(client.SendState(Pens.Hover(1, 1), [])); // not connected
         Assert.Throws<ArgumentException>(() => client.SendState(new PenSample(1, 1, 0, 9001, 0, 0, PenTool.Pen, PenState.InRange, PenButtons.None), []));
         Assert.Throws<ArgumentException>(() => client.SendState(null, [new TouchSample(1, true, 1, 1), new TouchSample(1, true, 2, 2)]));
-        Assert.Throws<ArgumentException>(() => { _ = client.PairWithPinAsync("127.0.0.1", 1, "12a456"); });
+        Assert.Throws<ArgumentException>(() => { _ = client.PairWithPinAsync("127.0.0.1", 1, "12a456", TestContext.Current.CancellationToken); });
     }
 
     [Fact]

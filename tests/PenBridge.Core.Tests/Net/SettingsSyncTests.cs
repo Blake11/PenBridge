@@ -7,8 +7,6 @@ using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
 using PenBridge.Core.Settings;
 
-#pragma warning disable xUnit1051 // Network waits are bounded by Wait.Limit instead of the test token.
-
 namespace PenBridge.Core.Tests.Net;
 
 /// <summary>Protocol 1.2 over the engine (ADR-0030, ADR-0031): settings snapshot/update, display list, active area, compatibility.</summary>

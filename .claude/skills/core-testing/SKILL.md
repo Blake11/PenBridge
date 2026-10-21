@@ -80,6 +80,9 @@ Await the same signal the assertion checks (the event, not a property set earlie
   or after `Clear()`: a late event from setup then counts as new (#250).
 - **`Wait.Until(probe, ok, because)`**: real-time polling (Stopwatch, yields then 1 ms) bounded by `Wait.Limit`; on
   timeout it prints the last value seen. `Wait.Until(condition, because)` for plain conditions.
+- **Cancellation:** `Wait.Until`, `AdvanceUntil` and `Bounded()` stop on `TestContext.Current.CancellationToken` as
+  well as `Wait.Limit`, so a run timeout or Ctrl+C ends a hung wait at once. Don't suppress xUnit1051: pass
+  `TestContext.Current.CancellationToken` where the analyzer asks.
 - **`Wait.Step`**: the only way to move fake time across I/O (also without a session); see below.
 - **Negative assertions over fake time:** timers fire only inside `Advance`, so after advancing to 1 ms before a
   deadline assert it is still armed (`CountDeadlines(... remaining == 1 ms) == 1`) instead of sleeping and checking.

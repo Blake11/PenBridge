@@ -3,8 +3,6 @@ using PenBridge.Core.Input;
 using PenBridge.Core.Net;
 using PenBridge.Core.Protocol;
 
-#pragma warning disable xUnit1051 // Network waits are bounded by Wait.Limit instead of the test token.
-
 namespace PenBridge.Core.Tests.Net;
 
 /// <summary>The server's input settings and mapping target reach the session input, and its active area the phone (ADR-0031..0033).</summary>
@@ -35,7 +33,7 @@ public class InputSettingsWiringTests
         PenBridgeClient client = h.CreateClient();
         client.ActiveAreaReceived += (_, e) => areas.Enqueue(e.Area);
         h.Server.OpenPairingWindow();
-        await client.PairWithPinAsync("127.0.0.1", h.Port, h.Server.CurrentPin!).Bounded();
+        await client.PairWithPinAsync("127.0.0.1", h.Port, h.Server.CurrentPin!, TestContext.Current.CancellationToken).Bounded();
         await h.WaitForSurfaceAsync();
 
         // SurfaceInfo: the portrait 1:2 display letterboxes the taller phone surface vertically.

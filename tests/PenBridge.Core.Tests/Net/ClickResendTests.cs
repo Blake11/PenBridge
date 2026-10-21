@@ -5,8 +5,6 @@ using PenBridge.Core.Protocol;
 using PenBridge.Core.Tests.Input;
 using static PenBridge.Core.Input.PenEventKind;
 
-#pragma warning disable xUnit1051 // Network waits are bounded by Wait.Limit instead of the test token.
-
 namespace PenBridge.Core.Tests.Net;
 
 /// <summary>

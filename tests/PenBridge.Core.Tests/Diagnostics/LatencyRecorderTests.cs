@@ -8,8 +8,6 @@ using PenBridge.Core.Security;
 using PenBridge.Core.Tests.Input;
 using PenBridge.Core.Tests.Net;
 
-#pragma warning disable xUnit1051 // Network waits are bounded by Wait.Limit instead of the test token.
-
 namespace PenBridge.Core.Tests.Diagnostics;
 
 /// <summary>The ring buffer, the dump, and the capture wired into the server's input path.</summary>

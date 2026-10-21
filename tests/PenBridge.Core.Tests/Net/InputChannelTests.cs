@@ -5,8 +5,6 @@ using System.Runtime.CompilerServices;
 using PenBridge.Core.Input;
 using PenBridge.Core.Net;
 
-#pragma warning disable xUnit1051 // Network waits are bounded by Wait.Limit instead of the test token.
-
 namespace PenBridge.Core.Tests.Net;
 
 /// <summary>The UDP input channel over loopback: drops, rate limiting, watchdog and the TLS fallback.</summary>
@@ -333,7 +331,7 @@ public class InputChannelTests
         var gone = new TaskCompletionSource<ClientDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         client.Disconnected += (_, e) => gone.TrySetResult(e);
         h.Server.OpenPairingWindow();
-        await client.PairWithPinAsync("127.0.0.1", proxy.Port, h.Server.CurrentPin!).Bounded();
+        await client.PairWithPinAsync("127.0.0.1", proxy.Port, h.Server.CurrentPin!, TestContext.Current.CancellationToken).Bounded();
         await h.WaitForSurfaceAsync();
         client.SendState(Pens.Contact(1000, 1000), []);
         h.Time.Advance(TimeSpan.FromSeconds(2));
@@ -348,7 +346,7 @@ public class InputChannelTests
             client.SendState(Pens.Contact((ushort)(i % 60000), 1000, 30000), []);
             if (i % 100 == 99)
             {
-                await Task.Delay(1);
+                await Task.Delay(1, TestContext.Current.CancellationToken);
             }
         }
 
@@ -420,7 +418,7 @@ public class InputChannelTests
             TcpSendBufferSize = 4096,
         });
         h.Server.OpenPairingWindow();
-        await client.PairWithPinAsync("127.0.0.1", proxy.Port, h.Server.CurrentPin!).Bounded();
+        await client.PairWithPinAsync("127.0.0.1", proxy.Port, h.Server.CurrentPin!, TestContext.Current.CancellationToken).Bounded();
         await h.WaitForSurfaceAsync();
         client.SendState(Pens.Contact(1000, 1000), []);
         h.Time.Advance(TimeSpan.FromSeconds(2));
@@ -448,7 +446,7 @@ public class InputChannelTests
             worst = TimeSpan.FromTicks(Math.Max(worst.Ticks, (long)((watch.ElapsedTicks - t0) * (TimeSpan.TicksPerSecond / (double)System.Diagnostics.Stopwatch.Frequency))));
             if (i % 100 == 99)
             {
-                await Task.Delay(1);
+                await Task.Delay(1, TestContext.Current.CancellationToken);
             }
         }
 

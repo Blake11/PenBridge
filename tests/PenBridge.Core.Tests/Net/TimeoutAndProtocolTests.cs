@@ -7,8 +7,6 @@ using PenBridge.Core.Security;
 using SecretKind = PenBridge.Core.Security.PairingSecretKind;
 using WireSecretKind = PenBridge.Core.Protocol.PairingSecretKind;
 
-#pragma warning disable xUnit1051 // Network waits are bounded by Wait.Limit instead of the test token.
-
 namespace PenBridge.Core.Tests.Net;
 
 /// <summary>Deadlines (handshake, per-read, pairing, liveness), port fallback and protocol refusals.</summary>
@@ -79,7 +77,7 @@ public class TimeoutAndProtocolTests
         Assert.Equal(ControlMessageType.ServerPairRound1, (await raw.ReadAsync())!.Value.Type);
 
         // While the slot is held, another phone is told pairing is unavailable.
-        var busy = await Assert.ThrowsAsync<PenBridgeConnectException>(() => h.CreateClient().PairWithPinAsync("127.0.0.1", h.Port, pin).Bounded());
+        var busy = await Assert.ThrowsAsync<PenBridgeConnectException>(() => h.CreateClient().PairWithPinAsync("127.0.0.1", h.Port, pin, TestContext.Current.CancellationToken).Bounded());
         Assert.Equal(ConnectFailure.PairingUnavailable, busy.Failure);
 
         h.Time.Advance(TimeSpan.FromSeconds(20)); // the raw client never sends Round2
@@ -87,7 +85,7 @@ public class TimeoutAndProtocolTests
         await Wait.Until(() => raw.IsClosed, "stalled pairing closed");
         await Wait.Until(() => h.Server.PairingAttemptsLeft, left => left == 2, "the strike for the stalled attempt");
         PenBridgeClient client = h.CreateClient();
-        await client.PairWithPinAsync("127.0.0.1", h.Port, pin).Bounded();
+        await client.PairWithPinAsync("127.0.0.1", h.Port, pin, TestContext.Current.CancellationToken).Bounded();
         Assert.True(client.IsConnected);
     }
 
@@ -246,7 +244,7 @@ public class TimeoutAndProtocolTests
             s.LingerState = new LingerOption(true, 0);
             try
             {
-                await s.ConnectAsync(IPAddress.Loopback, h.Port);
+                await s.ConnectAsync(IPAddress.Loopback, h.Port, TestContext.Current.CancellationToken);
             }
             catch (SocketException)
             {
