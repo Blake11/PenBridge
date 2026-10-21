@@ -172,6 +172,16 @@ jobs:
           --coverage --coverage-output-format cobertura --coverage-output coverage.cobertura.xml
           --long-running 60
           --timeout 10m
+          --hangdump --hangdump-timeout 8m --hangdump-type Mini
+
+      - name: Upload hang dump
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: core-hang-dump
+          path: TestResults/**/*.dmp
+          retention-days: 3
+          if-no-files-found: ignore
 
       - name: Test report summary
         if: always()
