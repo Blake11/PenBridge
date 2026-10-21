@@ -14,6 +14,8 @@ namespace PenBridge.Mac.Settings;
 /// editor covers the display the region applies to (the store's TargetDisplay as resolved; while a window is the target
 /// that setting names the window's display, the resolver itself ignores <see cref="WindowTarget"/>) and on Done stores
 /// the selection as that display's region, stores the aspect lock and ends a window target; the window picker hands the clicked window to <see cref="WindowTarget"/>.
+/// With All displays as the target (ADR-0035 #249 amendment) the editor covers the display under the mouse pointer and
+/// Done makes that display the target with the new region; the window picker's pick names the window's display itself.
 /// </summary>
 /// <remarks>Main thread only. A display reconfiguration or a target change cancels an open overlay (its screen may be
 /// gone). Nothing is observed beyond the resolver's events.</remarks>
@@ -26,6 +28,7 @@ public sealed class RegionPicker : IDisposable
     private RegionOverlay? _overlay;
     private WindowPickerOverlay? _windowPicker;
     private bool _disposed;
+    private bool _committing;
 
     /// <param name="store">The settings (the target, the regions, the aspect lock).</param>
     /// <param name="resolver">The resolved target display.</param>
@@ -59,8 +62,11 @@ public sealed class RegionPicker : IDisposable
     /// </summary>
     public bool CanPickWindow => !_disposed && !IsOpen && _resolver.HasDisplay && AccessibilityStatus.IsTrusted();
 
-    /// <summary>True when a region can be picked now: a single target display with a screen, and no overlay open.</summary>
-    public bool CanOpen => !IsOpen && RegionDisplay() is { } display && ScreenFor(display) is not null;
+    /// <summary>
+    /// True when a region can be picked now: no overlay open and the editor's display (<see cref="EditorDisplay"/>)
+    /// has a screen.
+    /// </summary>
+    public bool CanOpen => !IsOpen && EditorDisplay() is { } display && ScreenFor(display) is not null;
 
     /// <summary>
     /// The display the region applies to, as applied (SettingsSync uses the resolved target): the chosen one, main for
@@ -68,6 +74,20 @@ public sealed class RegionPicker : IDisposable
     /// </summary>
     public DisplayInfo? RegionDisplay() =>
         _store.TargetDisplay == MacSettings.AllDisplays || _resolver.IsAllDisplays || !_resolver.HasDisplay ? null : _resolver.Target;
+
+    /// <summary>
+    /// The display the region editor covers: <see cref="RegionDisplay"/>, or for All displays the display under the
+    /// mouse pointer (main if none is); null without a display.
+    /// </summary>
+    public DisplayInfo? EditorDisplay()
+    {
+        if (RegionDisplay() is { } display)
+        {
+            return display;
+        }
+
+        return _resolver.HasDisplay ? DisplayUnderPointer() ?? _resolver.Target : null;
+    }
 
     /// <summary>
     /// Which of the three mutually exclusive areas (#247) the pen maps to: <see cref="MappingArea.Window"/> while a
@@ -108,12 +128,16 @@ public sealed class RegionPicker : IDisposable
         return null;
     }
 
-    /// <summary>Opens the overlay on the region display; does nothing if one is open or no single display applies.</summary>
+    /// <summary>
+    /// Opens the overlay on <see cref="EditorDisplay"/>; does nothing if one is open or that display has no screen.
+    /// For All displays, Done also makes that display the target (Cancel keeps All displays).
+    /// </summary>
     /// <param name="closed">Called once after this overlay closed (committed or cancelled), outside its callbacks.</param>
     /// <returns>True if the overlay opened.</returns>
     public bool Open(Action? closed = null)
     {
-        DisplayInfo? display = RegionDisplay();
+        bool retarget = RegionDisplay() is null;
+        DisplayInfo? display = EditorDisplay();
         NSScreen? screen = display is null ? null : ScreenFor(display);
         if (_disposed || display is null || screen is null || IsOpen)
         {
@@ -133,10 +157,25 @@ public sealed class RegionPicker : IDisposable
             _store.RegionAspectLock,
             (region, locked) =>
             {
-                // Done picks a region, which ends a window target (ADR-0036); Cancel keeps it.
-                _windowTarget.Clear();
-                _store.RegionAspectLock = locked;
-                _store.SetRegion(uuid, region);
+                // Done picks a region, which ends a window target (ADR-0036); Cancel keeps it. From All displays the
+                // target is written first, so the region is the new target's; SettingsSync coalesces the writes of
+                // this turn into one apply, so the phone gets one snapshot with both.
+                _committing = true;
+                try
+                {
+                    _windowTarget.Clear();
+                    if (retarget)
+                    {
+                        _store.TargetDisplay = uuid;
+                    }
+
+                    _store.RegionAspectLock = locked;
+                    _store.SetRegion(uuid, region);
+                }
+                finally
+                {
+                    _committing = false;
+                }
             },
             () => OnOverlayClosed(overlay!, closed));
         _overlay = overlay;
@@ -194,8 +233,34 @@ public sealed class RegionPicker : IDisposable
         picker?.Dispose();
     }
 
-    // A reconfiguration (display unplugged, resolution change) or a new target invalidates an open overlay's screen.
-    private void OnDisplaysChanged(object? sender, EventArgs e) => Close();
+    // A reconfiguration (display unplugged, resolution change) or a new target invalidates an open overlay's screen;
+    // not the target the editor's own Done writes (it closes right after).
+    private void OnDisplaysChanged(object? sender, EventArgs e)
+    {
+        if (!_committing)
+        {
+            Close();
+        }
+    }
+
+    // The display whose screen holds the mouse pointer (AppKit's global coordinates, edges included), or null.
+    private DisplayInfo? DisplayUnderPointer()
+    {
+        CGPoint mouse = NSEvent.CurrentMouseLocation;
+        foreach (DisplayInfo display in _resolver.Displays)
+        {
+            if (ScreenFor(display) is { } screen)
+            {
+                CGRect f = screen.Frame;
+                if (mouse.X >= f.X && mouse.X <= f.X + f.Width && mouse.Y >= f.Y && mouse.Y <= f.Y + f.Height)
+                {
+                    return display;
+                }
+            }
+        }
+
+        return null;
+    }
 
     // The pick is applied after the picker is gone, outside its own mouse callbacks.
     private void OnWindowPickerClosed(WindowPickerOverlay picker, WindowListEntry? picked)

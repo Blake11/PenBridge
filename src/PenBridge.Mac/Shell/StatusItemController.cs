@@ -432,7 +432,8 @@ public sealed partial class StatusItemController : IDisposable
         }
 
         // The area of the target display (#247): Full display, Window… (ADR-0036) or Region… (ADR-0035); exactly one is
-        // checked. All displays always uses the whole desktop, so none of them can be picked there.
+        // checked. All displays always uses the whole desktop, so Full display is disabled there; Window… and Region…
+        // pick a display along the way (ADR-0035 #249 amendment).
         submenu.AddItem(NSMenuItem.SeparatorItem);
         MappingArea area = _regionPicker.Area;
         bool single = !all && _regionPicker.RegionDisplay() is not null;
@@ -445,19 +446,19 @@ public sealed partial class StatusItemController : IDisposable
 
         // Window…: click a window to map the pen to it; it follows the window until another target is picked.
         NSMenuItem windowItem = Action(window ? "Window: " + _windowTarget.AppName : "Window…", PickWindow);
-        windowItem.Enabled = !all && _regionPicker.CanPickWindow;
+        windowItem.Enabled = _regionPicker.CanPickWindow;
         windowItem.State = area == MappingArea.Window ? NSCellStateValue.On : NSCellStateValue.Off;
-        windowItem.ToolTip = all ? "Pick a display first: All displays always uses the whole desktop."
-            : AccessibilityMissing ? "Needs the Accessibility permission to follow the window."
+        windowItem.ToolTip = AccessibilityMissing ? "Needs the Accessibility permission to follow the window."
             : window ? "The pen follows this window. Click to pick another one; pick Full display or a display to stop."
+            : all ? "Click a window to map the pen to it; its display becomes the target. Esc cancels."
             : "Click a window to map the pen to it; it follows the window's moves and resizes. Esc cancels.";
         submenu.AddItem(windowItem);
 
-        // Region…: the drag overlay for the target display.
+        // Region…: the drag overlay for the target display (for All displays, the one under the pointer).
         NSMenuItem region = Action("Region…", PickRegion);
-        region.Enabled = !all && _regionPicker.CanOpen;
+        region.Enabled = _regionPicker.CanOpen;
         region.State = area == MappingArea.Region ? NSCellStateValue.On : NSCellStateValue.Off;
-        region.ToolTip = all ? "Regions don't apply to All displays." : "Drag the part of the display the pen maps to. Esc cancels.";
+        region.ToolTip = all ? "Drag a region on the display under the pointer; Done makes it the target. Esc cancels." : "Drag the part of the display the pen maps to. Esc cancels.";
         submenu.AddItem(region);
 
         if (_resolver.IsUsingFallback)
