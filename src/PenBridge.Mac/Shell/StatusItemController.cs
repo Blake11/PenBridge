@@ -413,7 +413,7 @@ public sealed partial class StatusItemController : IDisposable
         bool all = _settings.TargetDisplay == MacSettings.AllDisplays;
         bool window = _windowTarget.IsActive;
         NSMenuItem allDisplays = Action("All displays", () => ChooseDisplay(MacSettings.AllDisplays));
-        allDisplays.State = all && !window ? NSCellStateValue.On : NSCellStateValue.Off;
+        allDisplays.State = all ? NSCellStateValue.On : NSCellStateValue.Off;
         allDisplays.ToolTip = "Every display together, as one desktop.";
         submenu.AddItem(allDisplays);
 
@@ -427,7 +427,7 @@ public sealed partial class StatusItemController : IDisposable
             string title = display.Name + (display.IsMain ? " (main)" : string.Empty);
             string uuid = display.Uuid;
             NSMenuItem entry = Action(title, () => ChooseDisplay(uuid));
-            entry.State = !all && !window && _resolver.HasDisplay && display.Uuid == _resolver.Target.Uuid ? NSCellStateValue.On : NSCellStateValue.Off;
+            entry.State = !all && _resolver.HasDisplay && display.Uuid == _resolver.Target.Uuid ? NSCellStateValue.On : NSCellStateValue.Off;
             submenu.AddItem(entry);
         }
 
