@@ -109,7 +109,8 @@ public class InputSettingsWiringTests
         h.Server.SetTarget(MappingTarget.ForDisplay(new DisplayRect(0, 0, 2000, 1000)));
         h.Server.SetInputSettings(Mouse);
         Assert.Equal(NormalizedRect.Full, h.Server.ActiveInput!.ActiveArea);
-        Assert.Null(await PingRoundTripThenAreaAsync(h, client));
+        await h.SettleAsync();
+        Assert.Null(client.LastActiveArea);
         Assert.Equal(0, received);
         Assert.True(client.IsConnected);
     }
@@ -121,17 +122,9 @@ public class InputSettingsWiringTests
         PenBridgeClient client = await h.PairAsync();
 
         h.Server.SetTarget(MappingTarget.ForDisplay(new DisplayRect(0, 0, 2000, 1000)));
-        Assert.Null(await PingRoundTripThenAreaAsync(h, client));
+        await h.SettleAsync();
+        Assert.Null(client.LastActiveArea);
         Assert.True(client.IsConnected);
-    }
-
-    private static async Task<NormalizedRect?> PingRoundTripThenAreaAsync(NetHarness h, PenBridgeClient client)
-    {
-        // The control channel is in order: once the server's Ping came back, every earlier frame was handled.
-        Assert.Null(h.Server.GetStats().RoundTripTime);
-        await Wait.Step(h.Time, Wait.PingInterval);
-        await Wait.Until(() => h.Server.GetStats().RoundTripTime is not null, "a server ping round trip");
-        return client.LastActiveArea;
     }
 
     private static bool Near(NormalizedRect a, NormalizedRect b) =>

@@ -309,7 +309,7 @@ public class InputChannelTests
             await Wait.Until(() => h.Server.GetStats().Counters.Accepted > accepted, "keepalive " + i);
             await Wait.Until(() => h.Time.CountDeadlines((s, armedFor, remaining) =>
                 s is not ControlChannel && armedFor == ackTimeout && remaining <= ackTimeout - TimeSpan.FromSeconds(1)) == 0, "ack " + i);
-            await Wait.Settled(h.Time);
+            await h.SettleAsync();
         }
 
         Assert.Equal(InputTransport.Udp, client.Transport);

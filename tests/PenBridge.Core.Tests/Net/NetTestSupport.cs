@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
@@ -210,17 +211,29 @@ internal static class Wait
     public static readonly TimeSpan Limit = TimeSpan.FromSeconds(10);
 
     /// <summary>Polls <paramref name="condition"/> (real time, bounded) for effects of asynchronous network I/O.</summary>
-    public static async Task Until(Func<bool> condition, string because)
+    public static Task Until(Func<bool> condition, string because) => Until(condition, static ok => ok, because);
+
+    /// <summary>
+    /// Polls <paramref name="probe"/> (real time, bounded by <see cref="Limit"/>) until <paramref name="ok"/> holds
+    /// for its value, and returns that value. On timeout the failure shows the last value seen.
+    /// </summary>
+    public static async Task<T> Until<T>(Func<T> probe, Func<T, bool> ok, string because)
     {
-        var deadline = DateTime.UtcNow + Limit;
-        while (!condition())
+        var elapsed = Stopwatch.StartNew();
+        for (int polls = 0; ; polls++)
         {
-            if (DateTime.UtcNow > deadline)
+            T value = probe();
+            if (ok(value))
             {
-                Assert.Fail("Timed out waiting: " + because);
+                return value;
             }
 
-            await Task.Delay(5);
+            if (elapsed.Elapsed > Limit)
+            {
+                Assert.Fail($"Timed out after {elapsed.Elapsed.TotalSeconds:0.0} s waiting: {because}; last seen: {Describe(value)}");
+            }
+
+            await Poll(polls);
         }
     }
 
@@ -230,18 +243,39 @@ internal static class Wait
     /// </summary>
     public static async Task AdvanceUntil(FakeTime time, TimeSpan step, Func<bool> condition, string because)
     {
-        var deadline = DateTime.UtcNow + Limit;
-        while (!condition())
+        var elapsed = Stopwatch.StartNew();
+        for (int polls = 0; !condition(); polls++)
         {
-            if (DateTime.UtcNow > deadline)
+            if (elapsed.Elapsed > Limit)
             {
                 Assert.Fail("Timed out advancing: " + because);
             }
 
             time.Advance(step);
-            await Task.Delay(5);
+            await Poll(polls);
         }
     }
+
+    /// <summary>A few yields first (most waits end within microseconds), then 1 ms delays so a busy machine isn't starved.</summary>
+    private static async Task Poll(int polls)
+    {
+        if (polls < 16)
+        {
+            await Task.Yield();
+        }
+        else
+        {
+            await Task.Delay(1);
+        }
+    }
+
+    private static string Describe(object? value) => value switch
+    {
+        null => "null",
+        string s => '"' + s + '"',
+        System.Collections.IEnumerable items => "[" + string.Join(", ", items.Cast<object?>().Select(Describe)) + "]",
+        _ => value.ToString() ?? "?",
+    };
 
     /// <summary>The default peer timeout and ping interval (both sides) the liveness waits assume.</summary>
     public static readonly TimeSpan PeerTimeout = TimeSpan.FromSeconds(6);
@@ -253,7 +287,7 @@ internal static class Wait
     /// default peer timeout) is more than <c>PeerTimeout - PingInterval</c> away, so the next step can't expire it.
     /// Before a round's frames arrive, a deadline is at most that far away.
     /// </summary>
-    public static Task PeersAlive(FakeTime time) =>
+    private static Task PeersAlive(FakeTime time) =>
         Until(() => time.CountDeadlines(static (state, armedFor, remaining) =>
             state is ControlChannel && armedFor == PeerTimeout && remaining <= PeerTimeout - PingInterval) == 0,
             "pings crossed the loopback");
@@ -263,13 +297,17 @@ internal static class Wait
     /// (<see cref="ControlChannel.WriteTimeout"/>), so a write that is merely slow in real time would expire if the
     /// test kept stepping.
     /// </summary>
-    public static Task WritesDone(FakeTime time) =>
+    private static Task WritesDone(FakeTime time) =>
         Until(() => time.CountDeadlines(static (state, armedFor, _) =>
             state is ControlChannel && armedFor == ControlChannel.WriteTimeout) == 0,
             "control writes finished");
 
-    /// <summary><see cref="PeersAlive"/> then <see cref="WritesDone"/>: real I/O has caught up with fake time.</summary>
-    public static async Task Settled(FakeTime time)
+    /// <summary>
+    /// <see cref="PeersAlive"/> then <see cref="WritesDone"/>: real I/O has caught up with fake time. Only for
+    /// <see cref="Step"/>, which also works without a session; tests with a session order on
+    /// <see cref="NetHarness.SettleAsync"/>.
+    /// </summary>
+    private static async Task Settled(FakeTime time)
     {
         await PeersAlive(time);
         await WritesDone(time);
@@ -371,6 +409,14 @@ internal sealed class NetHarness : IAsyncDisposable
         return client;
     }
 
+    /// <summary>
+    /// The one ordering barrier for a running session (reusable, independent of fake time): completes once every
+    /// control frame either side sent before it was handled by the other side, including the pushes those frames
+    /// caused. Events the phone raised for them are in their <see cref="EventLog{T}"/> by then.
+    /// </summary>
+    public Task SettleAsync() =>
+        (Server.ActiveConnection ?? throw new InvalidOperationException("No session to settle.")).RoundTripAsync().Bounded();
+
     public Task WaitForSurfaceAsync() =>
         Wait.Until(() => Server.ActiveInput is { IsSurfaceConfigured: true }, "server applied SurfaceInfo");
 
@@ -382,6 +428,55 @@ internal sealed class NetHarness : IAsyncDisposable
             await client.DisposeAsync().AsTask().Bounded();
         }
     }
+}
+
+/// <summary>
+/// A thread-safe record of events (subscribe with <see cref="Add"/>) that tests count from a <see cref="Mark"/>
+/// instead of a baseline or a <c>Clear()</c>: a late event from before the mark can't be mistaken for a new one.
+/// </summary>
+internal sealed class EventLog<T>
+{
+    private readonly Lock _lock = new();
+    private readonly List<T> _items = [];
+
+    public int Count
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _items.Count;
+            }
+        }
+    }
+
+    public void Add(T item)
+    {
+        lock (_lock)
+        {
+            _items.Add(item);
+        }
+    }
+
+    /// <summary>The position of the next event: pass it to <see cref="Since"/> or <see cref="WaitFor"/>.</summary>
+    public int Mark() => Count;
+
+    /// <summary>Events recorded at or after <paramref name="mark"/>, in order.</summary>
+    public T[] Since(int mark)
+    {
+        lock (_lock)
+        {
+            return [.. _items.Skip(mark)];
+        }
+    }
+
+    public T[] All() => Since(0);
+
+    /// <summary>Waits until at least <paramref name="count"/> events arrived since <paramref name="mark"/>; returns them.</summary>
+    public Task<T[]> WaitFor(int mark, int count, string because) => WaitFor(mark, got => got.Length >= count, because);
+
+    /// <summary>Waits until the events since <paramref name="mark"/> satisfy <paramref name="ok"/>; returns them.</summary>
+    public Task<T[]> WaitFor(int mark, Func<T[], bool> ok, string because) => Wait.Until(() => Since(mark), ok, because);
 }
 
 internal static class Pens
