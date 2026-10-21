@@ -458,15 +458,8 @@ public class SettingsSyncTests
         await Assert.ThrowsAsync<ArgumentException>(() => new PenBridgeClient(new PenBridgeClientOptions { SecretStore = new PenBridge.Core.Security.InMemorySecretStore(), Surface = NetHarness.Surface }).UpdateSettingsAsync([]));
     }
 
-    private static async Task<PenBridgeClient> PairAsync(NetHarness h, Action<PenBridgeClient>? subscribe = null, Func<PenBridgeClientOptions, PenBridgeClientOptions>? configure = null)
-    {
-        PenBridgeClient client = h.CreateClient(configure: configure);
-        subscribe?.Invoke(client);
-        h.Server.OpenPairingWindow();
-        await client.PairWithPinAsync("127.0.0.1", h.Port, h.Server.CurrentPin!).Bounded();
-        await h.WaitForSurfaceAsync();
-        return client;
-    }
+    private static Task<PenBridgeClient> PairAsync(NetHarness h, Action<PenBridgeClient>? subscribe = null, Func<PenBridgeClientOptions, PenBridgeClientOptions>? configure = null) =>
+        h.ConnectPairedAsync(configure: configure, subscribe: subscribe);
 
     private static SettingEntry[] Snapshot(int count) =>
         [.. new[] { SettingEntry.Int(MacSettingKey.SideButton, 1), SettingEntry.Bool(MacSettingKey.Zoom, true), SettingEntry.Int(MacSettingKey.StylusMode, 1) }.Take(count)];

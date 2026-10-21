@@ -13,16 +13,15 @@ namespace PenBridge.Core.Tests.Net;
 /// #92: a finger tap travels as one datagram (hover, contact, release). With <see cref="ProtocolCapabilities.SampleDedupe"/>
 /// the release repeats resend that whole frame at its own time, so a lost tap still clicks, and only once.
 /// </summary>
-[Collection(AllocationGroup.Name)]
 public class ClickResendTests
 {
     private static readonly PenEventKind[] OneClick = [ProximityEnter, Down, Up, ProximityLeave];
     private static readonly TimeSpan Repeat = TimeSpan.FromMilliseconds(40);
 
-    private static PenSample Finger(PenState state) =>
+    internal static PenSample Finger(PenState state) =>
         new(30000, 20000, state.HasFlag(PenState.Contact) ? (ushort)0x8000 : (ushort)0, 0, 0, 0, PenTool.FingerFallback, state, PenButtons.None);
 
-    private static readonly PenSample[] TapHistory = [Finger(PenState.InRange), Finger(PenState.InRange | PenState.Contact)];
+    internal static readonly PenSample[] TapHistory = [Finger(PenState.InRange), Finger(PenState.InRange | PenState.Contact)];
 
     /// <summary>Sends a tap frame as <see cref="InputFilter"/> replays it: hover, contact, then out of range.</summary>
     private static void SendTap(PenBridgeClient client) => client.SendState(Finger(PenState.None), [], TapHistory);
@@ -49,7 +48,7 @@ public class ClickResendTests
     public async Task Server_and_client_negotiate_sample_dedupe()
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
         Assert.Equal(ProtocolCapabilities.SampleDedupe, client.ServerCapabilities);
     }
 
@@ -57,7 +56,7 @@ public class ClickResendTests
     public async Task A_lost_tap_datagram_is_recovered_by_the_release_repeats_as_one_click()
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync(filter: Dropping(1));
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: Dropping(1));
         SendTap(client);
 
         await RunRepeatsAsync(h, client, expectAccepted: 2);
@@ -70,7 +69,7 @@ public class ClickResendTests
     public async Task Without_loss_the_repeats_add_no_second_click()
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
         SendTap(client);
 
         await RunRepeatsAsync(h, client, expectAccepted: 3);
@@ -85,7 +84,7 @@ public class ClickResendTests
     public async Task A_double_tap_keeps_click_state_two(int[] drop)
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync(filter: Dropping(drop));
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: Dropping(drop));
         SendTap(client);
         await RunRepeatsAsync(h, client, expectAccepted: 3 - (drop.Contains(1) ? 1 : 0));
         h.Time.Advance(TimeSpan.FromMilliseconds(100));
@@ -101,7 +100,7 @@ public class ClickResendTests
     public async Task A_lost_tap_after_cursor_movement_clicks_once()
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync(filter: Dropping(2));
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: Dropping(2));
         client.SendState(Finger(PenState.InRange), []); // the cursor moved there (active), then the tap
         SendTap(client);
 
@@ -115,7 +114,7 @@ public class ClickResendTests
     public async Task An_input_filter_double_tap_survives_lost_datagrams(int[] drop)
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync(filter: Dropping(drop));
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: Dropping(drop));
         var filter = new InputFilter();
         var touches = new TouchSample[InputFilter.MaxTouches];
         var finger = new RawTouch(1, true, false, 30000, 20000, 0.05f);
@@ -148,7 +147,7 @@ public class ClickResendTests
     public async Task A_tls_fallback_between_a_lost_tap_and_its_repeats_delivers_the_tap()
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync(filter: _ => false); // UDP lost from here on
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: _ => false); // UDP lost from here on
         client.SendState(Finger(PenState.InRange), []); // arms the 2 s ack deadline
         h.Time.Advance(TimeSpan.FromMilliseconds(1980));
         SendTap(client); // lost; its first repeat is due after the fallback
@@ -171,7 +170,7 @@ public class ClickResendTests
     {
         await using var h = new NetHarness();
         var blocked = new StrongBox<bool>(true);
-        PenBridgeClient client = await h.PairAsync(filter: _ => !blocked.Value);
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: _ => !blocked.Value);
         client.SendState(Finger(PenState.InRange) with { X = 1000 }, []);
         await Wait.Step(h.Time, TimeSpan.FromSeconds(2)); // fallback to TLS; the first probe is due 10 s later
         Assert.Equal(InputTransport.Tls, client.Transport);
@@ -201,7 +200,7 @@ public class ClickResendTests
     {
         await using var h = new NetHarness();
         var blocked = new StrongBox<bool>(true);
-        PenBridgeClient client = await h.PairAsync(filter: _ => !blocked.Value);
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: _ => !blocked.Value);
         SendTap(client);
         await Wait.Step(h.Time, TimeSpan.FromSeconds(2)); // repeats done (lost), then the fallback sends a new frame
         Assert.Equal(InputTransport.Tls, client.Transport);
@@ -213,7 +212,7 @@ public class ClickResendTests
     public async Task An_older_server_gets_todays_repeats_without_samples()
     {
         await using var h = new NetHarness(o => WithCapabilities(o, ProtocolCapabilities.None));
-        PenBridgeClient client = await h.PairAsync(filter: Dropping(2));
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: Dropping(2));
         Assert.Equal(ProtocolCapabilities.None, client.ServerCapabilities);
         client.SendState(Finger(PenState.InRange), []); // the cursor moves, then taps
         SendTap(client);
@@ -228,7 +227,7 @@ public class ClickResendTests
     public async Task An_older_server_gets_no_repeats_for_a_held_tap()
     {
         await using var h = new NetHarness(o => WithCapabilities(o, ProtocolCapabilities.None));
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
         SendTap(client); // a quick tap: nothing active was sent before it, so no release repeats (as before #92)
 
         await RunRepeatsAsync(h, client, expectAccepted: 1);
@@ -240,7 +239,7 @@ public class ClickResendTests
     public async Task An_older_server_without_loss_clicks_once()
     {
         await using var h = new NetHarness(o => WithCapabilities(o, ProtocolCapabilities.None));
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
         client.SendState(Finger(PenState.InRange), []);
         SendTap(client);
 
@@ -252,7 +251,7 @@ public class ClickResendTests
     public async Task New_input_after_a_tap_stops_its_resend()
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync(filter: Dropping(1));
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: Dropping(1));
         SendTap(client);
         client.SendState(Finger(PenState.InRange) with { X = 1000 }, []);
 
@@ -264,21 +263,6 @@ public class ClickResendTests
         Assert.Equal(2, client.DatagramsSealed); // the tap and the hover: no click resend after newer input
         await Wait.Until(() => h.Server.GetStats().Counters.Accepted == 1, "hover delivered");
         Assert.Equal([ProximityEnter], h.Sink.PenKinds());
-    }
-
-    [Fact]
-    public async Task Sending_and_keeping_a_click_is_allocation_free()
-    {
-        await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync();
-        PenSample gone = Finger(PenState.None);
-        PenSample[] tap = TapHistory;
-        PenSample[] hover = [Finger(PenState.InRange)];
-
-        Alloc.AssertZero(
-            100,
-            i => client.SendState(gone, [], (i & 1) == 0 ? tap : hover),
-            () => client.DatagramsSealed);
     }
 
     private static PenBridgeServerOptions WithCapabilities(PenBridgeServerOptions o, ProtocolCapabilities capabilities) => new()

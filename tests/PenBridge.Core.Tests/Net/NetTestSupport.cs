@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using PenBridge.Core.Input;
 using PenBridge.Core.Net;
 using PenBridge.Core.Protocol;
@@ -416,6 +417,29 @@ internal sealed class NetHarness : IAsyncDisposable
     /// </summary>
     public Task SettleAsync() =>
         (Server.ActiveConnection ?? throw new InvalidOperationException("No session to settle.")).RoundTripAsync().Bounded();
+
+    /// <summary>
+    /// A client that is already paired: seeds both sides with a device key and connects with reconnect auth, then
+    /// waits until the server applied its SurfaceInfo. Much cheaper than <see cref="PairAsync"/> (no J-PAKE); use it
+    /// whenever the test isn't about pairing. <paramref name="subscribe"/> runs before the connect.
+    /// </summary>
+    public async Task<PenBridgeClient> ConnectPairedAsync(
+        ISecretStore? store = null,
+        DatagramFilter? filter = null,
+        Func<PenBridgeClientOptions, PenBridgeClientOptions>? configure = null,
+        Action<PenBridgeClient>? subscribe = null)
+    {
+        store ??= new InMemorySecretStore();
+        var credentials = new ClientCredentialStore(store);
+        byte[] key = RandomNumberGenerator.GetBytes(32);
+        Registry.Add(credentials.GetOrCreateDeviceId(), "Test Phone", key);
+        credentials.SaveDeviceKey(Identity.Fingerprint, key);
+        PenBridgeClient client = CreateClient(store, filter, configure);
+        subscribe?.Invoke(client);
+        await client.ConnectAsync("127.0.0.1", Port, Identity.Fingerprint.ToArray()).Bounded();
+        await WaitForSurfaceAsync();
+        return client;
+    }
 
     public Task WaitForSurfaceAsync() =>
         Wait.Until(() => Server.ActiveInput is { IsSurfaceConfigured: true }, "server applied SurfaceInfo");

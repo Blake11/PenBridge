@@ -24,7 +24,7 @@ public class InputChannelTests
     {
         await using var h = new NetHarness();
         var captured = new List<byte[]>();
-        PenBridgeClient client = await h.PairAsync(filter: d =>
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: d =>
         {
             lock (captured)
             {
@@ -79,7 +79,7 @@ public class InputChannelTests
     {
         await using var h = new NetHarness();
         byte[]? first = null;
-        PenBridgeClient client = await h.PairAsync(filter: d =>
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: d =>
         {
             first ??= d.ToArray();
             return true;
@@ -117,7 +117,7 @@ public class InputChannelTests
     {
         await using var h = new NetHarness();
         var blocked = new StrongBox<bool>(false);
-        PenBridgeClient client = await h.PairAsync(filter: _ => !blocked.Value);
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: _ => !blocked.Value);
         client.SendState(Pens.Contact(3000, 3000), []);
         await Wait.Until(() => h.Server.GetStats().Counters.Accepted == 1, "contact frame"); // read under the input lock: watchdog armed
 
@@ -137,7 +137,7 @@ public class InputChannelTests
     {
         await using var h = new NetHarness();
         var blocked = new StrongBox<bool>(false);
-        PenBridgeClient client = await h.PairAsync(filter: _ => !blocked.Value);
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: _ => !blocked.Value);
         client.SendState(Pens.Hover(3000, 3000), []);
         await Wait.Until(() => h.Server.GetStats().Counters.Accepted == 1, "hover frame");
 
@@ -154,7 +154,7 @@ public class InputChannelTests
     public async Task Keepalives_keep_a_held_pen_down()
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
         client.SendState(Pens.Contact(3000, 3000), []);
         await Wait.Until(() => h.Server.GetStats().Counters.Accepted == 1, "contact frame");
 
@@ -172,7 +172,7 @@ public class InputChannelTests
     public async Task Withdrawn_touches_are_repeated_like_a_release_then_the_client_goes_quiet()
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
         client.SendState(null, [new TouchSample(1, true, 20000, 30000), new TouchSample(2, true, 40000, 30000)]);
         // A platform cancel (ADR-0024): the last state the phone sends has only withdrawn (not in contact) touches.
         client.SendState(null, [new TouchSample(1, false, 20000, 30000), new TouchSample(2, false, 40000, 30000)]);
@@ -192,7 +192,7 @@ public class InputChannelTests
     public async Task Input_falls_back_to_tls_when_udp_is_blocked()
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync(filter: _ => false); // UDP blocked entirely
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: _ => false); // UDP blocked entirely
         client.SendState(Pens.Hover(1000, 1000), []);
         Assert.Equal(InputTransport.None, client.Transport);
 
@@ -217,7 +217,7 @@ public class InputChannelTests
     public async Task Two_finger_touches_reach_the_gesture_recognizer()
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
         for (int i = 0; i <= 20; i++)
         {
             ushort y = (ushort)(30000 + (i * 1000));
@@ -239,7 +239,7 @@ public class InputChannelTests
     {
         await using var h = new NetHarness();
         var blocked = new StrongBox<bool>(true);
-        PenBridgeClient client = await h.PairAsync(filter: _ => !blocked.Value);
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: _ => !blocked.Value);
         client.SendState(Pens.Hover(1000, 1000), []);
         await Wait.Step(h.Time, TimeSpan.FromSeconds(2)); // the UDP ack deadline passes
         Assert.Equal(InputTransport.Tls, client.Transport);
@@ -266,7 +266,7 @@ public class InputChannelTests
     public async Task Stopping_right_after_an_ack_does_not_fall_back()
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
         client.SendState(Pens.Contact(3000, 3000), []);
         await Wait.Until(() => client.AcksReceived == 1, "first ack");
 
@@ -294,7 +294,7 @@ public class InputChannelTests
     public async Task Thirty_seconds_of_streaming_stays_on_udp_with_at_most_one_ack_per_second()
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
         client.SendState(Pens.Contact(3000, 3000), []);
         await Wait.Until(() => client.AcksReceived == 1, "first ack");
 
@@ -372,7 +372,7 @@ public class InputChannelTests
         await using var h = new NetHarness();
         var divert = new StrongBox<bool>(false);
         var diverted = new List<byte[]>();
-        PenBridgeClient client = await h.PairAsync(filter: d =>
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: d =>
         {
             if (!divert.Value)
             {

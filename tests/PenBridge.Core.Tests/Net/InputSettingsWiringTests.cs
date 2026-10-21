@@ -62,7 +62,7 @@ public class InputSettingsWiringTests
     public async Task Settings_changed_mid_session_reach_the_tracker()
     {
         await using NetHarness h = Harness();
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
 
         // Threshold 0.5: a contact at about 0.46 pressure is hover.
         h.Server.SetInputSettings(InputSettings.Default with { ClickThreshold = 0.5 });
@@ -83,7 +83,7 @@ public class InputSettingsWiringTests
     public async Task Initial_settings_apply_to_every_session()
     {
         await using NetHarness h = Harness(Mouse);
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
 
         Assert.Same(Mouse, h.Server.ActiveInput!.Settings);
         await Wait.Until(() => client.LastActiveArea == NormalizedRect.Full, "the mouse-mode area");
@@ -96,7 +96,7 @@ public class InputSettingsWiringTests
     {
         await using NetHarness h = Harness();
         int received = 0;
-        PenBridgeClient client = await h.PairAsync(configure: o => new PenBridgeClientOptions
+        PenBridgeClient client = await h.ConnectPairedAsync(configure: o => new PenBridgeClientOptions
         {
             SecretStore = o.SecretStore,
             Surface = o.Surface,
@@ -119,7 +119,7 @@ public class InputSettingsWiringTests
     public async Task A_server_without_the_capability_sends_no_active_area()
     {
         await using NetHarness h = Harness(activeArea: false);
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
 
         h.Server.SetTarget(MappingTarget.ForDisplay(new DisplayRect(0, 0, 2000, 1000)));
         await h.SettleAsync();

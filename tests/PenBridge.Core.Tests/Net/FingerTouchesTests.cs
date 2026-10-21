@@ -12,14 +12,13 @@ namespace PenBridge.Core.Tests.Net;
 /// session, and a one-finger tap that survives any one lost datagram (the echo before a lift, and release repeats at
 /// the lift's own time).
 /// </summary>
-[Collection(AllocationGroup.Name)]
 public class FingerTouchesTests
 {
     private static readonly TimeSpan Repeat = TimeSpan.FromMilliseconds(40);
-    private static readonly TouchSample[] Down = [new(1, true, 30000, 20000)];
-    private static readonly TouchSample[] Up = [];
+    internal static readonly TouchSample[] Down = [new(1, true, 30000, 20000)];
+    internal static readonly TouchSample[] Up = [];
 
-    private static NetHarness Harness(bool fingerTouches = true) => new(o => new PenBridgeServerOptions
+    internal static NetHarness Harness(bool fingerTouches = true) => new(o => new PenBridgeServerOptions
     {
         Identity = o.Identity,
         Registry = o.Registry,
@@ -36,7 +35,7 @@ public class FingerTouchesTests
     private static readonly SurfaceInfoMessage FallbackSurface =
         new(1440, 3088, 500f, 500f, SurfaceOrientation.Portrait, SurfaceCapabilities.FingerFallback);
 
-    private static PenBridgeClientOptions Phone(PenBridgeClientOptions o) => new()
+    internal static PenBridgeClientOptions Phone(PenBridgeClientOptions o) => new()
     {
         SecretStore = o.SecretStore,
         Surface = FallbackSurface,
@@ -88,7 +87,7 @@ public class FingerTouchesTests
         await using NetHarness h = Harness(fingerTouches: false);
         var sessions = new List<SessionInfo>();
         h.Server.SessionStarted += (_, e) => sessions.Add(e.Session);
-        PenBridgeClient client = await h.PairAsync(configure: Phone);
+        PenBridgeClient client = await h.ConnectPairedAsync(configure: Phone);
 
         Assert.Equal(ProtocolCapabilities.SampleDedupe, client.ServerCapabilities);
         Assert.Equal(ProtocolCapabilities.SampleDedupe, client.NegotiatedCapabilities);
@@ -109,7 +108,7 @@ public class FingerTouchesTests
         await using NetHarness h = Harness();
         var sessions = new List<SessionInfo>();
         h.Server.SessionStarted += (_, e) => sessions.Add(e.Session);
-        PenBridgeClient client = await h.PairAsync(configure: Phone);
+        PenBridgeClient client = await h.ConnectPairedAsync(configure: Phone);
 
         ProtocolCapabilities both = ProtocolCapabilities.SampleDedupe | ProtocolCapabilities.FingerTouches;
         Assert.Equal(both, client.ServerCapabilities);
@@ -129,7 +128,7 @@ public class FingerTouchesTests
     public async Task An_older_phone_gets_no_one_finger_gestures()
     {
         await using NetHarness h = Harness();
-        PenBridgeClient client = await h.PairAsync(configure: OlderPhone);
+        PenBridgeClient client = await h.ConnectPairedAsync(configure: OlderPhone);
         Assert.Equal(ProtocolCapabilities.SampleDedupe, client.NegotiatedCapabilities);
 
         var drop = new StrongBoxInt();
@@ -157,7 +156,7 @@ public class FingerTouchesTests
     {
         await using NetHarness h = Harness();
         var drop = new StrongBoxInt { Value = lost };
-        PenBridgeClient client = await h.PairAsync(filter: Dropping(drop), configure: Phone);
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: Dropping(drop), configure: Phone);
 
         client.SendState(null, Down);
         await DeliveredAsync(h, client, drop);
@@ -182,7 +181,7 @@ public class FingerTouchesTests
     {
         await using NetHarness h = Harness();
         var drop = new StrongBoxInt();
-        PenBridgeClient client = await h.PairAsync(filter: Dropping(drop), configure: Phone);
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: Dropping(drop), configure: Phone);
 
         client.SendState(null, Down);
         await DeliveredAsync(h, client, drop);
@@ -203,7 +202,7 @@ public class FingerTouchesTests
     public async Task A_phone_with_finger_fallback_off_gets_no_cursor_until_its_surface_says_on()
     {
         await using NetHarness h = Harness();
-        PenBridgeClient client = await h.PairAsync(); // NetHarness.Surface: SurfaceCapabilities.None
+        PenBridgeClient client = await h.ConnectPairedAsync(); // NetHarness.Surface: SurfaceCapabilities.None
         Assert.True((client.NegotiatedCapabilities & ProtocolCapabilities.FingerTouches) != 0);
 
         var drop = new StrongBoxInt();
@@ -229,7 +228,7 @@ public class FingerTouchesTests
     {
         await using NetHarness h = Harness();
         var drop = new StrongBoxInt { Value = lost };
-        PenBridgeClient client = await h.PairAsync(filter: Dropping(drop), configure: Phone);
+        PenBridgeClient client = await h.ConnectPairedAsync(filter: Dropping(drop), configure: Phone);
         client.SendState(null, [new TouchSample(1, true, 30000, 20000), new TouchSample(2, true, 36000, 20000)]);
         await DeliveredAsync(h, client, drop);
         client.SendState(null, [new TouchSample(2, true, 36000, 20000)]);
@@ -251,19 +250,6 @@ public class FingerTouchesTests
         Assert.Equal(2, off.Gestures.DragGain);
         Assert.True(SessionInput.WithNegotiated(null, ProtocolCapabilities.FingerTouches).Gestures.OneFingerCursor);
         Assert.Same(on, SessionInput.WithNegotiated(on, ProtocolCapabilities.FingerTouches));
-    }
-
-    [Fact]
-    public async Task Tapping_with_the_echo_is_allocation_free()
-    {
-        await using NetHarness h = Harness();
-        PenBridgeClient client = await h.PairAsync(configure: Phone);
-        TouchSample[] down = Down;
-        TouchSample[] up = Up;
-        Alloc.AssertZero(
-            200,
-            i => client.SendState(null, (i & 1) == 0 ? down : up),
-            () => client.DatagramsSealed);
     }
 
     private sealed class StrongBoxInt
