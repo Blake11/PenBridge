@@ -57,7 +57,11 @@ internal sealed class RegionOverlay : IDisposable
 
     public void Show()
     {
-        NSApplication.SharedApplication.Activate();
+        // Opened from the menu bar the accessory app isn't active, and the cooperative Activate() is ignored while
+        // another app holds focus; without activation the overlay never becomes key (no Esc).
+#pragma warning disable CA1422 // Deprecated, but the cooperative form does not take focus from the frontmost app.
+        NSApplication.SharedApplication.ActivateIgnoringOtherApps(true);
+#pragma warning restore CA1422
         _window.MakeKeyAndOrderFront(null);
         _window.MakeFirstResponder(_view);
     }

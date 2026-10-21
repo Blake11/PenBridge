@@ -25,6 +25,8 @@ public sealed class MacSettingValues
 
     public bool RegionAspectLock => Get(MacSettingKey.RegionAspectLock).BoolValue;
 
+    public bool RegionTint => Get(MacSettingKey.RegionTint).BoolValue;
+
     /// <summary>0 Pen, 1 Mouse.</summary>
     public int StylusMode => Get(MacSettingKey.StylusMode).IntValue;
 
@@ -78,8 +80,8 @@ public sealed class MacSettingValues
     /// <summary>
     /// The input settings these values describe (stylus mode, side button, pressure curve, gesture settings), for
     /// <see cref="Net.PenBridgeServer.SetInputSettings"/>. TargetDisplay, Region and RegionAspectLock are the Mac's
-    /// mapping target (<see cref="Net.PenBridgeServer.SetTarget(MappingTarget)"/>), not input settings. The values
-    /// are always valid, so the result passes <see cref="InputSettings.Validate"/>.
+    /// mapping target (<see cref="Net.PenBridgeServer.SetTarget(MappingTarget)"/>) and RegionTint its display tint,
+    /// not input settings. The values are always valid, so the result passes <see cref="InputSettings.Validate"/>.
     /// </summary>
     public InputSettings ToInputSettings() => new()
     {

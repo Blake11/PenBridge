@@ -22,6 +22,7 @@ public class MacSettingsTests
             (MacSettingKey.TargetDisplay, 1, SettingType.String, string.Empty),
             (MacSettingKey.Region, 2, SettingType.Rect, "0,0,1,1"),
             (MacSettingKey.RegionAspectLock, 3, SettingType.Bool, "false"),
+            (MacSettingKey.RegionTint, 4, SettingType.Bool, "true"),
             (MacSettingKey.StylusMode, 10, SettingType.Int, "0"),
             (MacSettingKey.MouseSpeed, 11, SettingType.Float, "1"),
             (MacSettingKey.MouseAcceleration, 12, SettingType.Bool, "true"),
@@ -92,6 +93,7 @@ public class MacSettingsTests
 
     [Theory]
     [InlineData(MacSettingKey.RegionAspectLock)]
+    [InlineData(MacSettingKey.RegionTint)]
     [InlineData(MacSettingKey.MouseAcceleration)]
     [InlineData(MacSettingKey.Zoom)]
     [InlineData(MacSettingKey.Rotate)]
@@ -248,6 +250,7 @@ public class MacSettingsTests
             SettingEntry.String(MacSettingKey.TargetDisplay, "all"),
             SettingEntry.Rect(MacSettingKey.Region, new NormalizedRect(0, 0, 0.5, 0.5)),
             SettingEntry.Bool(MacSettingKey.RegionAspectLock, true),
+            SettingEntry.Bool(MacSettingKey.RegionTint, false),
             SettingEntry.Int(MacSettingKey.SmartZoom, 2),
             SettingEntry.Float(MacSettingKey.TipFeel, -0.5f),
             SettingEntry.Float(MacSettingKey.PointerSpeed, 2f),
@@ -267,6 +270,7 @@ public class MacSettingsTests
         Assert.Equal("all", back.TargetDisplay);
         Assert.Equal(new NormalizedRect(0, 0, 0.5, 0.5), back.Region);
         Assert.True(back.RegionAspectLock);
+        Assert.False(back.RegionTint);
         Assert.Equal(2, back.SmartZoom);
         Assert.Equal(-0.5f, back.TipFeel);
         Assert.Equal(2f, back.PointerSpeed);

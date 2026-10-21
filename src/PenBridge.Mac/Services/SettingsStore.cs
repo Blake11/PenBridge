@@ -38,6 +38,7 @@ public sealed class SettingsStore
         public const string TargetDisplay = "TargetDisplay";
         public const string Region = "Region";
         public const string RegionAspectLock = "RegionAspectLock";
+        public const string RegionTint = "RegionTint";
         public const string StylusMode = "StylusMode";
         public const string MouseSpeed = "MouseSpeed";
         public const string MouseAcceleration = "MouseAcceleration";
@@ -186,6 +187,13 @@ public sealed class SettingsStore
     {
         get => GetBool(MacSettingKey.RegionAspectLock);
         set => SetBool(Keys.RegionAspectLock, value, RegionAspectLock);
+    }
+
+    /// <summary>Tint the target display outside its region while a phone is connected (ADR-0035). Default true.</summary>
+    public bool RegionTint
+    {
+        get => GetBool(MacSettingKey.RegionTint);
+        set => SetBool(Keys.RegionTint, value, RegionTint);
     }
 
     // ---- Pen (ADR-0032) ----
@@ -344,6 +352,7 @@ public sealed class SettingsStore
             SettingEntry.String(MacSettingKey.TargetDisplay, TargetDisplay),
             RegionEntry(region),
             SettingEntry.Bool(MacSettingKey.RegionAspectLock, RegionAspectLock),
+            SettingEntry.Bool(MacSettingKey.RegionTint, RegionTint),
             SettingEntry.Int(MacSettingKey.StylusMode, (int)StylusMode),
             SettingEntry.Float(MacSettingKey.MouseSpeed, MouseSpeed),
             SettingEntry.Bool(MacSettingKey.MouseAcceleration, MouseAcceleration),
@@ -383,6 +392,7 @@ public sealed class SettingsStore
         switch ((MacSettingKey)entry.Key)
         {
             case MacSettingKey.RegionAspectLock: RegionAspectLock = entry.BoolValue; return true;
+            case MacSettingKey.RegionTint: RegionTint = entry.BoolValue; return true;
             case MacSettingKey.StylusMode: StylusMode = (StylusMode)entry.IntValue; return true;
             case MacSettingKey.MouseSpeed: MouseSpeed = entry.FloatValue; return true;
             case MacSettingKey.MouseAcceleration: MouseAcceleration = entry.BoolValue; return true;

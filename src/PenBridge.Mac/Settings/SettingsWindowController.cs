@@ -34,12 +34,11 @@ public sealed class SettingsWindowController : IDisposable
     private readonly SettingsStore _store;
     private readonly DisplayTargetResolver _resolver;
     private readonly ServerHost _host;
-    private readonly Func<double?>? _phoneSurfaceAspect;
+    private readonly RegionPicker _picker;
     private readonly List<string> _targetValues = [];
 
     private SettingsWindow? _window;
     private WindowDelegate? _windowDelegate;
-    private RegionOverlay? _overlay;
     private bool _refreshing;
     private bool _disposed;
 
@@ -49,6 +48,7 @@ public sealed class SettingsWindowController : IDisposable
     private NSButton _setRegion = null!;
     private NSButton _fullDisplay = null!;
     private NSButton _aspectLock = null!;
+    private NSButton _regionTint = null!;
 
     // Pen
     private NSSegmentedControl _stylusMode = null!;
@@ -78,20 +78,17 @@ public sealed class SettingsWindowController : IDisposable
     /// <param name="store">The settings.</param>
     /// <param name="resolver">Displays for the target popup and the region overlay; driven like the menu does.</param>
     /// <param name="host">For "Allow takeover", which the host applies and persists.</param>
-    /// <param name="phoneSurfaceAspect">
-    /// The connected phone surface's width / height in its current orientation, or null when unknown; the region
-    /// aspect lock uses it, else the display's ratio. Read when the overlay opens: an overlay that is already open
-    /// keeps its aspect until the next "Set region".
-    /// </param>
-    public SettingsWindowController(SettingsStore store, DisplayTargetResolver resolver, ServerHost host, Func<double?>? phoneSurfaceAspect = null)
+    /// <param name="picker">The one region overlay, shared with the menu's Display ▸ Region….</param>
+    public SettingsWindowController(SettingsStore store, DisplayTargetResolver resolver, ServerHost host, RegionPicker picker)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(resolver);
         ArgumentNullException.ThrowIfNull(host);
+        ArgumentNullException.ThrowIfNull(picker);
         _store = store;
         _resolver = resolver;
         _host = host;
-        _phoneSurfaceAspect = phoneSurfaceAspect;
+        _picker = picker;
     }
 
     /// <summary>Opens the window (or brings it to the front), activating the accessory app.</summary>
@@ -108,6 +105,7 @@ public sealed class SettingsWindowController : IDisposable
             _store.Changed += OnStoreChanged;
             _resolver.DisplaysChanged += OnDisplaysChanged;
             _resolver.TargetChanged += OnDisplaysChanged;
+            _picker.OpenChanged += OnDisplaysChanged;
             Refresh();
             _window!.Center();
         }
@@ -207,12 +205,15 @@ public sealed class SettingsWindowController : IDisposable
         _fullDisplay = NSButton.CreateButton("Full display", () => SetRegion(NormalizedRect.Full));
         _aspectLock = Checkbox("Keep the phone's aspect ratio", v => _store.RegionAspectLock = v);
         _aspectLock.ToolTip = "The dragged rectangle keeps the phone surface's aspect ratio (the display's while no phone is connected).";
+        _regionTint = Checkbox("Tint outside the region", v => _store.RegionTint = v);
+        _regionTint.ToolTip = "While a phone is connected, the display is dimmed outside the region.";
 
         return Grid(
             [Label("Map the pen to:"), _target],
             [Label("Region:"), _regionText],
             [Empty(), Row(_setRegion, _fullDisplay)],
             [Empty(), _aspectLock],
+            [Empty(), _regionTint],
             [Empty(), Note("The region applies to the chosen display; All displays always uses the whole desktop.")]);
     }
 
@@ -328,12 +329,8 @@ public sealed class SettingsWindowController : IDisposable
 
     private void OnStoreChanged(object? sender, SettingChangedEventArgs e) => Refresh();
 
-    // A reconfiguration (display unplugged, resolution change) invalidates an open overlay's screen: cancel it.
-    private void OnDisplaysChanged(object? sender, EventArgs e)
-    {
-        _overlay?.Close();
-        Refresh();
-    }
+    // Displays, the target or the overlay changed (RegionPicker cancels an overlay whose screen went away).
+    private void OnDisplaysChanged(object? sender, EventArgs e) => Refresh();
 
     // The store may clamp a committed value (e.g. the pressure pair rule) without a change to raise; show what it kept.
     private void Commit(Action set)
@@ -415,10 +412,12 @@ public sealed class SettingsWindowController : IDisposable
             : _resolver.IsUsingFallback ? "Not connected — using the main display: " + RegionText(region, display)
             : RegionText(region, display);
         _regionText.TextColor = display is null ? NSColor.SecondaryLabel : NSColor.Label;
-        _setRegion.Enabled = display is not null && ScreenFor(display) is not null && _overlay is null;
+        _setRegion.Enabled = _picker.CanOpen;
         _fullDisplay.Enabled = display is not null && !SettingsStore.IsFull(region);
         _aspectLock.Enabled = !all;
         SetCheck(_aspectLock, _store.RegionAspectLock);
+        _regionTint.Enabled = !all;
+        SetCheck(_regionTint, _store.RegionTint);
 
         void AddTarget(string title, string value)
         {
@@ -479,47 +478,20 @@ public sealed class SettingsWindowController : IDisposable
 
     private void OnSetRegion()
     {
-        DisplayInfo? display = RegionDisplay();
-        NSScreen? screen = display is null ? null : ScreenFor(display);
-        if (display is null || screen is null || _overlay is not null)
+        if (_picker.Open(OnOverlayClosed))
         {
-            return;
+            _setRegion.Enabled = false;
         }
-
-        double? aspect = null;
-        if (_store.RegionAspectLock)
-        {
-            CGRect frame = screen.Frame;
-            aspect = _phoneSurfaceAspect?.Invoke() ?? (frame.Width / frame.Height);
-        }
-
-        string uuid = display.Uuid;
-        _overlay = new RegionOverlay(
-            screen,
-            _store.GetRegion(uuid),
-            aspect,
-            region => _store.SetRegion(uuid, region),
-            OnOverlayClosed);
-        _setRegion.Enabled = false;
-        _overlay.Show();
     }
 
     private void OnOverlayClosed()
     {
-        RegionOverlay? overlay = _overlay;
-        _overlay = null;
-
-        // Not inline: this runs inside the overlay window's own callbacks (key, mouse, resign key).
-        NSApplication.SharedApplication.BeginInvokeOnMainThread(() =>
+        if (_window is not null)
         {
-            overlay?.Dispose();
-            if (_window is not null)
-            {
-                Refresh();
-                NSApplication.SharedApplication.Activate();
-                _window.MakeKeyAndOrderFront(null);
-            }
-        });
+            Refresh();
+            NSApplication.SharedApplication.Activate();
+            _window.MakeKeyAndOrderFront(null);
+        }
     }
 
     private void SetRegion(NormalizedRect region)
@@ -539,33 +511,14 @@ public sealed class SettingsWindowController : IDisposable
             ? "Pressure –"
             : "Pressure " + pressure.ToString("0.00", CultureInfo.CurrentCulture);
 
-    /// <summary>
-    /// The display the region applies to, as applied (SettingsSync uses the resolved target): the chosen one, main for
-    /// "" or while the chosen one is disconnected (the stored choice is kept), null for All displays or no display.
-    /// </summary>
-    private DisplayInfo? RegionDisplay() =>
-        _store.TargetDisplay == MacSettings.AllDisplays || !_resolver.HasDisplay ? null : _resolver.Target;
-
-    private static NSScreen? ScreenFor(DisplayInfo display)
-    {
-        using var screenNumberKey = new NSString("NSScreenNumber");
-        foreach (NSScreen screen in NSScreen.Screens)
-        {
-            if (screen.DeviceDescription[screenNumberKey] is NSNumber number && number.UInt32Value == display.Id)
-            {
-                return screen;
-            }
-        }
-
-        return null;
-    }
+    private DisplayInfo? RegionDisplay() => _picker.RegionDisplay();
 
     private void OnWindowClosing()
     {
         _store.Changed -= OnStoreChanged;
         _resolver.DisplaysChanged -= OnDisplaysChanged;
         _resolver.TargetChanged -= OnDisplaysChanged;
-        _overlay?.Close();
+        _picker.OpenChanged -= OnDisplaysChanged;
         _pad.PressureSampled -= OnPadSampled;
 
         SettingsWindow? window = _window;

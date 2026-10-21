@@ -64,6 +64,7 @@ public static class MacSettings
         new(MacSettingKey.TargetDisplay, SettingType.String, SettingEntry.String(MacSettingKey.TargetDisplay, MainDisplay)),
         new(MacSettingKey.Region, SettingType.Rect, SettingEntry.Rect(MacSettingKey.Region, NormalizedRect.Full)),
         Bool(MacSettingKey.RegionAspectLock, false),
+        Bool(MacSettingKey.RegionTint, true),
         Enum(MacSettingKey.StylusMode, StylusModes),
         Float(MacSettingKey.MouseSpeed, 0.25f, 4f, 1f),
         Bool(MacSettingKey.MouseAcceleration, true),

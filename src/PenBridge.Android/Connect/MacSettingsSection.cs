@@ -62,6 +62,7 @@ internal sealed class MacSettingsSection
         _resetRegion = Ui.TextButton(context, "Reset region to full display", () => Send(SettingEntry.Rect(MacSettingKey.Region, NormalizedRect.Full)));
         _root.AddView(_resetRegion, Ui.WrapLp());
         _binders.Add(BindRegion);
+        AddSwitch(MacSettingKey.RegionTint, "Tint outside the region");
 
         // Pen (ADR-0032).
         _root.AddView(Ui.Text(context, "Pen", TextRole.Title), Ui.FullWidthLp(context, 16));
