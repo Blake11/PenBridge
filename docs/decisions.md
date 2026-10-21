@@ -42,6 +42,7 @@ Cite ADRs by number (and section) rather than reading this whole file.
 | 0032 | Pen settings: Pen/Mouse mode, side-button action and pressure curve, applied on the Mac | accepted |
 | 0033 | Gesture settings: Smart Zoom override, pointer and scroll speed, per-gesture toggles | accepted |
 | 0034 | Post-MVP work runs as standalone milestones, each ending with a release | accepted |
+| 0035 | Menu-bar region picker and a tint outside the active region | accepted |
 
 ## ADR-0001 — .NET 10 LTS, native platform heads + shared Core
 **Status:** accepted (2026-10-13)
@@ -385,3 +386,15 @@ Cite ADRs by number (and section) rather than reading this whole file.
   - "Later" keeps only loose ideas and small chores without a milestone of their own.
 - **Why not more phases:** phases 6+ would force an order and make blocked work (no Windows PC, no iOS device, no Apple/Play accounts) hold up unrelated work.
 - **Consequences:** the roadmap lists the milestones after the phase table; the architect-session-per-phase rule applies per milestone.
+
+## ADR-0035 — Menu-bar region picker and a tint outside the active region
+**Status:** accepted (2026-10-21). Extends ADR-0031 (region) and ADR-0030 (one new synced setting).
+- **Context:** from the Phase 5 device test (#213): picking a region needs the Settings window, and once a region is set nothing on the Mac shows which part of the screen the pad maps to.
+- **Decision:**
+  - **Menu:** the Display submenu gets a **Region…** item after the display targets. It opens the same drag overlay as Settings → Mapping → Set region… (aspect lock, Esc cancels) for the current target display, and is checked while that display has a region other than the full display. It's disabled with "All displays" (regions don't apply, ADR-0031). The display items keep their behaviour.
+  - **Tint:** while a phone session is active, the target is one display with a region other than full, and the setting is on, that display is dimmed outside the region by a fixed light dim (black at about 25 % opacity). It's hidden while the region overlay is open, while input is paused, and in Mouse mode (the region doesn't limit a relative cursor, ADR-0032). It doesn't cover other displays.
+  - **Window:** one borderless window per tinted display; it ignores mouse events (click-through), joins all Spaces and shows above full-screen apps, and is excluded from screen capture where macOS allows it (`sharingType = none`). It redraws only when the region, target, displays, session or setting change, so idle CPU stays ≈ 0 %.
+  - **Setting:** `MacSettingKey.RegionTint = 4`, Bool, default **true**, in the existing key table: "Tint outside the region" in the Mac Settings window (Mapping, under the region) and in the phone's Mac section. No protocol version change: 1.2 peers skip unknown keys (ADR-0030), so an older phone just doesn't show the switch.
+- **Why only while connected:** a permanent tint would get in the way of normal Mac use without the phone.
+- **Why a fixed strength:** one switch covers the need; a strength slider adds UI on both apps for little gain.
+- **Consequences / deferred:** a configurable tint colour or strength, and tinting the other displays, stay out of scope.

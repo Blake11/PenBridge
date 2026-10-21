@@ -55,6 +55,9 @@ public static class MacSettings
     /// <summary>Smallest width and height of <see cref="MacSettingKey.Region"/> (normalized; compared as the <c>f32</c> on the wire).</summary>
     public const float MinRegionSize = 0.05f;
 
+    /// <summary>How far a region edge may be from the display edge and still count as the full display.</summary>
+    public const double FullRegionEpsilon = 1e-6;
+
     private static readonly string[] StylusModes = ["Pen", "Mouse"];
     private static readonly string[] SideButtonActions = ["RightClick", "MiddleClick", "Eraser", "DoubleClick", "None"];
     private static readonly string[] SmartZoomModes = ["FollowSystem", "On", "Off"];
@@ -64,6 +67,7 @@ public static class MacSettings
         new(MacSettingKey.TargetDisplay, SettingType.String, SettingEntry.String(MacSettingKey.TargetDisplay, MainDisplay)),
         new(MacSettingKey.Region, SettingType.Rect, SettingEntry.Rect(MacSettingKey.Region, NormalizedRect.Full)),
         Bool(MacSettingKey.RegionAspectLock, false),
+        Bool(MacSettingKey.RegionTint, true),
         Enum(MacSettingKey.StylusMode, StylusModes),
         Float(MacSettingKey.MouseSpeed, 0.25f, 4f, 1f),
         Bool(MacSettingKey.MouseAcceleration, true),
@@ -163,6 +167,10 @@ public static class MacSettings
 
         return pairOk;
     }
+
+    /// <summary>True when a normalized region covers the whole display (within <see cref="FullRegionEpsilon"/>).</summary>
+    public static bool IsFullRegion(NormalizedRect r) =>
+        r.X <= FullRegionEpsilon && r.Y <= FullRegionEpsilon && r.Width >= 1 - FullRegionEpsilon && r.Height >= 1 - FullRegionEpsilon;
 
     /// <summary>
     /// True when the pressure range is wide enough: <c>fullPressureAt &gt; clickThreshold + 0.1</c>, computed in

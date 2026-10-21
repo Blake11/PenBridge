@@ -42,6 +42,7 @@ public sealed partial class StatusItemController : IDisposable
     private readonly PairingWindowController _pairing;
     private readonly GlobalHotkey _hotkey;
     private readonly SettingsWindowController _settingsWindow;
+    private readonly RegionPicker _regionPicker;
     private readonly ILogger _log;
     private readonly NSStatusItem _item;
     private readonly NSMenu _menu;
@@ -61,6 +62,7 @@ public sealed partial class StatusItemController : IDisposable
         PairingWindowController pairing,
         GlobalHotkey hotkey,
         SettingsWindowController settingsWindow,
+        RegionPicker regionPicker,
         ILogger<StatusItemController> log)
     {
         ArgumentNullException.ThrowIfNull(host);
@@ -70,6 +72,7 @@ public sealed partial class StatusItemController : IDisposable
         ArgumentNullException.ThrowIfNull(pairing);
         ArgumentNullException.ThrowIfNull(hotkey);
         ArgumentNullException.ThrowIfNull(settingsWindow);
+        ArgumentNullException.ThrowIfNull(regionPicker);
         ArgumentNullException.ThrowIfNull(log);
         _host = host;
         _injector = injector;
@@ -78,6 +81,7 @@ public sealed partial class StatusItemController : IDisposable
         _pairing = pairing;
         _hotkey = hotkey;
         _settingsWindow = settingsWindow;
+        _regionPicker = regionPicker;
         _log = log;
 
         _item = NSStatusBar.SystemStatusBar.CreateStatusItem(NSStatusItemLength.Variable);
@@ -420,6 +424,15 @@ public sealed partial class StatusItemController : IDisposable
         allDisplays.ToolTip = "Every display together, as one desktop.";
         submenu.AddItem(allDisplays);
 
+        // Region… (ADR-0035): the Settings window's drag overlay for the target display; checked while it has a region.
+        submenu.AddItem(NSMenuItem.SeparatorItem);
+        DisplayInfo? regionDisplay = _regionPicker.RegionDisplay();
+        NSMenuItem region = Action("Region…", PickRegion);
+        region.Enabled = _regionPicker.CanOpen;
+        region.State = regionDisplay is not null && !SettingsStore.IsFull(_settings.GetRegion(regionDisplay.Uuid)) ? NSCellStateValue.On : NSCellStateValue.Off;
+        region.ToolTip = all ? "Regions don't apply to All displays." : "Drag the part of the display the pen maps to. Esc cancels.";
+        submenu.AddItem(region);
+
         if (_resolver.IsUsingFallback)
         {
             submenu.AddItem(NSMenuItem.SeparatorItem);
@@ -459,6 +472,16 @@ public sealed partial class StatusItemController : IDisposable
 
     // target: a display UUID or MacSettings.AllDisplays. SettingsSync re-targets the resolver and the server.
     private void ChooseDisplay(string target) => _settings.TargetDisplay = target;
+
+    // After the menu has closed: the overlay must become key, which it can't while the menu still tracks.
+    private void PickRegion() =>
+        NSApplication.SharedApplication.BeginInvokeOnMainThread(() =>
+        {
+            if (!_disposed)
+            {
+                _regionPicker.Open();
+            }
+        });
 
     /// <summary>Toggles the login item (or opens System Settings while approval is pending). Shared with the Settings window.</summary>
     internal static void ToggleRunAtStartup()

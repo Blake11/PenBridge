@@ -32,6 +32,7 @@ internal sealed class MacSettingsSection
     private readonly RadioGroup _targets;
     private readonly TextView _regionText;
     private readonly View _resetRegion;
+    private readonly Switch _regionTint;
     private readonly List<Action<MacSettingValues>> _binders = [];
     private IReadOnlyList<DisplayListEntry>? _builtDisplays;
     private MacSettingValues? _values;
@@ -61,6 +62,7 @@ internal sealed class MacSettingsSection
         _root.AddView(_regionText, Ui.FullWidthLp(context, 4));
         _resetRegion = Ui.TextButton(context, "Reset region to full display", () => Send(SettingEntry.Rect(MacSettingKey.Region, NormalizedRect.Full)));
         _root.AddView(_resetRegion, Ui.WrapLp());
+        _regionTint = AddSwitch(MacSettingKey.RegionTint, "Tint outside the region");
         _binders.Add(BindRegion);
 
         // Pen (ADR-0032).
@@ -205,6 +207,10 @@ internal sealed class MacSettingsSection
             : full ? "Region: the whole display. Set a region in the Mac's PenBridge settings."
             : "Region: part of the display (set on the Mac).";
         Ui.SetEnabled(_resetRegion, !all && !full);
+
+        // The tint (ADR-0035) needs one display; a Mac before it doesn't send the setting, so the switch is hidden.
+        _regionTint.Visibility = values.Carries(MacSettingKey.RegionTint) ? ViewStates.Visible : ViewStates.Gone;
+        Ui.SetEnabled(_regionTint, !all);
     }
 
     private static bool IsFull(NormalizedRect r) =>

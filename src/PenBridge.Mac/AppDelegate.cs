@@ -11,7 +11,7 @@ using PenBridge.Mac.Shell;
 namespace PenBridge.Mac;
 
 /// <summary>
-/// Composes the menu-bar app: settings (store and Settings window), Keychain, os_log, the CGEvent injector and display resolver, the
+/// Composes the menu-bar app: settings (store, Settings window, region picker and tint), Keychain, os_log, the CGEvent injector and display resolver, the
 /// <see cref="ServerHost"/>, the status item and the global pause hotkey. Quits cleanly (Bye to the phone, advert
 /// withdrawn, nothing left pressed).
 /// </summary>
@@ -38,6 +38,8 @@ public sealed partial class AppDelegate : NSApplicationDelegate
     private ServerHost? _host;
     private PairingWindowController? _pairing;
     private GlobalHotkey? _hotkey;
+    private RegionPicker? _regionPicker;
+    private RegionTint? _regionTint;
     private SettingsWindowController? _settingsWindow;
     private StatusItemController? _statusItem;
     private bool _terminating;
@@ -66,8 +68,10 @@ public sealed partial class AppDelegate : NSApplicationDelegate
         _hotkey.Pressed += OnHotkeyPressed;
         _hotkey.Register();
 
-        _settingsWindow = new SettingsWindowController(_settings, _resolver, _host, () => _host.PhoneSurfaceAspect);
-        _statusItem = new StatusItemController(_host, _injector, _resolver, _settings, _pairing, _hotkey, _settingsWindow, _loggers.CreateLogger<StatusItemController>());
+        _regionPicker = new RegionPicker(_settings, _resolver, () => _host.PhoneSurfaceAspect);
+        _regionTint = new RegionTint(_settings, _resolver, _host, _regionPicker);
+        _settingsWindow = new SettingsWindowController(_settings, _resolver, _host, _regionPicker);
+        _statusItem = new StatusItemController(_host, _injector, _resolver, _settings, _pairing, _hotkey, _settingsWindow, _regionPicker, _loggers.CreateLogger<StatusItemController>());
         Log.Launched(_log, NSBundle.MainBundle.ObjectForInfoDictionary("CFBundleShortVersionString")?.ToString() ?? "?");
 
         PromptAccessibilityOnce();
@@ -157,7 +161,9 @@ public sealed partial class AppDelegate : NSApplicationDelegate
             }
 
             _pairing?.Dispose(); // closes the panel and the server's pairing window
-            _settingsWindow?.Dispose(); // closes the Settings window and a region overlay
+            _settingsWindow?.Dispose(); // closes the Settings window
+            _regionPicker?.Dispose(); // closes a region overlay
+            _regionTint?.Dispose();
             _settingsSync?.Dispose();
 
             // Bye(Shutdown) to the phone, advert withdrawn, injector released by the server's session teardown.

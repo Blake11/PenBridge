@@ -22,6 +22,7 @@ public class MacSettingsTests
             (MacSettingKey.TargetDisplay, 1, SettingType.String, string.Empty),
             (MacSettingKey.Region, 2, SettingType.Rect, "0,0,1,1"),
             (MacSettingKey.RegionAspectLock, 3, SettingType.Bool, "false"),
+            (MacSettingKey.RegionTint, 4, SettingType.Bool, "true"),
             (MacSettingKey.StylusMode, 10, SettingType.Int, "0"),
             (MacSettingKey.MouseSpeed, 11, SettingType.Float, "1"),
             (MacSettingKey.MouseAcceleration, 12, SettingType.Bool, "true"),
@@ -92,6 +93,7 @@ public class MacSettingsTests
 
     [Theory]
     [InlineData(MacSettingKey.RegionAspectLock)]
+    [InlineData(MacSettingKey.RegionTint)]
     [InlineData(MacSettingKey.MouseAcceleration)]
     [InlineData(MacSettingKey.Zoom)]
     [InlineData(MacSettingKey.Rotate)]
@@ -132,6 +134,37 @@ public class MacSettingsTests
     {
         MacSettingValues values = MacSettingValues.FromEntries([SettingEntry.String(MacSettingKey.TargetDisplay, "uuid-9")]);
         Assert.Equal("uuid-9", values.TargetDisplay);
+    }
+
+    [Fact]
+    public void A_snapshot_tells_which_settings_the_mac_has()
+    {
+        // An older Mac's snapshot without RegionTint: the value is the default, but it isn't carried.
+        MacSettingValues old = MacSettingValues.FromEntries(
+        [
+            SettingEntry.Bool(MacSettingKey.RegionAspectLock, true),
+            SettingEntry.Int(MacSettingKey.RegionTint, 0), // wrong type: not carried
+        ]);
+        Assert.True(old.Carries(MacSettingKey.RegionAspectLock));
+        Assert.False(old.Carries(MacSettingKey.RegionTint));
+        Assert.True(old.RegionTint);
+        Assert.False(old.Clone().Carries(MacSettingKey.RegionTint));
+
+        MacSettingValues current = MacSettingValues.FromEntries(new MacSettingValues().ToEntries());
+        Assert.True(current.Carries(MacSettingKey.RegionTint));
+
+        // The Mac's own values carry every setting.
+        Assert.True(new MacSettingValues().Carries(MacSettingKey.RegionTint));
+        Assert.Throws<ArgumentOutOfRangeException>(() => old.Carries((MacSettingKey)999));
+    }
+
+    [Fact]
+    public void Full_region_allows_a_tiny_epsilon()
+    {
+        Assert.True(MacSettings.IsFullRegion(NormalizedRect.Full));
+        Assert.True(MacSettings.IsFullRegion(new NormalizedRect(1e-7, 1e-7, 1 - 1e-7, 1 - 1e-7)));
+        Assert.False(MacSettings.IsFullRegion(new NormalizedRect(0.01, 0, 0.99, 1)));
+        Assert.False(MacSettings.IsFullRegion(new NormalizedRect(0, 0, 1, 0.5)));
     }
 
     [Fact]
@@ -248,6 +281,7 @@ public class MacSettingsTests
             SettingEntry.String(MacSettingKey.TargetDisplay, "all"),
             SettingEntry.Rect(MacSettingKey.Region, new NormalizedRect(0, 0, 0.5, 0.5)),
             SettingEntry.Bool(MacSettingKey.RegionAspectLock, true),
+            SettingEntry.Bool(MacSettingKey.RegionTint, false),
             SettingEntry.Int(MacSettingKey.SmartZoom, 2),
             SettingEntry.Float(MacSettingKey.TipFeel, -0.5f),
             SettingEntry.Float(MacSettingKey.PointerSpeed, 2f),
@@ -267,6 +301,7 @@ public class MacSettingsTests
         Assert.Equal("all", back.TargetDisplay);
         Assert.Equal(new NormalizedRect(0, 0, 0.5, 0.5), back.Region);
         Assert.True(back.RegionAspectLock);
+        Assert.False(back.RegionTint);
         Assert.Equal(2, back.SmartZoom);
         Assert.Equal(-0.5f, back.TipFeel);
         Assert.Equal(2f, back.PointerSpeed);

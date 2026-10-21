@@ -17,6 +17,9 @@ public enum MacSettingKey : ushort
     /// <summary>Bool: the dragged region keeps the phone surface's aspect ratio. Default false.</summary>
     RegionAspectLock = 3,
 
+    /// <summary>Bool: while a phone is connected, the target display is dimmed outside a non-full region (ADR-0035). Default true.</summary>
+    RegionTint = 4,
+
     /// <summary>Int: 0 Pen, 1 Mouse (ADR-0032). Default 0.</summary>
     StylusMode = 10,
 
