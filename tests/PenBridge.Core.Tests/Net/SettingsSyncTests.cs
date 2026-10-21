@@ -164,14 +164,25 @@ public class SettingsSyncTests
     {
         await using NetHarness h = Harness();
         (PenBridgeClient client, ConcurrentQueue<NormalizedRect> areas) = await PairSettledAsync(h);
-        int baseline = areas.Count;
 
-        h.Server.SendActiveArea(client.LastActiveArea!.Value); // unchanged: deduped
-        h.Server.SendActiveArea(Marker); // ordering marker behind it
+        // The server dedupes on the rect it sent; the phone only holds the wire-rounded one, so resending
+        // client.LastActiveArea would not be "unchanged". Send a known area first and dedupe against that.
+        int before = areas.Count;
+        h.Server.SendActiveArea(Marker);
+        await Wait.Until(() => areas.Count > before, "the area to dedupe against");
+        await DisplayListBarrierAsync(h, client); // nothing else from pairing is still in flight
+        int baseline = areas.Count;
+        var other = new NormalizedRect(0.25, 0, 0.5, 1);
+
+        h.Server.SendActiveArea(Marker); // unchanged: deduped
+        h.Server.SendActiveArea(other); // ordering marker behind it
         // The area event is raised after LastActiveArea is stored: wait on the queue the assertion counts.
         await Wait.Until(() => areas.Count > baseline, "the marker");
+        await DisplayListBarrierAsync(h, client); // a stray extra area would arrive before the second list
 
         Assert.Equal(1, areas.Count - baseline);
+        Assert.Equal(other.X, client.LastActiveArea!.Value.X, 4);
+        Assert.Equal(other.Width, client.LastActiveArea!.Value.Width, 4);
     }
 
     [Fact]
