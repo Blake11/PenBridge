@@ -35,6 +35,7 @@ public sealed class SettingsWindowController : IDisposable
     private readonly DisplayTargetResolver _resolver;
     private readonly ServerHost _host;
     private readonly RegionPicker _picker;
+    private readonly WindowTarget _windowTarget;
     private readonly List<string> _targetValues = [];
 
     private SettingsWindow? _window;
@@ -44,6 +45,8 @@ public sealed class SettingsWindowController : IDisposable
 
     // Display
     private NSPopUpButton _target = null!;
+    private NSGridRow _windowRow = null!;
+    private NSTextField _windowText = null!;
     private NSTextField _regionText = null!;
     private NSButton _setRegion = null!;
     private NSButton _fullDisplay = null!;
@@ -79,16 +82,19 @@ public sealed class SettingsWindowController : IDisposable
     /// <param name="resolver">Displays for the target popup and the region overlay; driven like the menu does.</param>
     /// <param name="host">For "Allow takeover", which the host applies and persists.</param>
     /// <param name="picker">The one region overlay, shared with the menu's Display ▸ Region….</param>
-    public SettingsWindowController(SettingsStore store, DisplayTargetResolver resolver, ServerHost host, RegionPicker picker)
+    /// <param name="windowTarget">The window target (ADR-0036), shown with a "Use display" button while active.</param>
+    public SettingsWindowController(SettingsStore store, DisplayTargetResolver resolver, ServerHost host, RegionPicker picker, WindowTarget windowTarget)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(resolver);
         ArgumentNullException.ThrowIfNull(host);
         ArgumentNullException.ThrowIfNull(picker);
+        ArgumentNullException.ThrowIfNull(windowTarget);
         _store = store;
         _resolver = resolver;
         _host = host;
         _picker = picker;
+        _windowTarget = windowTarget;
     }
 
     /// <summary>Opens the window (or brings it to the front), activating the accessory app.</summary>
@@ -106,6 +112,7 @@ public sealed class SettingsWindowController : IDisposable
             _resolver.DisplaysChanged += OnDisplaysChanged;
             _resolver.TargetChanged += OnDisplaysChanged;
             _picker.OpenChanged += OnDisplaysChanged;
+            _windowTarget.Changed += OnDisplaysChanged;
             Refresh();
             _window!.Center();
         }
@@ -200,6 +207,9 @@ public sealed class SettingsWindowController : IDisposable
     private NSGridView BuildDisplayTab()
     {
         _target = Popup(OnTargetChosen);
+        _windowText = NSTextField.CreateLabel(string.Empty);
+        NSButton useDisplay = NSButton.CreateButton("Use display", () => _windowTarget.Clear());
+        useDisplay.ToolTip = "Stop following the window and map the pen to its display again.";
         _regionText = NSTextField.CreateLabel(string.Empty);
         _setRegion = NSButton.CreateButton("Set region…", OnSetRegion);
         _fullDisplay = NSButton.CreateButton("Full display", () => SetRegion(NormalizedRect.Full));
@@ -208,13 +218,16 @@ public sealed class SettingsWindowController : IDisposable
         _regionTint = Checkbox("Tint outside the region", v => _store.RegionTint = v);
         _regionTint.ToolTip = "While a phone is connected, the display is dimmed outside the region.";
 
-        return Grid(
+        NSGridView grid = Grid(
             [Label("Map the pen to:"), _target],
+            [Empty(), Row(_windowText, useDisplay)],
             [Label("Region:"), _regionText],
             [Empty(), Row(_setRegion, _fullDisplay)],
             [Empty(), _aspectLock],
             [Empty(), _regionTint],
             [Empty(), Note("The region applies to the chosen display; All displays always uses the whole desktop.")]);
+        _windowRow = grid.GetRow(1);
+        return grid;
     }
 
     private NSGridView BuildPenTab()
@@ -404,6 +417,10 @@ public sealed class SettingsWindowController : IDisposable
             }
         }
 
+        // Window target (ADR-0036): the popup keeps naming its display; the row below says which window it follows.
+        _windowRow.Hidden = !_windowTarget.IsActive;
+        _windowText.StringValue = _windowTarget.IsActive ? "Window: " + _windowTarget.AppName : string.Empty;
+
         DisplayInfo? display = RegionDisplay();
         bool all = target == MacSettings.AllDisplays;
         NormalizedRect region = display is null ? NormalizedRect.Full : _store.GetRegion(display.Uuid);
@@ -473,6 +490,7 @@ public sealed class SettingsWindowController : IDisposable
             return;
         }
 
+        _windowTarget.Clear(); // picking a display ends a window target, even its own display (ADR-0036)
         _store.TargetDisplay = _targetValues[index]; // SettingsSync re-targets the resolver and the server
     }
 
@@ -499,6 +517,7 @@ public sealed class SettingsWindowController : IDisposable
         DisplayInfo? display = RegionDisplay();
         if (display is not null)
         {
+            _windowTarget.Clear(); // a region choice ends a window target (ADR-0036)
             _store.SetRegion(display.Uuid, region);
         }
     }
@@ -519,6 +538,7 @@ public sealed class SettingsWindowController : IDisposable
         _resolver.DisplaysChanged -= OnDisplaysChanged;
         _resolver.TargetChanged -= OnDisplaysChanged;
         _picker.OpenChanged -= OnDisplaysChanged;
+        _windowTarget.Changed -= OnDisplaysChanged;
         _pad.PressureSampled -= OnPadSampled;
 
         SettingsWindow? window = _window;

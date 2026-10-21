@@ -9,14 +9,15 @@ namespace PenBridge.Mac.Settings;
 
 /// <summary>
 /// The tint outside the active region (ADR-0035): one borderless, click-through window over the target display that
-/// dims everything but the region at about 25 % black.
+/// dims everything but the region at about 25 % black. With a window target (ADR-0036) the window's rect is the hole.
 /// </summary>
 /// <remarks>
 /// <para>When it shows is Core's <see cref="RegionTintRule.IsVisible"/> (session, pause, setting, overlay, one-display
 /// target, region, Pen mode); this class only feeds it the live state and draws. Other displays are never covered.</para>
 /// <para>Main thread only and event-driven: it re-evaluates on <see cref="SettingsStore.Changed"/> (target, region,
 /// tint setting, stylus mode), the resolver's
-/// target and display events, <see cref="ServerHost.StateChanged"/> and <see cref="RegionPicker.OpenChanged"/>, and
+/// target and display events, <see cref="ServerHost.StateChanged"/>, <see cref="RegionPicker.OpenChanged"/> and the
+/// <see cref="WindowTarget"/>'s events (each move or resize, so the hole follows the window), and
 /// redraws only when the display frame or the region changed. Nothing polls; hidden, it costs nothing.</para>
 /// <para>The region is normalized to the display with a top-left origin, y down (the store's and the mapper's
 /// convention); <see cref="RegionTintRule.HoleInView"/> flips it into AppKit's bottom-left view coordinates, in points,
@@ -30,6 +31,7 @@ public sealed class RegionTint : IDisposable
     private readonly DisplayTargetResolver _resolver;
     private readonly ServerHost _host;
     private readonly RegionPicker _picker;
+    private readonly WindowTarget _windowTarget;
     private TintWindow? _window;
     private TintView? _view;
     private CGRect _frame;
@@ -37,8 +39,9 @@ public sealed class RegionTint : IDisposable
     private bool _visible;
     private bool _disposed;
 
-    public RegionTint(SettingsStore store, DisplayTargetResolver resolver, ServerHost host, RegionPicker picker)
+    public RegionTint(SettingsStore store, DisplayTargetResolver resolver, ServerHost host, RegionPicker picker, WindowTarget windowTarget)
     {
+        ArgumentNullException.ThrowIfNull(windowTarget);
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(resolver);
         ArgumentNullException.ThrowIfNull(host);
@@ -47,11 +50,14 @@ public sealed class RegionTint : IDisposable
         _resolver = resolver;
         _host = host;
         _picker = picker;
+        _windowTarget = windowTarget;
         _store.Changed += OnStoreChanged;
         _resolver.TargetChanged += OnChanged;
         _resolver.DisplaysChanged += OnChanged;
         _host.StateChanged += OnChanged;
         _picker.OpenChanged += OnChanged;
+        _windowTarget.Changed += OnChanged;
+        _windowTarget.FrameChanged += OnChanged;
         Update();
     }
 
@@ -68,6 +74,8 @@ public sealed class RegionTint : IDisposable
         _resolver.DisplaysChanged -= OnChanged;
         _host.StateChanged -= OnChanged;
         _picker.OpenChanged -= OnChanged;
+        _windowTarget.Changed -= OnChanged;
+        _windowTarget.FrameChanged -= OnChanged;
         if (_window is not null)
         {
             _window.OrderOut(null);
@@ -98,7 +106,8 @@ public sealed class RegionTint : IDisposable
         }
 
         ServerHostState state = _host.State;
-        DisplayInfo? display = _picker.RegionDisplay();
+        bool windowTarget = _windowTarget.IsActive && _windowTarget.Display is not null;
+        DisplayInfo? display = windowTarget ? _windowTarget.Display : _picker.RegionDisplay();
         NormalizedRect region = display is null ? NormalizedRect.Full : _store.GetRegion(display.Uuid);
         var tint = new RegionTintState(
             Connected: state.Status == ServerHostStatus.Connected,
@@ -107,7 +116,8 @@ public sealed class RegionTint : IDisposable
             OverlayOpen: _picker.IsOpen,
             SingleDisplay: display is not null,
             Region: region,
-            Mode: _store.StylusMode);
+            Mode: _store.StylusMode,
+            Window: windowTarget ? _windowTarget.Region : null);
         NSScreen? screen = display is not null && RegionTintRule.IsVisible(tint) ? RegionPicker.ScreenFor(display) : null;
         if (screen is null)
         {
@@ -115,7 +125,7 @@ public sealed class RegionTint : IDisposable
             return;
         }
 
-        Show(screen.Frame, region);
+        Show(screen.Frame, tint.Active);
     }
 
     private void Show(CGRect frame, NormalizedRect region)

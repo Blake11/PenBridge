@@ -43,6 +43,7 @@ Cite ADRs by number (and section) rather than reading this whole file.
 | 0033 | Gesture settings: Smart Zoom override, pointer and scroll speed, per-gesture toggles | accepted |
 | 0034 | Post-MVP work runs as standalone milestones, each ending with a release | accepted |
 | 0035 | Menu-bar region picker and a tint outside the active region | accepted |
+| 0036 | A window as the target: click to pick, follows moves and resizes | accepted |
 
 ## ADR-0001 — .NET 10 LTS, native platform heads + shared Core
 **Status:** accepted (2026-10-13)
@@ -398,3 +399,16 @@ Cite ADRs by number (and section) rather than reading this whole file.
 - **Why only while connected:** a permanent tint would get in the way of normal Mac use without the phone.
 - **Why a fixed strength:** one switch covers the need; a strength slider adds UI on both apps for little gain.
 - **Consequences / deferred:** a configurable tint colour or strength, and tinting the other displays, stay out of scope.
+
+## ADR-0036 — A window as the target: click to pick, follows moves and resizes
+**Status:** accepted (2026-10-21). Adds a third target kind to ADR-0031; reuses the ADR-0035 tint.
+- **Context:** the user wants to map the pad onto one app window (e.g. Krita's canvas window) without drawing a region by hand, and to keep the mapping right when the window moves.
+- **Decision:**
+  - **Pick:** Display ▸ **Window…** (after Region…) starts a click picker. It highlights the window under the cursor, a click picks it, and Esc cancels. Only normal app windows on screen qualify, never PenBridge's own windows, the Dock or the menu bar. Window frames come from the window list and the window itself from Accessibility (`AXUIElement`), so the existing Accessibility grant is enough and no Screen Recording permission is needed. While the target is active the menu item is checked and reads "Window: <app name>".
+  - **Target:** the window's frame, clipped to the display that holds most of it, is mapped like a region of that display (`MappingTarget.ForDisplay(displayBounds, windowRect)`). The phone's active area follows its aspect ratio (ADR-0031) and is re-sent on every change.
+  - **Tracking:** event-driven through Accessibility notifications (moved, resized, minimised/restored, destroyed, app terminated), with no polling. While the window is moved or resized, `ActiveArea` updates are coalesced, at most one per 50 ms plus a final one when it settles. While the window is minimised, hidden, or on another Space, the pad maps to its whole display. When it closes or its app quits, the target goes back to that display.
+  - **State:** Mac-local and not persisted. It's cleared when PenBridge quits, or when a display, All displays or Region… is picked (from the menu, the Settings window or the phone). It isn't synced: `TargetDisplay` keeps naming the window's display, so phones need no change and no protocol change is made. The stored per-display regions are left untouched. Settings → Mapping shows "Window: <app name>" with a "Use display" button while it's active.
+  - **Tint:** the ADR-0035 tint (same switch and rules, including the Mouse-mode hide) dims the display outside the window.
+- **Why click-to-pick over a menu list:** window titles in a list need the Screen Recording permission, and clicking the window you see is quicker.
+- **Why follow instead of a one-time snapshot:** a snapshot goes stale as soon as the window moves.
+- **Consequences / deferred:** a window spanning two displays maps only its part on the main-share display. Restoring the window target after a restart, picking from the phone, and per-app targets are out of scope.
