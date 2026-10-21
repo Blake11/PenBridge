@@ -43,6 +43,7 @@ public sealed partial class StatusItemController : IDisposable
     private readonly GlobalHotkey _hotkey;
     private readonly SettingsWindowController _settingsWindow;
     private readonly RegionPicker _regionPicker;
+    private readonly WindowTarget _windowTarget;
     private readonly ILogger _log;
     private readonly NSStatusItem _item;
     private readonly NSMenu _menu;
@@ -63,6 +64,7 @@ public sealed partial class StatusItemController : IDisposable
         GlobalHotkey hotkey,
         SettingsWindowController settingsWindow,
         RegionPicker regionPicker,
+        WindowTarget windowTarget,
         ILogger<StatusItemController> log)
     {
         ArgumentNullException.ThrowIfNull(host);
@@ -73,6 +75,7 @@ public sealed partial class StatusItemController : IDisposable
         ArgumentNullException.ThrowIfNull(hotkey);
         ArgumentNullException.ThrowIfNull(settingsWindow);
         ArgumentNullException.ThrowIfNull(regionPicker);
+        ArgumentNullException.ThrowIfNull(windowTarget);
         ArgumentNullException.ThrowIfNull(log);
         _host = host;
         _injector = injector;
@@ -82,6 +85,7 @@ public sealed partial class StatusItemController : IDisposable
         _hotkey = hotkey;
         _settingsWindow = settingsWindow;
         _regionPicker = regionPicker;
+        _windowTarget = windowTarget;
         _log = log;
 
         _item = NSStatusBar.SystemStatusBar.CreateStatusItem(NSStatusItemLength.Variable);
@@ -93,6 +97,7 @@ public sealed partial class StatusItemController : IDisposable
         _injector.AccessibilityChanged += OnAccessibilityChanged;
         _resolver.TargetChanged += OnDisplaysChanged;
         _resolver.DisplaysChanged += OnDisplaysChanged;
+        _windowTarget.Changed += OnDisplaysChanged;
 
         BuildMenu();
         UpdateIcon();
@@ -141,6 +146,7 @@ public sealed partial class StatusItemController : IDisposable
         _injector.AccessibilityChanged -= OnAccessibilityChanged;
         _resolver.TargetChanged -= OnDisplaysChanged;
         _resolver.DisplaysChanged -= OnDisplaysChanged;
+        _windowTarget.Changed -= OnDisplaysChanged;
         _item.Menu = null;
         NSStatusBar.SystemStatusBar.RemoveStatusItem(_item);
         _menu.Dispose();
@@ -405,6 +411,7 @@ public sealed partial class StatusItemController : IDisposable
         var submenu = new NSMenu { AutoEnablesItems = false };
         IReadOnlyList<DisplayInfo> displays = _resolver.Displays;
         bool all = _settings.TargetDisplay == MacSettings.AllDisplays;
+        bool window = _windowTarget.IsActive;
         if (displays.Count == 0)
         {
             submenu.AddItem(Disabled("No displays"));
@@ -415,12 +422,12 @@ public sealed partial class StatusItemController : IDisposable
             string title = display.Name + (display.IsMain ? " (main)" : string.Empty);
             string uuid = display.Uuid;
             NSMenuItem entry = Action(title, () => ChooseDisplay(uuid));
-            entry.State = !all && _resolver.HasDisplay && display.Uuid == _resolver.Target.Uuid ? NSCellStateValue.On : NSCellStateValue.Off;
+            entry.State = !all && !window && _resolver.HasDisplay && display.Uuid == _resolver.Target.Uuid ? NSCellStateValue.On : NSCellStateValue.Off;
             submenu.AddItem(entry);
         }
 
         NSMenuItem allDisplays = Action("All displays", () => ChooseDisplay(MacSettings.AllDisplays));
-        allDisplays.State = all ? NSCellStateValue.On : NSCellStateValue.Off;
+        allDisplays.State = all && !window ? NSCellStateValue.On : NSCellStateValue.Off;
         allDisplays.ToolTip = "Every display together, as one desktop.";
         submenu.AddItem(allDisplays);
 
@@ -429,9 +436,19 @@ public sealed partial class StatusItemController : IDisposable
         DisplayInfo? regionDisplay = _regionPicker.RegionDisplay();
         NSMenuItem region = Action("Region…", PickRegion);
         region.Enabled = _regionPicker.CanOpen;
-        region.State = regionDisplay is not null && !SettingsStore.IsFull(_settings.GetRegion(regionDisplay.Uuid)) ? NSCellStateValue.On : NSCellStateValue.Off;
+        region.State = !window && regionDisplay is not null && !SettingsStore.IsFull(_settings.GetRegion(regionDisplay.Uuid)) ? NSCellStateValue.On : NSCellStateValue.Off;
         region.ToolTip = all ? "Regions don't apply to All displays." : "Drag the part of the display the pen maps to. Esc cancels.";
         submenu.AddItem(region);
+
+        // Window… (ADR-0036): click a window to map the pen to it; it follows the window until another target is picked.
+        NSMenuItem windowItem = Action(window ? "Window: " + _windowTarget.AppName : "Window…", PickWindow);
+        windowItem.Enabled = _regionPicker.CanPickWindow;
+        windowItem.State = window ? NSCellStateValue.On : NSCellStateValue.Off;
+        windowItem.ToolTip = AccessibilityMissing
+            ? "Needs the Accessibility permission to follow the window."
+            : window ? "The pen follows this window. Click to pick another one; pick a display to stop."
+            : "Click a window to map the pen to it; it follows the window's moves and resizes. Esc cancels.";
+        submenu.AddItem(windowItem);
 
         if (_resolver.IsUsingFallback)
         {
@@ -471,7 +488,12 @@ public sealed partial class StatusItemController : IDisposable
     }
 
     // target: a display UUID or MacSettings.AllDisplays. SettingsSync re-targets the resolver and the server.
-    private void ChooseDisplay(string target) => _settings.TargetDisplay = target;
+    // Picking a display ends a window target even when it names the same display (ADR-0036).
+    private void ChooseDisplay(string target)
+    {
+        _windowTarget.Clear();
+        _settings.TargetDisplay = target;
+    }
 
     // After the menu has closed: the overlay must become key, which it can't while the menu still tracks.
     private void PickRegion() =>
@@ -480,6 +502,16 @@ public sealed partial class StatusItemController : IDisposable
             if (!_disposed)
             {
                 _regionPicker.Open();
+            }
+        });
+
+    // After the menu has closed, like Region….
+    private void PickWindow() =>
+        NSApplication.SharedApplication.BeginInvokeOnMainThread(() =>
+        {
+            if (!_disposed)
+            {
+                _regionPicker.OpenWindowPicker();
             }
         });
 

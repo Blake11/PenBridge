@@ -1,4 +1,5 @@
 using AppKit;
+using CoreFoundation;
 using Foundation;
 using Microsoft.Extensions.Logging;
 using PenBridge.Core.Input;
@@ -27,6 +28,10 @@ namespace PenBridge.Mac.Services;
 /// the acknowledgement, even when nothing changed). Core coalesces the pushes too (latest wins).</para>
 /// <para>The target is applied only when it changed, so an unrelated setting never touches the mapper; no display at
 /// all stops input at the injector instead (<see cref="CGEventTabletInjector.IsTargetAvailable"/>).</para>
+/// <para><b>Window target</b> (ADR-0036): while <see cref="WindowTarget.IsActive"/> the target is the window's part of
+/// its display. Its moves and resizes go to the server (and so as ActiveArea to the phone) through an
+/// <see cref="UpdateThrottle"/>: at most one per 50 ms plus a final one, with a one-shot timer armed only during a
+/// burst. A phone update carrying TargetDisplay or Region clears it, like the menu and the Settings window do.</para>
 /// </remarks>
 public sealed partial class SettingsSync : IDisposable
 {
@@ -35,6 +40,9 @@ public sealed partial class SettingsSync : IDisposable
     private readonly ServerHost _host;
     private readonly CGEventTabletInjector _injector;
     private readonly ILogger _log;
+    private readonly WindowTarget _windowTarget;
+    private readonly UpdateThrottle _throttle = new(UpdateThrottle.ActiveAreaInterval);
+    private int _throttleGeneration;
     private DisplayListEntry[] _displayList = [];
     private MappingTarget? _appliedTarget;
     private InputSettings? _appliedInput;
@@ -43,8 +51,9 @@ public sealed partial class SettingsSync : IDisposable
     private bool _disposed;
 
     /// <summary>Wires everything and applies the stored settings at once (before the server starts).</summary>
-    public SettingsSync(SettingsStore store, DisplayTargetResolver resolver, ServerHost host, CGEventTabletInjector injector, ILogger<SettingsSync> log)
+    public SettingsSync(SettingsStore store, DisplayTargetResolver resolver, ServerHost host, CGEventTabletInjector injector, WindowTarget windowTarget, ILogger<SettingsSync> log)
     {
+        ArgumentNullException.ThrowIfNull(windowTarget);
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(resolver);
         ArgumentNullException.ThrowIfNull(host);
@@ -56,11 +65,14 @@ public sealed partial class SettingsSync : IDisposable
         _host = host;
         _injector = injector;
         _log = log;
+        _windowTarget = windowTarget;
 
         _store.Changed += OnStoreChanged;
         _resolver.TargetChanged += OnTargetChanged;
         _resolver.DisplaysChanged += OnDisplaysChanged;
         _host.SettingsUpdateRequested += OnSettingsUpdateRequested;
+        _windowTarget.Changed += OnWindowTargetChanged;
+        _windowTarget.FrameChanged += OnWindowFrameChanged;
 
         _resolver.SetTarget(_store.TargetDisplay);
         PublishDisplays();
@@ -82,6 +94,9 @@ public sealed partial class SettingsSync : IDisposable
         _resolver.TargetChanged -= OnTargetChanged;
         _resolver.DisplaysChanged -= OnDisplaysChanged;
         _host.SettingsUpdateRequested -= OnSettingsUpdateRequested;
+        _windowTarget.Changed -= OnWindowTargetChanged;
+        _windowTarget.FrameChanged -= OnWindowFrameChanged;
+        _throttleGeneration++;
     }
 
     private void OnStoreChanged(object? sender, SettingChangedEventArgs e)
@@ -102,6 +117,58 @@ public sealed partial class SettingsSync : IDisposable
 
     private void OnTargetChanged(object? sender, EventArgs e) => QueueApply();
 
+    // Started, stopped, shown, hidden or a new display: applied at once; a pending coalesced move is superseded.
+    private void OnWindowTargetChanged(object? sender, EventArgs e)
+    {
+        _throttle.Reset();
+        _throttleGeneration++;
+        QueueApply();
+    }
+
+    // A move or resize: at most one target (and ActiveArea) per 50 ms, plus the last one when the burst ends.
+    private void OnWindowFrameChanged(object? sender, EventArgs e)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        switch (_throttle.Change(Now(), out TimeSpan delay))
+        {
+            case ThrottleStep.SendNow:
+                ApplyCurrentTarget();
+                break;
+            case ThrottleStep.Arm:
+                int generation = _throttleGeneration;
+                DispatchQueue.MainQueue.DispatchAfter(new DispatchTime(DispatchTime.Now, delay), () => OnThrottleTimer(generation));
+                break;
+        }
+    }
+
+    private void OnThrottleTimer(int generation)
+    {
+        if (generation == _throttleGeneration && !_disposed && _throttle.Fire(Now()))
+        {
+            ApplyCurrentTarget();
+        }
+    }
+
+    private void ApplyCurrentTarget()
+    {
+        try
+        {
+            ApplyTarget(CurrentValues());
+        }
+#pragma warning disable CA1031 // Runs from window notifications and a dispatch block; logged instead of thrown into the run loop.
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            Log.ApplyFailed(_log, ex);
+        }
+    }
+
+    private static TimeSpan Now() => TimeSpan.FromMilliseconds(Environment.TickCount64);
+
     private void OnDisplaysChanged(object? sender, EventArgs e)
     {
         PublishDisplays();
@@ -113,6 +180,12 @@ public sealed partial class SettingsSync : IDisposable
         if (_disposed)
         {
             return;
+        }
+
+        // Picking a display or a region on the phone ends a window target (ADR-0036), even when the value is unchanged.
+        if (Carries(e.Entries, MacSettingKey.TargetDisplay) || Carries(e.Entries, MacSettingKey.Region))
+        {
+            _windowTarget.Clear();
         }
 
         MacSettingValues values = CurrentValues();
@@ -160,6 +233,19 @@ public sealed partial class SettingsSync : IDisposable
         {
             _store.SetRegion(regionDisplay, values.Region);
         }
+    }
+
+    private static bool Carries(IReadOnlyList<SettingEntry> entries, MacSettingKey key)
+    {
+        foreach (SettingEntry entry in entries)
+        {
+            if (entry.Key == (ushort)key)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static SettingEntry? LastOf(IReadOnlyList<SettingEntry> entries, MacSettingKey key, SettingType type)
@@ -243,7 +329,9 @@ public sealed partial class SettingsSync : IDisposable
             return;
         }
 
-        MappingTarget target = values.TargetDisplay == MacSettings.AllDisplays
+        MappingTarget target = _windowTarget is { IsActive: true, Display: { } windowDisplay }
+            ? MappingTarget.ForDisplay(windowDisplay.Bounds, _windowTarget.Region)
+            : values.TargetDisplay == MacSettings.AllDisplays
             ? AllDisplaysTarget()
             : MappingTarget.ForDisplay(_resolver.Target.Bounds, values.Region);
         if (_appliedTarget is null || !SameTarget(_appliedTarget, target))

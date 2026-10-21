@@ -11,7 +11,7 @@ using PenBridge.Mac.Shell;
 namespace PenBridge.Mac;
 
 /// <summary>
-/// Composes the menu-bar app: settings (store, Settings window, region picker and tint), Keychain, os_log, the CGEvent injector and display resolver, the
+/// Composes the menu-bar app: settings (store, Settings window, region and window pickers, window target and tint), Keychain, os_log, the CGEvent injector and display resolver, the
 /// <see cref="ServerHost"/>, the status item and the global pause hotkey. Quits cleanly (Bye to the phone, advert
 /// withdrawn, nothing left pressed).
 /// </summary>
@@ -34,6 +34,7 @@ public sealed partial class AppDelegate : NSApplicationDelegate
     private SettingsStore? _settings;
     private CGEventTabletInjector? _injector;
     private DisplayTargetResolver? _resolver;
+    private WindowTarget? _windowTarget;
     private SettingsSync? _settingsSync;
     private ServerHost? _host;
     private PairingWindowController? _pairing;
@@ -58,20 +59,21 @@ public sealed partial class AppDelegate : NSApplicationDelegate
         _settings = new SettingsStore();
         _injector = new CGEventTabletInjector(_loggers.CreateLogger<CGEventTabletInjector>());
         _resolver = new DisplayTargetResolver(_settings.TargetDisplay, _loggers.CreateLogger<DisplayTargetResolver>());
+        _windowTarget = new WindowTarget(_settings, _resolver, _loggers.CreateLogger<WindowTarget>()); // ADR-0036, not persisted
         _host = new ServerHost(_injector, SecretStoreFactory.Create(_loggers), _settings, _loggers);
 
         // Applies the stored settings and target before the server starts, then follows every change (ADR-0030).
-        _settingsSync = new SettingsSync(_settings, _resolver, _host, _injector, _loggers.CreateLogger<SettingsSync>());
+        _settingsSync = new SettingsSync(_settings, _resolver, _host, _injector, _windowTarget, _loggers.CreateLogger<SettingsSync>());
         _pairing = new PairingWindowController(_host);
 
         _hotkey = new GlobalHotkey(_loggers.CreateLogger<GlobalHotkey>());
         _hotkey.Pressed += OnHotkeyPressed;
         _hotkey.Register();
 
-        _regionPicker = new RegionPicker(_settings, _resolver, () => _host.PhoneSurfaceAspect);
-        _regionTint = new RegionTint(_settings, _resolver, _host, _regionPicker);
-        _settingsWindow = new SettingsWindowController(_settings, _resolver, _host, _regionPicker);
-        _statusItem = new StatusItemController(_host, _injector, _resolver, _settings, _pairing, _hotkey, _settingsWindow, _regionPicker, _loggers.CreateLogger<StatusItemController>());
+        _regionPicker = new RegionPicker(_settings, _resolver, _windowTarget, () => _host.PhoneSurfaceAspect);
+        _regionTint = new RegionTint(_settings, _resolver, _host, _regionPicker, _windowTarget);
+        _settingsWindow = new SettingsWindowController(_settings, _resolver, _host, _regionPicker, _windowTarget);
+        _statusItem = new StatusItemController(_host, _injector, _resolver, _settings, _pairing, _hotkey, _settingsWindow, _regionPicker, _windowTarget, _loggers.CreateLogger<StatusItemController>());
         Log.Launched(_log, NSBundle.MainBundle.ObjectForInfoDictionary("CFBundleShortVersionString")?.ToString() ?? "?");
 
         PromptAccessibilityOnce();
@@ -165,6 +167,7 @@ public sealed partial class AppDelegate : NSApplicationDelegate
             _regionPicker?.Dispose(); // closes a region overlay
             _regionTint?.Dispose();
             _settingsSync?.Dispose();
+            _windowTarget?.Dispose(); // AX observer and its run-loop source released
 
             // Bye(Shutdown) to the phone, advert withdrawn, injector released by the server's session teardown.
             await _host!.DisposeAsync().ConfigureAwait(true);

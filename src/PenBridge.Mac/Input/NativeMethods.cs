@@ -4,7 +4,7 @@ namespace PenBridge.Mac.Input;
 
 /// <summary>
 /// CoreGraphics/ApplicationServices functions used directly: the ones .NET for macOS does not bind (display list and
-/// UUID, Accessibility), and the CGEvent calls of the per-sample hot path, which go through raw handles so no managed
+/// UUID, Accessibility, the window list and AX observers of a window target), and the CGEvent calls of the per-sample hot path, which go through raw handles so no managed
 /// wrapper is allocated per event. Off the hot path the bindings are used (CGEventSource, the CGEventField/CGEventType
 /// enums for field and type ids, CGDisplay bounds and main id, NSScreen).
 /// </summary>
@@ -119,6 +119,110 @@ internal static class NativeMethods
     /// <summary><c>Boolean AXIsProcessTrustedWithOptions(CFDictionaryRef)</c>; with the prompt option it shows the system prompt.</summary>
     [DllImport(ApplicationServices)]
     internal static extern byte AXIsProcessTrustedWithOptions(IntPtr options);
+
+    // ---- Window target (ADR-0036): the window list, Accessibility elements and observers ----
+
+    /// <summary><c>kCGWindowListOptionOnScreenOnly</c>: windows on screen now (the current Space), front to back.</summary>
+    internal const uint WindowListOnScreenOnly = 1;
+
+    /// <summary><c>kCGWindowListOptionIncludingWindow</c>: just the given window, on screen or not.</summary>
+    internal const uint WindowListIncludingWindow = 8;
+
+    /// <summary><c>kCGWindowListExcludeDesktopElements</c>: no desktop picture or icons.</summary>
+    internal const uint WindowListExcludeDesktopElements = 16;
+
+    /// <summary><c>kAXValueCGPointType</c>.</summary>
+    internal const int AXValueCGPointType = 1;
+
+    /// <summary><c>kAXValueCGSizeType</c>.</summary>
+    internal const int AXValueCGSizeType = 2;
+
+    /// <summary>
+    /// <c>CFArrayRef CGWindowListCopyWindowInfo(CGWindowListOption, CGWindowID relativeToWindow)</c>; +1 retained, may be
+    /// NULL. Bounds, owner pid and name, layer and number need no Screen Recording permission (titles do; not used).
+    /// </summary>
+    [DllImport(CoreGraphics)]
+    internal static extern IntPtr CGWindowListCopyWindowInfo(uint option, uint relativeToWindow);
+
+    /// <summary><c>AXUIElementRef AXUIElementCreateApplication(pid_t)</c>; +1 retained.</summary>
+    [DllImport(ApplicationServices)]
+    internal static extern IntPtr AXUIElementCreateApplication(int pid);
+
+    /// <summary><c>AXError AXUIElementCopyAttributeValue(AXUIElementRef, CFStringRef, CFTypeRef *)</c>; the value is +1 retained; 0 = success.</summary>
+    [DllImport(ApplicationServices)]
+    internal static extern int AXUIElementCopyAttributeValue(IntPtr element, IntPtr attribute, out IntPtr value);
+
+    /// <summary>
+    /// <c>AXError AXUIElementSetMessagingTimeout(AXUIElementRef, float seconds)</c>: bounds how long a call to a busy app
+    /// blocks (the calls run on the main thread).
+    /// </summary>
+    [DllImport(ApplicationServices)]
+    internal static extern int AXUIElementSetMessagingTimeout(IntPtr element, float timeoutInSeconds);
+
+    /// <summary><c>Boolean AXValueGetValue(AXValueRef, kAXValueCGPointType, CGPoint *)</c>; 0 when the value isn't a point.</summary>
+    [DllImport(ApplicationServices, EntryPoint = "AXValueGetValue")]
+    internal static extern byte AXValueGetPoint(IntPtr value, int type, out NativePoint point);
+
+    /// <summary><c>Boolean AXValueGetValue(AXValueRef, kAXValueCGSizeType, CGSize *)</c>; 0 when the value isn't a size.</summary>
+    [DllImport(ApplicationServices, EntryPoint = "AXValueGetValue")]
+    internal static extern byte AXValueGetSize(IntPtr value, int type, out NativeSize size);
+
+    /// <summary>
+    /// <c>AXError AXObserverCreate(pid_t, AXObserverCallback, AXObserverRef *)</c>; +1 retained. The callback is
+    /// <c>void (AXObserverRef, AXUIElementRef element, CFStringRef notification, void *refcon)</c>.
+    /// </summary>
+    [DllImport(ApplicationServices)]
+    internal static extern unsafe int AXObserverCreate(int pid, delegate* unmanaged[Cdecl]<IntPtr, IntPtr, IntPtr, IntPtr, void> callback, out IntPtr observer);
+
+    /// <summary><c>AXError AXObserverAddNotification(AXObserverRef, AXUIElementRef, CFStringRef, void *refcon)</c>.</summary>
+    [DllImport(ApplicationServices)]
+    internal static extern int AXObserverAddNotification(IntPtr observer, IntPtr element, IntPtr notification, IntPtr refcon);
+
+    /// <summary><c>AXError AXObserverRemoveNotification(AXObserverRef, AXUIElementRef, CFStringRef)</c>.</summary>
+    [DllImport(ApplicationServices)]
+    internal static extern int AXObserverRemoveNotification(IntPtr observer, IntPtr element, IntPtr notification);
+
+    /// <summary><c>CFRunLoopSourceRef AXObserverGetRunLoopSource(AXObserverRef)</c>; not retained (owned by the observer).</summary>
+    [DllImport(ApplicationServices)]
+    internal static extern IntPtr AXObserverGetRunLoopSource(IntPtr observer);
+
+    /// <summary><c>CFRunLoopRef CFRunLoopGetMain(void)</c>; not retained.</summary>
+    [DllImport(CoreFoundation)]
+    internal static extern IntPtr CFRunLoopGetMain();
+
+    [DllImport(CoreFoundation)]
+    internal static extern void CFRunLoopAddSource(IntPtr runLoop, IntPtr source, IntPtr mode);
+
+    [DllImport(CoreFoundation)]
+    internal static extern void CFRunLoopRemoveSource(IntPtr runLoop, IntPtr source, IntPtr mode);
+
+    /// <summary><c>CFIndex CFArrayGetCount(CFArrayRef)</c>.</summary>
+    [DllImport(CoreFoundation)]
+    internal static extern nint CFArrayGetCount(IntPtr array);
+
+    /// <summary><c>const void *CFArrayGetValueAtIndex(CFArrayRef, CFIndex)</c>; not retained.</summary>
+    [DllImport(CoreFoundation)]
+    internal static extern IntPtr CFArrayGetValueAtIndex(IntPtr array, nint index);
+
+    /// <summary><c>CFTypeRef CFRetain(CFTypeRef)</c>.</summary>
+    [DllImport(CoreFoundation)]
+    internal static extern IntPtr CFRetain(IntPtr cf);
+
+    /// <summary><c>Boolean CFEqual(CFTypeRef, CFTypeRef)</c>.</summary>
+    [DllImport(CoreFoundation)]
+    internal static extern byte CFEqual(IntPtr a, IntPtr b);
+
+    /// <summary><c>CFTypeID CFGetTypeID(CFTypeRef)</c>.</summary>
+    [DllImport(CoreFoundation)]
+    internal static extern nuint CFGetTypeID(IntPtr cf);
+
+    /// <summary><c>CFTypeID CFBooleanGetTypeID(void)</c>.</summary>
+    [DllImport(CoreFoundation)]
+    internal static extern nuint CFBooleanGetTypeID();
+
+    /// <summary><c>Boolean CFBooleanGetValue(CFBooleanRef)</c>.</summary>
+    [DllImport(CoreFoundation)]
+    internal static extern byte CFBooleanGetValue(IntPtr boolean);
 }
 
 /// <summary>C <c>CGPoint</c> on 64-bit macOS (two <c>CGFloat</c> = double), blittable.</summary>
@@ -139,4 +243,12 @@ internal readonly struct NativeRect(double x, double y, double width, double hei
     public readonly double Height = height;
 
     public bool Contains(double x, double y) => x >= X && y >= Y && x < X + Width && y < Y + Height;
+}
+
+/// <summary>C <c>CGSize</c> on 64-bit macOS (two <c>CGFloat</c> = double), blittable.</summary>
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+internal readonly struct NativeSize(double width, double height)
+{
+    public readonly double Width = width;
+    public readonly double Height = height;
 }

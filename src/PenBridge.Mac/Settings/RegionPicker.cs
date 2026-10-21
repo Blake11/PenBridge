@@ -8,9 +8,10 @@ using PenBridge.Mac.Services;
 namespace PenBridge.Mac.Settings;
 
 /// <summary>
-/// Owns the one region overlay (ADR-0031, ADR-0035): Settings → Set region… and the menu's Display ▸ Region… both open
-/// it here, so at most one exists. It covers the display the region applies to (the resolved target) and stores the
-/// dragged rect as that display's region.
+/// Owns the one picker overlay: the region drag (ADR-0031, ADR-0035; Settings → Set region… and the menu's Display ▸
+/// Region…) and the window click picker (ADR-0036, Display ▸ Window…), so at most one of them exists. The region
+/// overlay covers the display the region applies to (the resolved target) and stores the dragged rect as that
+/// display's region; the window picker hands the clicked window to <see cref="WindowTarget"/>.
 /// </summary>
 /// <remarks>Main thread only. A display reconfiguration or a target change cancels an open overlay (its screen may be
 /// gone). Nothing is observed beyond the resolver's events.</remarks>
@@ -18,32 +19,43 @@ public sealed class RegionPicker : IDisposable
 {
     private readonly SettingsStore _store;
     private readonly DisplayTargetResolver _resolver;
+    private readonly WindowTarget _windowTarget;
     private readonly Func<double?>? _phoneSurfaceAspect;
     private RegionOverlay? _overlay;
+    private WindowPickerOverlay? _windowPicker;
     private bool _disposed;
 
     /// <param name="store">The settings (the target, the regions, the aspect lock).</param>
     /// <param name="resolver">The resolved target display.</param>
+    /// <param name="windowTarget">The window target the window picker sets; picking a region clears it.</param>
     /// <param name="phoneSurfaceAspect">
     /// The connected phone surface's width / height in its current orientation, or null when unknown; the aspect lock
     /// uses it, else the display's ratio. Read when the overlay opens.
     /// </param>
-    public RegionPicker(SettingsStore store, DisplayTargetResolver resolver, Func<double?>? phoneSurfaceAspect = null)
+    public RegionPicker(SettingsStore store, DisplayTargetResolver resolver, WindowTarget windowTarget, Func<double?>? phoneSurfaceAspect = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(resolver);
+        ArgumentNullException.ThrowIfNull(windowTarget);
         _store = store;
         _resolver = resolver;
+        _windowTarget = windowTarget;
         _phoneSurfaceAspect = phoneSurfaceAspect;
         _resolver.DisplaysChanged += OnDisplaysChanged;
         _resolver.TargetChanged += OnDisplaysChanged;
     }
 
-    /// <summary>Raised (main thread) when the overlay opens or closes; read <see cref="IsOpen"/>.</summary>
+    /// <summary>Raised (main thread) when an overlay (region or window picker) opens or closes; read <see cref="IsOpen"/>.</summary>
     public event EventHandler? OpenChanged;
 
-    /// <summary>True while the overlay is showing.</summary>
-    public bool IsOpen => _overlay is not null;
+    /// <summary>True while the region overlay or the window picker is showing.</summary>
+    public bool IsOpen => _overlay is not null || _windowPicker is not null;
+
+    /// <summary>
+    /// True when a window can be picked now: no overlay open, a display exists, and the Accessibility grant (needed
+    /// to follow the window) is present.
+    /// </summary>
+    public bool CanPickWindow => !_disposed && !IsOpen && _resolver.HasDisplay && AccessibilityStatus.IsTrusted();
 
     /// <summary>True when a region can be picked now: a single target display with a screen, and no overlay open.</summary>
     public bool CanOpen => !IsOpen && RegionDisplay() is { } display && ScreenFor(display) is not null;
@@ -78,10 +90,13 @@ public sealed class RegionPicker : IDisposable
     {
         DisplayInfo? display = RegionDisplay();
         NSScreen? screen = display is null ? null : ScreenFor(display);
-        if (_disposed || display is null || screen is null || _overlay is not null)
+        if (_disposed || display is null || screen is null || IsOpen)
         {
             return false;
         }
+
+        // Picking a region ends a window target (ADR-0036); the overlay then edits the display's stored region.
+        _windowTarget.Clear();
 
         double? aspect = null;
         if (_store.RegionAspectLock)
@@ -104,8 +119,36 @@ public sealed class RegionPicker : IDisposable
         return true;
     }
 
-    /// <summary>Cancels an open overlay.</summary>
-    public void Close() => _overlay?.Close();
+    /// <summary>
+    /// Opens the window click picker over every display; does nothing if an overlay is open or no window can be
+    /// picked. A click makes that window the target; Esc keeps the current target.
+    /// </summary>
+    /// <returns>True if the picker opened.</returns>
+    public bool OpenWindowPicker()
+    {
+        if (!CanPickWindow)
+        {
+            return false;
+        }
+
+        WindowPickerOverlay? picker = null;
+        WindowListEntry? picked = null;
+        picker = new WindowPickerOverlay(
+            WindowList.OnScreenAppWindows(Environment.ProcessId),
+            window => picked = window,
+            () => OnWindowPickerClosed(picker!, picked));
+        _windowPicker = picker;
+        OpenChanged?.Invoke(this, EventArgs.Empty);
+        picker.Show();
+        return true;
+    }
+
+    /// <summary>Cancels an open overlay or window picker.</summary>
+    public void Close()
+    {
+        _overlay?.Close();
+        _windowPicker?.Close();
+    }
 
     public void Dispose()
     {
@@ -120,10 +163,70 @@ public sealed class RegionPicker : IDisposable
         RegionOverlay? overlay = _overlay;
         _overlay = null;
         overlay?.Dispose();
+        WindowPickerOverlay? picker = _windowPicker;
+        _windowPicker = null;
+        picker?.Dispose();
     }
 
     // A reconfiguration (display unplugged, resolution change) or a new target invalidates an open overlay's screen.
     private void OnDisplaysChanged(object? sender, EventArgs e) => Close();
+
+    // The pick is applied after the picker is gone, outside its own mouse callbacks.
+    private void OnWindowPickerClosed(WindowPickerOverlay picker, WindowListEntry? picked)
+    {
+        if (!ReferenceEquals(_windowPicker, picker))
+        {
+            return; // disposed meanwhile
+        }
+
+        _windowPicker = null;
+        NSApplication.SharedApplication.BeginInvokeOnMainThread(() =>
+        {
+            picker.Dispose();
+            if (_disposed)
+            {
+                return;
+            }
+
+            if (picked is not null)
+            {
+                if (_windowTarget.Track(picked))
+                {
+                    ActivateApp(picked.Pid);
+                }
+                else
+                {
+                    ShowCannotFollow(picked.OwnerName);
+                }
+            }
+
+            OpenChanged?.Invoke(this, EventArgs.Empty);
+        });
+    }
+
+    // The click went to the picker, not the app: bring the picked window's app to the front, as a click on it would.
+    // PenBridge is active after the picker, so it yields activation first (cooperative activation, macOS 14+).
+    private static void ActivateApp(int pid)
+    {
+        using NSRunningApplication? app = NSRunningApplication.GetRunningApplication(pid);
+        if (app is not null)
+        {
+            NSApplication.SharedApplication.YieldActivation(app);
+            _ = app.Activate(NSApplicationActivationOptions.ActivateAllWindows);
+        }
+    }
+
+    // Started from a run-loop perform, so the modal doesn't stall the main queue (skill mac-build-run).
+    private static void ShowCannotFollow(string app)
+    {
+        using var alert = new NSAlert
+        {
+            MessageText = "PenBridge can't follow this window",
+            InformativeText = (app.Length == 0 ? "The app" : app) + " doesn't report the window through Accessibility, so the pen keeps its current target.",
+            AlertStyle = NSAlertStyle.Informational,
+        };
+        _ = alert.RunModal();
+    }
 
     private void OnOverlayClosed(RegionOverlay overlay, Action? closed)
     {

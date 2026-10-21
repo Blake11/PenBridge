@@ -64,4 +64,28 @@ public class RegionTintRuleTests
         Assert.Equal(new ViewRect(0, 300, 400, 300), RegionTintRule.HoleInView(new NormalizedRect(0, 0, 0.5, 0.5), 800, 600));
         Assert.Equal(new ViewRect(400, 0, 400, 300), RegionTintRule.HoleInView(new NormalizedRect(0.5, 0.5, 0.5, 0.5), 800, 600));
     }
+
+    [Fact]
+    public void A_window_target_replaces_the_region()
+    {
+        var window = new NormalizedRect(0.1, 0.2, 0.3, 0.4);
+
+        // A full stored region still tints around the window; a full-display window (maximised, or minimised and
+        // mapped to its whole display) hides the tint even with a stored region.
+        Assert.True(RegionTintRule.IsVisible(Shown with { Region = NormalizedRect.Full, Window = window }));
+        Assert.False(RegionTintRule.IsVisible(Shown with { Window = NormalizedRect.Full }));
+        Assert.Equal(window, (Shown with { Window = window }).Active);
+        Assert.Equal(Part, Shown.Active);
+    }
+
+    [Fact]
+    public void A_window_target_keeps_the_other_rules()
+    {
+        RegionTintState window = Shown with { Region = NormalizedRect.Full, Window = new NormalizedRect(0.1, 0.2, 0.3, 0.4) };
+        Assert.False(RegionTintRule.IsVisible(window with { Connected = false }));
+        Assert.False(RegionTintRule.IsVisible(window with { Paused = true }));
+        Assert.False(RegionTintRule.IsVisible(window with { Enabled = false }));
+        Assert.False(RegionTintRule.IsVisible(window with { OverlayOpen = true }));
+        Assert.False(RegionTintRule.IsVisible(window with { Mode = StylusMode.Mouse }));
+    }
 }
