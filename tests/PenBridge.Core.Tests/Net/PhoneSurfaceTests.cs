@@ -1,8 +1,6 @@
 using PenBridge.Core.Net;
 using PenBridge.Core.Protocol;
 
-#pragma warning disable xUnit1051 // Network waits are bounded by Wait.Limit instead of the test token.
-
 namespace PenBridge.Core.Tests.Net;
 
 /// <summary>#200: the host reads the connected phone's surface size from the server.</summary>
@@ -16,7 +14,7 @@ public class PhoneSurfaceTests
         int raised = 0;
         h.Server.PhoneSurfaceChanged += (_, _) => Interlocked.Increment(ref raised);
 
-        await h.PairAsync();
+        await h.ConnectPairedAsync();
 
         await Wait.Until(() => h.Server.PhoneSurface is not null, "surface published");
         Assert.Equal(new PhoneSurfaceSize(1440, 3088), h.Server.PhoneSurface);
@@ -28,7 +26,7 @@ public class PhoneSurfaceTests
     public async Task A_second_SurfaceInfo_updates_the_surface()
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
         await Wait.Until(() => h.Server.PhoneSurface is not null, "surface published");
 
         await client.UpdateSurfaceAsync(new SurfaceInfoMessage(3088, 1440, 500f, 500f, SurfaceOrientation.Landscape, SurfaceCapabilities.None)).Bounded();
@@ -40,7 +38,7 @@ public class PhoneSurfaceTests
     public async Task Surface_is_cleared_with_an_event_when_the_session_ends()
     {
         await using var h = new NetHarness();
-        await h.PairAsync();
+        await h.ConnectPairedAsync();
         await Wait.Until(() => h.Server.PhoneSurface is not null, "surface published");
         int raised = 0;
         h.Server.PhoneSurfaceChanged += (_, _) => Interlocked.Increment(ref raised);
@@ -64,7 +62,7 @@ public class PhoneSurfaceTests
             seen.TrySetResult(value);
         };
 
-        await h.PairAsync();
+        await h.ConnectPairedAsync();
 
         PhoneSurfaceSize? observed = await seen.Task.Bounded();
         Assert.Equal(new PhoneSurfaceSize(1440, 3088), observed);

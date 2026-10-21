@@ -7,8 +7,6 @@ using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
 using PenBridge.Core.Settings;
 
-#pragma warning disable xUnit1051 // Network waits are bounded by Wait.Limit instead of the test token.
-
 namespace PenBridge.Core.Tests.Net;
 
 /// <summary>Protocol 1.2 over the engine (ADR-0030, ADR-0031): settings snapshot/update, display list, active area, compatibility.</summary>
@@ -69,7 +67,7 @@ public class SettingsSyncTests
         var log = new ConcurrentQueue<string>();
         var snapshots = new ConcurrentQueue<IReadOnlyList<SettingEntry>>();
         var lists = new ConcurrentQueue<IReadOnlyList<DisplayListEntry>>();
-        PenBridgeClient client = await PairAsync(h, c =>
+        PenBridgeClient client = await ConnectAsync(h, c =>
         {
             c.SettingsSnapshotReceived += (_, e) =>
             {
@@ -113,49 +111,32 @@ public class SettingsSyncTests
     private static readonly NormalizedRect Marker = new(0, 0.25, 1, 0.5);
 
     /// <summary>
-    /// Pairs and waits until every pairing-time active-area push (the connect-time one and the SurfaceInfo's resend) has
-    /// reached the phone, without moving the area: the server pinged, so it read the pairing SurfaceInfo (in-order
-    /// channel) and its resend is queued; each display list drain starts after the previous drain's writes, and a drain
-    /// writes any pending area after its displays, so the second list arriving means the area was written and received.
+    /// Pairs and settles, so every pairing-time active-area push (the connect-time one and the SurfaceInfo's resend)
+    /// is in the log: tests count only what arrives after a <see cref="EventLog{T}.Mark"/> taken here.
     /// </summary>
-    private static async Task<(PenBridgeClient Client, ConcurrentQueue<NormalizedRect> Areas)> PairSettledAsync(NetHarness h)
+    private static async Task<(PenBridgeClient Client, EventLog<NormalizedRect> Areas)> PairSettledAsync(NetHarness h)
     {
-        var areas = new ConcurrentQueue<NormalizedRect>();
-        PenBridgeClient client = await PairAsync(h, c => c.ActiveAreaReceived += (_, e) => areas.Enqueue(e.Area));
-        await Wait.Until(() => !areas.IsEmpty, "the area after pairing");
-        await PingRoundTripAsync(h);
-        await DisplayListBarrierAsync(h, client);
+        var areas = new EventLog<NormalizedRect>();
+        PenBridgeClient client = await ConnectAsync(h, c => c.ActiveAreaReceived += (_, e) => areas.Add(e.Area));
+        await h.SettleAsync();
+        Assert.NotEqual(0, areas.Count); // the pairing-time area arrived
         return (client, areas);
-    }
-
-    /// <summary>
-    /// An ordering barrier that leaves the single-use ping free: two display lists (the second differs from the first,
-    /// and the list before them is neither), so once both arrived every earlier push, area included, has arrived.
-    /// </summary>
-    private static async Task DisplayListBarrierAsync(NetHarness h, PenBridgeClient client)
-    {
-        DisplayListEntry[] first = [Displays[1]];
-        await h.Server.SendDisplayListAsync(first);
-        await Wait.Until(() => client.LastDisplayList is { } l && l.Count == 1 && l[0] == first[0], "the first settling list");
-        DisplayListEntry[] second = [Displays[0]];
-        await h.Server.SendDisplayListAsync(second);
-        await Wait.Until(() => client.LastDisplayList is { } l && l.Count == 1 && l[0] == second[0], "the second settling list");
     }
 
     [Fact]
     public async Task Surface_changes_are_answered_with_the_active_area_even_when_unchanged()
     {
         await using NetHarness h = Harness();
-        (PenBridgeClient client, ConcurrentQueue<NormalizedRect> areas) = await PairSettledAsync(h);
-        int baseline = areas.Count;
+        (PenBridgeClient client, EventLog<NormalizedRect> areas) = await PairSettledAsync(h);
+        int mark = areas.Mark();
         NormalizedRect area = client.LastActiveArea!.Value;
 
         // Both SurfaceInfos may reach the server before the writer drains: still at least one push, the unchanged area.
         await client.UpdateSurfaceAsync(NetHarness.Surface);
         await client.UpdateSurfaceAsync(NetHarness.Surface);
-        await Wait.Until(() => areas.Count > baseline, "the area after the surface changes");
+        await h.SettleAsync();
 
-        Assert.InRange(areas.Count - baseline, 1, 2);
+        Assert.InRange(areas.Since(mark).Length, 1, 2);
         Assert.Equal(area, client.LastActiveArea!.Value);
     }
 
@@ -163,48 +144,47 @@ public class SettingsSyncTests
     public async Task An_unchanged_active_area_without_a_surface_change_is_not_resent()
     {
         await using NetHarness h = Harness();
-        (PenBridgeClient client, ConcurrentQueue<NormalizedRect> areas) = await PairSettledAsync(h);
+        (PenBridgeClient client, EventLog<NormalizedRect> areas) = await PairSettledAsync(h);
 
         // The server dedupes on the rect it sent; the phone only holds the wire-rounded one, so resending
         // client.LastActiveArea would not be "unchanged". Send a known area first and dedupe against that.
-        int before = areas.Count;
+        int before = areas.Mark();
         h.Server.SendActiveArea(Marker);
-        await Wait.Until(() => areas.Count > before, "the area to dedupe against");
-        await DisplayListBarrierAsync(h, client); // nothing else from pairing is still in flight
-        int baseline = areas.Count;
+        await h.SettleAsync();
+        Assert.Single(areas.Since(before));
+        int mark = areas.Mark();
         var other = new NormalizedRect(0.25, 0, 0.5, 1);
 
         h.Server.SendActiveArea(Marker); // unchanged: deduped
         h.Server.SendActiveArea(other); // ordering marker behind it
-        // The area event is raised after LastActiveArea is stored: wait on the queue the assertion counts.
-        await Wait.Until(() => areas.Count > baseline, "the marker");
-        await DisplayListBarrierAsync(h, client); // a stray extra area would arrive before the second list
+        await h.SettleAsync();
 
-        Assert.Equal(1, areas.Count - baseline);
-        Assert.Equal(other.X, client.LastActiveArea!.Value.X, 4);
-        Assert.Equal(other.Width, client.LastActiveArea!.Value.Width, 4);
+        NormalizedRect got = Assert.Single(areas.Since(mark));
+        Assert.Equal(other.X, got.X, 4);
+        Assert.Equal(other.Width, got.Width, 4);
+        Assert.Equal(got, client.LastActiveArea);
     }
 
     [Fact]
     public async Task The_active_area_reaches_the_phone_and_only_changes_are_sent()
     {
         await using NetHarness h = Harness();
-        (PenBridgeClient client, ConcurrentQueue<NormalizedRect> areas) = await PairSettledAsync(h);
-        areas.Clear(); // every pairing-time push has arrived: only the sends below count
+        (PenBridgeClient client, EventLog<NormalizedRect> areas) = await PairSettledAsync(h);
+        int mark = areas.Mark(); // every pairing-time push has arrived: only the sends below count
 
         var first = new NormalizedRect(0.125, 0, 0.75, 1);
         h.Server.SendActiveArea(first);
-        await Wait.Until(() => !areas.IsEmpty, "first active area");
+        await areas.WaitFor(mark, 1, "first active area");
         h.Server.SendActiveArea(first); // unchanged: not sent again
         h.Server.SendActiveArea(NormalizedRect.Full);
-        await Wait.Until(() => areas.Count >= 2 && client.LastActiveArea == NormalizedRect.Full, "active areas");
-        await DisplayListBarrierAsync(h, client); // a stray extra area would arrive before the second list
+        await h.SettleAsync();
 
-        NormalizedRect[] got = [.. areas];
+        NormalizedRect[] got = areas.Since(mark);
         Assert.Equal(2, got.Length);
         Assert.Equal(first.X, got[0].X, 4);
         Assert.Equal(first.Width, got[0].Width, 4);
         Assert.Equal(NormalizedRect.Full, got[1]);
+        Assert.Equal(NormalizedRect.Full, client.LastActiveArea);
     }
 
     [Fact]
@@ -212,7 +192,7 @@ public class SettingsSyncTests
     {
         await using NetHarness h = Harness(remoteSettings: false, activeArea: false);
         int received = 0;
-        PenBridgeClient client = await PairAsync(h, c =>
+        PenBridgeClient client = await ConnectAsync(h, c =>
         {
             c.SettingsSnapshotReceived += (_, _) => Interlocked.Increment(ref received);
             c.DisplayListReceived += (_, _) => Interlocked.Increment(ref received);
@@ -225,7 +205,7 @@ public class SettingsSyncTests
         await h.Server.SendDisplayListAsync(Displays);
         h.Server.SendActiveArea(NormalizedRect.Full);
         Assert.False(await client.UpdateSettingsAsync([SettingEntry.Bool(MacSettingKey.Zoom, false)]));
-        await PingRoundTripAsync(h);
+        await h.SettleAsync();
 
         Assert.Equal(0, received);
         Assert.Null(client.LastSettingsSnapshot);
@@ -241,7 +221,7 @@ public class SettingsSyncTests
         int received = 0;
         var sessions = new ConcurrentQueue<SessionInfo>();
         h.Server.SessionStarted += (_, e) => sessions.Enqueue(e.Session);
-        PenBridgeClient client = await PairAsync(
+        PenBridgeClient client = await ConnectAsync(
             h,
             c =>
             {
@@ -255,7 +235,7 @@ public class SettingsSyncTests
         Assert.Equal(ProtocolCapabilities.SampleDedupe, Assert.Single(sessions).Capabilities);
         await h.Server.SendSettingsSnapshotAsync(MacSettings.Defaults);
         h.Server.SendActiveArea(NormalizedRect.Full);
-        await PingRoundTripAsync(h);
+        await h.SettleAsync();
 
         Assert.Equal(0, received);
         Assert.True(client.SendState(Pens.Contact(100, 100), []));
@@ -266,7 +246,7 @@ public class SettingsSyncTests
     public async Task A_settings_update_without_the_capability_is_a_protocol_error()
     {
         await using NetHarness h = Harness();
-        PenBridgeClient client = await PairAsync(h, configure: WithCapabilities(OlderPhone));
+        PenBridgeClient client = await ConnectAsync(h, configure: WithCapabilities(OlderPhone));
         var ended = new TaskCompletionSource<ClientDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         client.Disconnected += (_, e) => ended.TrySetResult(e);
 
@@ -280,7 +260,7 @@ public class SettingsSyncTests
     public async Task A_phone_sending_a_server_message_is_a_protocol_error()
     {
         await using NetHarness h = Harness();
-        PenBridgeClient client = await PairAsync(h);
+        PenBridgeClient client = await ConnectAsync(h);
         var ended = new TaskCompletionSource<ClientDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         client.Disconnected += (_, e) => ended.TrySetResult(e);
 
@@ -313,11 +293,11 @@ public class SettingsSyncTests
             Interlocked.Increment(ref calls);
             throw new InvalidOperationException("UI bug");
         };
-        PenBridgeClient client = await PairAsync(h);
+        PenBridgeClient client = await ConnectAsync(h);
 
         Assert.True(await client.UpdateSettingsAsync([SettingEntry.Bool(MacSettingKey.Zoom, false)]));
         await Wait.Until(() => Volatile.Read(ref calls) == 1, "update handled");
-        await PingRoundTripAsync(h);
+        await h.SettleAsync();
 
         Assert.True(client.IsConnected);
     }
@@ -333,7 +313,7 @@ public class SettingsSyncTests
             _ = h.Server.SendSettingsSnapshotAsync([SettingEntry.Int(MacSettingKey.SideButton, n)]);
         };
         var snapshots = new ConcurrentQueue<IReadOnlyList<SettingEntry>>();
-        PenBridgeClient client = await PairAsync(h, c => c.SettingsSnapshotReceived += (_, e) => snapshots.Enqueue(e.Entries));
+        PenBridgeClient client = await ConnectAsync(h, c => c.SettingsSnapshotReceived += (_, e) => snapshots.Enqueue(e.Entries));
 
         // Time stands still: the burst passes, the rest is dropped without ending the session.
         for (int i = 0; i < 100; i++)
@@ -366,7 +346,7 @@ public class SettingsSyncTests
         await using NetHarness h = Harness();
         var snapshots = new ConcurrentQueue<IReadOnlyList<SettingEntry>>();
         var areas = new ConcurrentQueue<NormalizedRect>();
-        PenBridgeClient client = await PairAsync(h, c =>
+        PenBridgeClient client = await ConnectAsync(h, c =>
         {
             c.SettingsSnapshotReceived += (_, e) => snapshots.Enqueue(e.Entries);
             c.ActiveAreaReceived += (_, e) => areas.Enqueue(e.Area);
@@ -381,7 +361,7 @@ public class SettingsSyncTests
         }
 
         await last.Bounded();
-        await PingRoundTripAsync(h);
+        await h.SettleAsync();
 
         Assert.Equal([SettingEntry.Int(MacSettingKey.SideButton, Count)], client.LastSettingsSnapshot);
         Assert.Equal(NormalizedRect.Full, client.LastActiveArea);
@@ -399,7 +379,7 @@ public class SettingsSyncTests
         await h.Server.SendDisplayListAsync([Displays[0]]);
         await h.Server.SendSettingsSnapshotAsync(Snapshot(1));
         var log = new ConcurrentQueue<string>();
-        await PairAsync(h, c =>
+        await ConnectAsync(h, c =>
         {
             c.DisplayListReceived += (_, e) => log.Enqueue("displays " + e.Displays.Count);
             c.SettingsSnapshotReceived += (_, e) => log.Enqueue("snapshot " + e.Entries.Count);
@@ -418,7 +398,7 @@ public class SettingsSyncTests
         _ = h.Server.SendSettingsSnapshotAsync(Snapshot(3));
         release.SetResult();
         await push.Bounded();
-        await PingRoundTripAsync(h);
+        await h.SettleAsync();
 
         // Each goes out once: the pending bits find nothing new.
         Assert.Equal(["displays 2", "snapshot 3"], log);
@@ -455,7 +435,7 @@ public class SettingsSyncTests
         await using NetHarness h = Harness();
         var ended = new ConcurrentQueue<SessionEndReason>();
         h.Server.SessionEnded += (_, e) => ended.Enqueue(e.Reason);
-        await PairAsync(h);
+        await ConnectAsync(h);
         ServerConnection connection = h.Server.ActiveConnection!;
         connection.BeforePushDrain = _ => throw new ArgumentException("a bug in the drain");
 
@@ -476,15 +456,8 @@ public class SettingsSyncTests
         await Assert.ThrowsAsync<ArgumentException>(() => new PenBridgeClient(new PenBridgeClientOptions { SecretStore = new PenBridge.Core.Security.InMemorySecretStore(), Surface = NetHarness.Surface }).UpdateSettingsAsync([]));
     }
 
-    private static async Task<PenBridgeClient> PairAsync(NetHarness h, Action<PenBridgeClient>? subscribe = null, Func<PenBridgeClientOptions, PenBridgeClientOptions>? configure = null)
-    {
-        PenBridgeClient client = h.CreateClient(configure: configure);
-        subscribe?.Invoke(client);
-        h.Server.OpenPairingWindow();
-        await client.PairWithPinAsync("127.0.0.1", h.Port, h.Server.CurrentPin!).Bounded();
-        await h.WaitForSurfaceAsync();
-        return client;
-    }
+    private static Task<PenBridgeClient> ConnectAsync(NetHarness h, Action<PenBridgeClient>? subscribe = null, Func<PenBridgeClientOptions, PenBridgeClientOptions>? configure = null) =>
+        h.ConnectPairedAsync(configure: configure, subscribe: subscribe);
 
     private static SettingEntry[] Snapshot(int count) =>
         [.. new[] { SettingEntry.Int(MacSettingKey.SideButton, 1), SettingEntry.Bool(MacSettingKey.Zoom, true), SettingEntry.Int(MacSettingKey.StylusMode, 1) }.Take(count)];
@@ -521,16 +494,5 @@ public class SettingsSyncTests
         Assert.Equal(ControlMessageType.SessionStart, (await raw.ReadAsync())!.Value.Type);
         await Wait.Until(() => h.Server.ActiveConnection is not null, "the raw session");
         return raw;
-    }
-
-    /// <summary>
-    /// An ordering barrier: the server pings, and its RTT appears only after the phone's read loop handled every
-    /// frame sent before the Ping (the control channel is in order).
-    /// </summary>
-    private static async Task PingRoundTripAsync(NetHarness h)
-    {
-        Assert.Null(h.Server.GetStats().RoundTripTime);
-        await Wait.Step(h.Time, Wait.PingInterval);
-        await Wait.Until(() => h.Server.GetStats().RoundTripTime is not null, "a server ping round trip");
     }
 }

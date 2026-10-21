@@ -13,6 +13,8 @@ Helper: `tests/PenBridge.Core.Tests/TestSupport/Alloc.cs` (namespace `PenBridge.
 `using PenBridge.Core.Tests.Input;`). Self-tests: `TestSupport/AllocTests.cs`.
 Put every class that calls it in `[Collection(AllocationGroup.Name)]` (`TestSupport/AllocationGroup.cs`, not parallel).
 Runtime work done for parallel tests can otherwise hit every measured pass. A failure lists each pass's bytes.
+Keep that collection small: an allocation test over a live session goes in `Net/NetworkAllocationTests.cs`, not in its
+feature's network class, or the whole class runs serially (and escapes the parallel soak).
 
 ```csharp
 long ran = 0;
@@ -62,10 +64,34 @@ Scripted waits depend on these deadlines too: SimClient `DrawScripts.TapSettle` 
 those defaults change.
 
 ## Wait on exactly what you assert
-Await the same signal the assertion checks (the event, not a property set earlier or on another thread): #219 waited on a property, then asserted an event raised later on another thread. Use a `TaskCompletionSource`/`SemaphoreSlim` released by that event, with a timeout.
+Await the same signal the assertion checks (the event, not a property set earlier or on another thread): #219 waited on a property, then asserted an event raised later on another thread. Use a `TaskCompletionSource` (always `TaskCreationOptions.RunContinuationsAsynchronously`, or the test resumes on a product thread), an `EventLog<T>` or `Wait.Until`, with a timeout.
 - `Last*` properties are stored before their event is raised: a test that counts events waits on the event queue, not the property.
 - A client `Disconnected`/`Bye` doesn't mean the server freed the session (it lingers first). With takeover off, wait for `!HasSession` before pairing again.
-- The ping barrier is single-use. For a second ordering barrier send two differing display lists (`DisplayListBarrierAsync` in SettingsSyncTests).
+- A side effect after a proxy signal (a strike after `raw.IsClosed`) needs its own wait: `Wait.Until(() => h.Server.PairingAttemptsLeft, n => n == 2, ...)`.
+
+## The settle API: the one way to wait in Net tests (`Net/NetTestSupport.cs`)
+- **`await h.SettleAsync()`**: the ordering barrier for a running session. Reusable, independent of fake time. It
+  completes once every control frame either side sent before it was handled by the other side, including the pushes
+  those frames caused (it runs `ServerConnection.RoundTripAsync`, an internal test hook: pushes drained, Ping, Pong, twice).
+  Use it before a negative assertion ("nothing else arrived") and instead of ad-hoc barriers (pings via fake time,
+  display-list pairs).
+  It orders **TLS control frames only**: UDP datagrams in flight and the UdpAcks they trigger aren't covered. Wait for
+  those explicitly (`Counters.Accepted`, `client.AcksReceived`, ack deadlines), as the 30 s streaming test does.
+- **`EventLog<T>`**: subscribe with `log.Add`, take `int mark = log.Mark()`, act, settle, assert on `log.Since(mark)`;
+  `log.WaitFor(mark, n, because)` for a positive wait. Never count from a baseline taken before the session settled
+  or after `Clear()`: a late event from setup then counts as new (#250).
+- **`Wait.Until(probe, ok, because)`**: real-time polling (Stopwatch, yields then 1 ms) bounded by `Wait.Limit`; on
+  timeout it prints the last value seen. `Wait.Until(condition, because)` for plain conditions.
+- **Cancellation:** `Wait.Until`, `AdvanceUntil` and `Bounded()` stop on `TestContext.Current.CancellationToken` as
+  well as `Wait.Limit`, so a run timeout or Ctrl+C ends a hung wait at once. Don't suppress xUnit1051: pass
+  `TestContext.Current.CancellationToken` where the analyzer asks.
+- **`Wait.Step`**: the only way to move fake time across I/O (also without a session); see below.
+- **Negative assertions over fake time:** timers fire only inside `Advance`, so after advancing to 1 ms before a
+  deadline assert it is still armed (`CountDeadlines(... remaining == 1 ms) == 1`) instead of sleeping and checking.
+- **Real-time limits** (blocking, dispose): bound them against the product timeout the bug would wait for
+  (`ControlChannel.WriteTimeout`, `LingerTimeout`), not a guessed number of milliseconds.
+- **`h.ConnectPairedAsync()`**: an already-paired client (seeded key, reconnect auth). Use it unless the test is about
+  pairing; `h.PairAsync()` runs J-PAKE (about 0.2 s each).
 
 ## Gesture slops
 A new gesture's slop must be at least the slop of every gesture it can still turn into. The one-finger pointer
@@ -83,6 +109,10 @@ for i in 1 2 3 4; do (dotnet test --project tests/PenBridge.Core.Tests -c Releas
 pkill -x yes
 ```
 Parallel runs share the build output, so pass `--no-build`; read failures from each log. Repeat a few rounds.
+- Also soak with `DOTNET_PROCESSOR_COUNT=2` under the same `yes` load: the runtime then sizes the thread pool and test
+  parallelism for 2 cores, which starves continuations the way a small CI runner does.
+- Soak the classes you touched, e.g. Net + Security: the in-process runner takes `-namespace PenBridge.Core.Tests.Net`
+  (repeatable).
 - zsh `wait $pids` doesn't split the string: run soaks inside `bash -c` with an array. `timeout` isn't on macOS; stop the load with `pkill -x yes`.
 - `dotnet test` sometimes stalls for minutes before running when launched from the Bash sandbox (observed; cause unknown, test durations then include the stall). The in-process runner (`tests/PenBridge.Core.Tests/bin/<cfg>/net10.0/PenBridge.Core.Tests -class <name>`, `-longRunning <s>`) has no stall and suits soaks.
 
@@ -91,8 +121,9 @@ Parallel runs share the build output, so pass `--no-build`; read failures from e
   calling thread) plus `Wait.Until` / `Wait.AdvanceUntil` / `Wait.Step` (bounded real-time polling).
 - Never jump past a deadline in one `Advance` while I/O must happen in between (pings, acks): every timer that comes
   due fires before any socket I/O runs. Step with `Wait.Step(time, total[, step, settled])` (≤ 1 s, below the 2 s
-  write timeout): after each step it waits, bounded by `Wait.Limit`, until real I/O caught up (`Wait.Settled`: pings
-  re-armed the peer timeouts, no control write in flight; built on `FakeTime.CountDeadlines`).
+  write timeout): after each step it waits, bounded by `Wait.Limit`, until real I/O caught up (its private `Settled`:
+  pings re-armed the peer timeouts, no control write in flight; built on `FakeTime.CountDeadlines`). A loop that
+  advances by hand (e.g. 40 ms keepalives) settles each step with `h.SettleAsync()`.
 - **Never a fixed real sleep after a fake-time step.** "Advance 2 s, sleep 10 ms" passed alone and failed under load
   (#83): the pong hadn't arrived, so the next step fired the 6 s peer timeout. Wait for a condition, with a bound.
 - **Test the moment the stream stops, right after an ack.** Rate-limited or batched protocol messages (UdpAck at most
@@ -106,6 +137,6 @@ Parallel runs share the build output, so pass `--no-build`; read failures from e
 - TLS version: assert `Tls12 or Tls13`, never 1.3 only (macOS servers negotiate 1.2, ADR-0013).
 - To stall a TCP writer quickly, shrink both buffers (`PausableProxy` listener receive buffer, client
   `TcpSendBufferSize`) and keep sending until a write is really in flight.
-- Don't step fake time (e.g. a ping barrier) before the server has read a burst you are rate-testing: token buckets refill with fake time. Wait on a real-time condition first (`handled + dropped == sent`).
-- "Answered even if unchanged" tests: settle without moving the state. The single-use ping barrier can be spent; two display lists work as an ordering barrier (everything pushed before the second list has arrived).
+- Don't step fake time before the server has read a burst you are rate-testing: token buckets refill with fake time. Wait on a real-time condition first (`handled + dropped == sent`); `h.SettleAsync()` doesn't move fake time.
+- "Answered even if unchanged" tests: settle without moving the state (`h.SettleAsync()`), then count from a mark.
 - Wire-quantized f32 values sit on thresholds (0.3 round-trips to 0.29999): use 0.301 in threshold tests. Allocation tests over settings paths should vary every branch per iteration (hover/button/contact/below-threshold/finger) so warm-up covers them.

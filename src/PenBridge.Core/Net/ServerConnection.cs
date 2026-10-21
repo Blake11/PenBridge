@@ -62,6 +62,7 @@ internal sealed class ServerConnection
     private ITimer? _pingTimer;
     private SessionInfo? _info;
     private long _rttTicks = -1;
+    private TaskCompletionSource? _roundTrip; // test hook: completed by the Pong that echoes RoundTripStamp
     private int _requestedReason;
     private bool _authenticated;
     private bool _sessionStarted;
@@ -103,6 +104,49 @@ internal sealed class ServerConnection
 
     /// <summary>Test hook: awaited by the push writer after it took its bits and before it reads the state to send.</summary>
     internal Func<int, Task>? BeforePushDrain { get; set; }
+
+    /// <summary>
+    /// The Ping timestamp of a test round trip: later than any real send time, so its Pong never updates the RTT.
+    /// </summary>
+    internal const ulong RoundTripStamp = ulong.MaxValue;
+
+    /// <summary>
+    /// Test hook: a reusable ordering barrier that doesn't depend on (fake) time. Twice: waits until every push
+    /// requested so far is written, then sends a Ping and completes when its Pong is read. The control channel is in
+    /// order both ways, so after the first round the phone handled every frame written before it and the server read
+    /// every frame the phone wrote before it answered; the second round delivers the pushes those frames requested.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Another round trip is running, or the connection is closing or closed.</exception>
+    internal async Task RoundTripAsync()
+    {
+        for (int round = 0; round < 2; round++)
+        {
+            await _pushes.Request(0).ConfigureAwait(false);
+            var pong = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (Interlocked.CompareExchange(ref _roundTrip, pong, null) is not null)
+            {
+                throw new InvalidOperationException("A round trip is already running.");
+            }
+
+            try
+            {
+                if (!await _channel.TryWriteAsync(new PingMessage(RoundTripStamp)).ConfigureAwait(false))
+                {
+                    throw new InvalidOperationException("The connection is closing.");
+                }
+
+                // No Pong can come once the connection is torn down: fail then instead of waiting out the caller's bound.
+                if (await Task.WhenAny(pong.Task, _done.Task).ConfigureAwait(false) != pong.Task)
+                {
+                    throw new InvalidOperationException("The connection closed during the round trip.");
+                }
+            }
+            finally
+            {
+                Interlocked.CompareExchange(ref _roundTrip, null, pong);
+            }
+        }
+    }
 
     public TimeSpan? RoundTripTime
     {
@@ -506,7 +550,13 @@ internal sealed class ServerConnection
                     _ = await _channel.TryWriteAsync(new PongMessage(pingUs)).ConfigureAwait(false); // false: closing, Bye was the last frame
                     break;
                 case ControlMessageType.Pong:
-                    UpdateRtt(frame.Read<PongMessage>().TimestampUs, input.SessionId);
+                    ulong pongUs = frame.Read<PongMessage>().TimestampUs;
+                    UpdateRtt(pongUs, input.SessionId);
+                    if (pongUs == RoundTripStamp)
+                    {
+                        Volatile.Read(ref _roundTrip)?.TrySetResult();
+                    }
+
                     break;
                 case ControlMessageType.SettingsUpdate when (_negotiated & ProtocolCapabilities.RemoteSettings) != 0:
                     OnSettingsUpdate(frame);

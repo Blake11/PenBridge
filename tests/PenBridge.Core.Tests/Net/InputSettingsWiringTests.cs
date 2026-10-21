@@ -3,8 +3,6 @@ using PenBridge.Core.Input;
 using PenBridge.Core.Net;
 using PenBridge.Core.Protocol;
 
-#pragma warning disable xUnit1051 // Network waits are bounded by Wait.Limit instead of the test token.
-
 namespace PenBridge.Core.Tests.Net;
 
 /// <summary>The server's input settings and mapping target reach the session input, and its active area the phone (ADR-0031..0033).</summary>
@@ -35,7 +33,7 @@ public class InputSettingsWiringTests
         PenBridgeClient client = h.CreateClient();
         client.ActiveAreaReceived += (_, e) => areas.Enqueue(e.Area);
         h.Server.OpenPairingWindow();
-        await client.PairWithPinAsync("127.0.0.1", h.Port, h.Server.CurrentPin!).Bounded();
+        await client.PairWithPinAsync("127.0.0.1", h.Port, h.Server.CurrentPin!, TestContext.Current.CancellationToken).Bounded();
         await h.WaitForSurfaceAsync();
 
         // SurfaceInfo: the portrait 1:2 display letterboxes the taller phone surface vertically.
@@ -62,7 +60,7 @@ public class InputSettingsWiringTests
     public async Task Settings_changed_mid_session_reach_the_tracker()
     {
         await using NetHarness h = Harness();
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
 
         // Threshold 0.5: a contact at about 0.46 pressure is hover.
         h.Server.SetInputSettings(InputSettings.Default with { ClickThreshold = 0.5 });
@@ -83,7 +81,7 @@ public class InputSettingsWiringTests
     public async Task Initial_settings_apply_to_every_session()
     {
         await using NetHarness h = Harness(Mouse);
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
 
         Assert.Same(Mouse, h.Server.ActiveInput!.Settings);
         await Wait.Until(() => client.LastActiveArea == NormalizedRect.Full, "the mouse-mode area");
@@ -96,7 +94,7 @@ public class InputSettingsWiringTests
     {
         await using NetHarness h = Harness();
         int received = 0;
-        PenBridgeClient client = await h.PairAsync(configure: o => new PenBridgeClientOptions
+        PenBridgeClient client = await h.ConnectPairedAsync(configure: o => new PenBridgeClientOptions
         {
             SecretStore = o.SecretStore,
             Surface = o.Surface,
@@ -109,7 +107,8 @@ public class InputSettingsWiringTests
         h.Server.SetTarget(MappingTarget.ForDisplay(new DisplayRect(0, 0, 2000, 1000)));
         h.Server.SetInputSettings(Mouse);
         Assert.Equal(NormalizedRect.Full, h.Server.ActiveInput!.ActiveArea);
-        Assert.Null(await PingRoundTripThenAreaAsync(h, client));
+        await h.SettleAsync();
+        Assert.Null(client.LastActiveArea);
         Assert.Equal(0, received);
         Assert.True(client.IsConnected);
     }
@@ -118,20 +117,12 @@ public class InputSettingsWiringTests
     public async Task A_server_without_the_capability_sends_no_active_area()
     {
         await using NetHarness h = Harness(activeArea: false);
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
 
         h.Server.SetTarget(MappingTarget.ForDisplay(new DisplayRect(0, 0, 2000, 1000)));
-        Assert.Null(await PingRoundTripThenAreaAsync(h, client));
+        await h.SettleAsync();
+        Assert.Null(client.LastActiveArea);
         Assert.True(client.IsConnected);
-    }
-
-    private static async Task<NormalizedRect?> PingRoundTripThenAreaAsync(NetHarness h, PenBridgeClient client)
-    {
-        // The control channel is in order: once the server's Ping came back, every earlier frame was handled.
-        Assert.Null(h.Server.GetStats().RoundTripTime);
-        await Wait.Step(h.Time, Wait.PingInterval);
-        await Wait.Until(() => h.Server.GetStats().RoundTripTime is not null, "a server ping round trip");
-        return client.LastActiveArea;
     }
 
     private static bool Near(NormalizedRect a, NormalizedRect b) =>

@@ -4,8 +4,6 @@ using PenBridge.Core.Net;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
 
-#pragma warning disable xUnit1051 // Network waits are bounded by Wait.Limit instead of the test token.
-
 namespace PenBridge.Core.Tests.Net;
 
 /// <summary>Loopback end-to-end: pairing, auth, streaming, Busy/takeover, reconnect.</summary>
@@ -88,7 +86,7 @@ public class EndToEndTests
         Assert.Equal(h.Identity.Fingerprint.ToArray(), qr.Fingerprint.ToArray());
 
         PenBridgeClient client = h.CreateClient();
-        await client.PairWithQrAsync(qr.Format()).Bounded();
+        await client.PairWithQrAsync(qr.Format(), TestContext.Current.CancellationToken).Bounded();
         await h.WaitForSurfaceAsync();
 
         Assert.Null(h.Server.CreateQrPayload("127.0.0.1")); // token consumed
@@ -108,7 +106,7 @@ public class EndToEndTests
 
         PenBridgeClient again = h.CreateClient(store);
         Assert.Equal(first.DeviceId, again.DeviceId);
-        await again.ConnectAsync("127.0.0.1", h.Port, h.Identity.Fingerprint.ToArray()).Bounded();
+        await again.ConnectAsync("127.0.0.1", h.Port, h.Identity.Fingerprint.ToArray(), TestContext.Current.CancellationToken).Bounded();
         await h.WaitForSurfaceAsync();
 
         Assert.NotEqual(firstSession, h.Server.ActiveInput!.SessionId); // fresh session id (and nonces) per session
@@ -124,7 +122,7 @@ public class EndToEndTests
         string wrong = h.Server.CurrentPin == "000000" ? "000001" : "000000";
         PenBridgeClient client = h.CreateClient();
 
-        var ex = await Assert.ThrowsAsync<PenBridgeConnectException>(() => client.PairWithPinAsync("127.0.0.1", h.Port, wrong).Bounded());
+        var ex = await Assert.ThrowsAsync<PenBridgeConnectException>(() => client.PairWithPinAsync("127.0.0.1", h.Port, wrong, TestContext.Current.CancellationToken).Bounded());
 
         Assert.Equal(ConnectFailure.PairingFailed, ex.Failure);
         Assert.Equal(2, ex.AttemptsLeft);
@@ -144,7 +142,7 @@ public class EndToEndTests
 
         for (int expectedLeft = 2; expectedLeft >= 0; expectedLeft--)
         {
-            var ex = await Assert.ThrowsAsync<PenBridgeConnectException>(() => h.CreateClient().PairWithPinAsync("127.0.0.1", h.Port, wrong).Bounded());
+            var ex = await Assert.ThrowsAsync<PenBridgeConnectException>(() => h.CreateClient().PairWithPinAsync("127.0.0.1", h.Port, wrong, TestContext.Current.CancellationToken).Bounded());
             Assert.Equal(ConnectFailure.PairingFailed, ex.Failure);
             Assert.Equal(expectedLeft, ex.AttemptsLeft);
         }
@@ -153,14 +151,14 @@ public class EndToEndTests
         Assert.NotNull(replaced);
 
         // Locked out: even the new, correct PIN is refused without a strike.
-        var locked = await Assert.ThrowsAsync<PenBridgeConnectException>(() => h.CreateClient().PairWithPinAsync("127.0.0.1", h.Port, replaced).Bounded());
+        var locked = await Assert.ThrowsAsync<PenBridgeConnectException>(() => h.CreateClient().PairWithPinAsync("127.0.0.1", h.Port, replaced, TestContext.Current.CancellationToken).Bounded());
         Assert.Equal(ConnectFailure.PairingFailed, locked.Failure);
         Assert.Equal(0, locked.AttemptsLeft);
         Assert.Equal(replaced, h.Server.CurrentPin);
 
         h.Time.Advance(PinIssuer.InitialBackoff);
         PenBridgeClient client = h.CreateClient();
-        await client.PairWithPinAsync("127.0.0.1", h.Port, replaced).Bounded();
+        await client.PairWithPinAsync("127.0.0.1", h.Port, replaced, TestContext.Current.CancellationToken).Bounded();
         Assert.True(client.IsConnected);
     }
 
@@ -168,14 +166,14 @@ public class EndToEndTests
     public async Task Pairing_is_refused_while_the_window_is_closed()
     {
         await using var h = new NetHarness();
-        var ex = await Assert.ThrowsAsync<PenBridgeConnectException>(() => h.CreateClient().PairWithPinAsync("127.0.0.1", h.Port, "123456").Bounded());
+        var ex = await Assert.ThrowsAsync<PenBridgeConnectException>(() => h.CreateClient().PairWithPinAsync("127.0.0.1", h.Port, "123456", TestContext.Current.CancellationToken).Bounded());
         Assert.Equal(ConnectFailure.PairingExpired, ex.Failure);
 
         h.Server.OpenPairingWindow();
         Assert.Equal(PinIssuer.MaxFailedAttempts, h.Server.PairingAttemptsLeft); // no strike
 
         h.Time.Advance(PinIssuer.Lifetime); // window expires
-        var expired = await Assert.ThrowsAsync<PenBridgeConnectException>(() => h.CreateClient().PairWithPinAsync("127.0.0.1", h.Port, "123456").Bounded());
+        var expired = await Assert.ThrowsAsync<PenBridgeConnectException>(() => h.CreateClient().PairWithPinAsync("127.0.0.1", h.Port, "123456", TestContext.Current.CancellationToken).Bounded());
         Assert.Equal(ConnectFailure.PairingExpired, expired.Failure);
     }
 
@@ -187,7 +185,7 @@ public class EndToEndTests
         h.Server.OpenPairingWindow();
         PenBridgeClient client = h.CreateClient();
 
-        var ex = await Assert.ThrowsAsync<PenBridgeConnectException>(() => client.PairWithPinAsync("127.0.0.1", relay.Port, h.Server.CurrentPin!).Bounded());
+        var ex = await Assert.ThrowsAsync<PenBridgeConnectException>(() => client.PairWithPinAsync("127.0.0.1", relay.Port, h.Server.CurrentPin!, TestContext.Current.CancellationToken).Bounded());
 
         Assert.Equal(ConnectFailure.PairingFailed, ex.Failure);
         Assert.Empty(h.Registry.List());
@@ -205,13 +203,13 @@ public class EndToEndTests
         await using var relay = new TlsRelay(h.Port);
 
         var reconnect = await Assert.ThrowsAsync<PenBridgeConnectException>(() =>
-            h.CreateClient(store).ConnectAsync("127.0.0.1", relay.Port, h.Identity.Fingerprint.ToArray()).Bounded());
+            h.CreateClient(store).ConnectAsync("127.0.0.1", relay.Port, h.Identity.Fingerprint.ToArray(), TestContext.Current.CancellationToken).Bounded());
         Assert.Equal(ConnectFailure.ServerIdentityMismatch, reconnect.Failure);
 
         h.Server.OpenPairingWindow();
         PairingQrPayload qr = h.Server.CreateQrPayload("127.0.0.1")!;
         var viaRelay = new PairingQrPayload("127.0.0.1", (ushort)relay.Port, qr.Fingerprint, qr.Token, qr.Version);
-        var pairing = await Assert.ThrowsAsync<PenBridgeConnectException>(() => h.CreateClient().PairWithQrAsync(viaRelay).Bounded());
+        var pairing = await Assert.ThrowsAsync<PenBridgeConnectException>(() => h.CreateClient().PairWithQrAsync(viaRelay, TestContext.Current.CancellationToken).Bounded());
         Assert.Equal(ConnectFailure.ServerIdentityMismatch, pairing.Failure);
         Assert.Equal(PinIssuer.MaxFailedAttempts, h.Server.PairingAttemptsLeft); // never reached the server
     }
@@ -221,7 +219,7 @@ public class EndToEndTests
     {
         await using var h = new NetHarness();
         var ex = await Assert.ThrowsAsync<PenBridgeConnectException>(() =>
-            h.CreateClient().ConnectAsync("127.0.0.1", h.Port, h.Identity.Fingerprint.ToArray()));
+            h.CreateClient().ConnectAsync("127.0.0.1", h.Port, h.Identity.Fingerprint.ToArray(), TestContext.Current.CancellationToken));
         Assert.Equal(ConnectFailure.NotPaired, ex.Failure);
     }
 
@@ -231,7 +229,7 @@ public class EndToEndTests
         await using var h = new NetHarness();
         var store = new InMemorySecretStore();
         PenBridgeClient client = await h.PairAsync(store);
-        var disconnected = new TaskCompletionSource<ClientDisconnectedEventArgs>();
+        var disconnected = new TaskCompletionSource<ClientDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         client.Disconnected += (_, e) => disconnected.TrySetResult(e);
 
         Assert.True(h.Server.ForgetDevice(client.DeviceId));
@@ -250,7 +248,7 @@ public class EndToEndTests
         await other.DisconnectAsync().Bounded();
         h.Registry.Remove(other.DeviceId);
         var ex = await Assert.ThrowsAsync<PenBridgeConnectException>(() =>
-            h.CreateClient(stale).ConnectAsync("127.0.0.1", h.Port, h.Identity.Fingerprint.ToArray()).Bounded());
+            h.CreateClient(stale).ConnectAsync("127.0.0.1", h.Port, h.Identity.Fingerprint.ToArray(), TestContext.Current.CancellationToken).Bounded());
         Assert.Equal(ConnectFailure.AuthFailed, ex.Failure);
     }
 
@@ -262,7 +260,7 @@ public class EndToEndTests
 
         PenBridgeClient second = h.CreateClient();
         h.Server.OpenPairingWindow();
-        var ex = await Assert.ThrowsAsync<PenBridgeConnectException>(() => second.PairWithPinAsync("127.0.0.1", h.Port, h.Server.CurrentPin!).Bounded());
+        var ex = await Assert.ThrowsAsync<PenBridgeConnectException>(() => second.PairWithPinAsync("127.0.0.1", h.Port, h.Server.CurrentPin!, TestContext.Current.CancellationToken).Bounded());
 
         Assert.Equal(ConnectFailure.Busy, ex.Failure);
         Assert.True(second.Credentials.IsPaired(h.Identity.Fingerprint)); // pairing itself succeeded
@@ -286,7 +284,7 @@ public class EndToEndTests
         var ended = new List<SessionEndedEventArgs>();
         h.Server.SessionEnded += (_, e) => { lock (ended) { ended.Add(e); } };
         PenBridgeClient first = await h.PairAsync();
-        var firstGone = new TaskCompletionSource<ClientDisconnectedEventArgs>();
+        var firstGone = new TaskCompletionSource<ClientDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         first.Disconnected += (_, e) => firstGone.TrySetResult(e);
         first.SendState(Pens.Contact(2000, 2000), []);
         await Wait.Until(() => h.Sink.PenKinds().Contains(PenEventKind.Down), "first device's Down");
@@ -357,7 +355,7 @@ public class EndToEndTests
         {
             PenBridgeClient next = i % 2 == 1 ? a : b;
             gone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            await next.ConnectAsync("127.0.0.1", h.Port, fingerprint).Bounded();
+            await next.ConnectAsync("127.0.0.1", h.Port, fingerprint, TestContext.Current.CancellationToken).Bounded();
             await gone.Task.Bounded();
         }
 
@@ -383,7 +381,7 @@ public class EndToEndTests
         PenBridgeClient stale = await h.PairAsync(store);
 
         PenBridgeClient fresh = h.CreateClient(store);
-        await fresh.ConnectAsync("127.0.0.1", h.Port, h.Identity.Fingerprint.ToArray()).Bounded();
+        await fresh.ConnectAsync("127.0.0.1", h.Port, h.Identity.Fingerprint.ToArray(), TestContext.Current.CancellationToken).Bounded();
 
         await Wait.Until(() => !stale.IsConnected, "the stale session was closed");
         Assert.True(fresh.IsConnected);
@@ -406,7 +404,7 @@ public class EndToEndTests
     {
         var h = new NetHarness();
         PenBridgeClient client = await h.PairAsync();
-        var gone = new TaskCompletionSource<ClientDisconnectedEventArgs>();
+        var gone = new TaskCompletionSource<ClientDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         client.Disconnected += (_, e) => gone.TrySetResult(e);
 
         await h.Server.DisposeAsync(); // only the server: the client must read the Bye itself
@@ -461,7 +459,7 @@ public class EndToEndTests
 
         registry!.ForgetOnNextKeyRead = true;
         var ex = await Assert.ThrowsAsync<PenBridgeConnectException>(() =>
-            h.CreateClient(store).ConnectAsync("127.0.0.1", h.Port, h.Identity.Fingerprint.ToArray()).Bounded());
+            h.CreateClient(store).ConnectAsync("127.0.0.1", h.Port, h.Identity.Fingerprint.ToArray(), TestContext.Current.CancellationToken).Bounded());
 
         Assert.Equal(ConnectFailure.AuthFailed, ex.Failure);
         Assert.False(h.Server.GetStats().HasSession);
@@ -496,11 +494,11 @@ public class EndToEndTests
             Port = 0,
             TimeProvider = o.TimeProvider,
         });
-        var ended = new TaskCompletionSource<SessionEndedEventArgs>();
+        var ended = new TaskCompletionSource<SessionEndedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         h.Server.SessionEnded += (_, e) => ended.TrySetResult(e);
         var store = new InMemorySecretStore();
         PenBridgeClient first = await h.PairAsync(store);
-        var gone = new TaskCompletionSource<ClientDisconnectedEventArgs>();
+        var gone = new TaskCompletionSource<ClientDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         first.Disconnected += (_, e) => gone.TrySetResult(e);
 
         first.SendState(Pens.Hover(1000, 1000), []); // the sink throws on ProximityEnter
@@ -509,7 +507,7 @@ public class EndToEndTests
         await gone.Task.Bounded();
 
         PenBridgeClient again = h.CreateClient(store);
-        await again.ConnectAsync("127.0.0.1", h.Port, h.Identity.Fingerprint.ToArray()).Bounded();
+        await again.ConnectAsync("127.0.0.1", h.Port, h.Identity.Fingerprint.ToArray(), TestContext.Current.CancellationToken).Bounded();
         await h.WaitForSurfaceAsync();
         DrawStroke(again);
         await AssertStrokeAsync(h.Sink);
