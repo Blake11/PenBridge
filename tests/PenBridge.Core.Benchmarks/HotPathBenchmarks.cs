@@ -10,6 +10,7 @@ namespace PenBridge.Core.Benchmarks;
 [MemoryDiagnoser]
 public class HotPathBenchmarks : IDisposable
 {
+    private const int PressureCount = 256;
     private const uint SessionId = 0xA1B2C3D4;
 
     private PenSample _sample = new(
@@ -23,6 +24,7 @@ public class HotPathBenchmarks : IDisposable
     private InputCipher _receiver = null!;
     private CoordinateMapper _mapper;
     private PressureCurve _curve;
+    private readonly ushort[] _pressures = new ushort[PressureCount];
     private ulong _sequence;
 
     [GlobalSetup]
@@ -37,6 +39,11 @@ public class HotPathBenchmarks : IDisposable
         _sender = new InputCipher(key, SessionId);
         _receiver = new InputCipher(key, SessionId);
         _mapper = new CoordinateMapper(1000, 2000, new DisplayRect(0, 0, 2560, 1440));
+        for (int i = 0; i < _pressures.Length; i++)
+        {
+            _pressures[i] = (ushort)(i * 257);
+        }
+
         _curve = new PressureCurve(0.3, 0.05, 0.9);
 
         var payload = new InputPayload { TimeUs = 1_000_000, Pen = _sample };
@@ -53,10 +60,19 @@ public class HotPathBenchmarks : IDisposable
     }
 
     [Benchmark]
-    public void SerializePenSample() => InputSampleCodec.WritePen(_sampleBuffer, in _sample);
+    public byte SerializePenSample()
+    {
+        _sample = _sample with { X = (ushort)(_sample.X + 1) };
+        InputSampleCodec.WritePen(_sampleBuffer, in _sample);
+        return _sampleBuffer[1];
+    }
 
     [Benchmark]
-    public bool ParsePenSample() => InputSampleCodec.TryReadPen(_sampleBuffer, out _);
+    public int ParsePenSample()
+    {
+        InputSampleCodec.WritePen(_sampleBuffer, in _sample);
+        return InputSampleCodec.TryReadPen(_sampleBuffer, out PenSample parsed) ? parsed.X + parsed.Pressure : -1;
+    }
 
     [Benchmark]
     public int SerializePayload()
@@ -66,7 +82,8 @@ public class HotPathBenchmarks : IDisposable
     }
 
     [Benchmark]
-    public bool ParsePayload() => InputPayload.TryRead(_plainPayload, out _);
+    public int ParsePayload() =>
+        InputPayload.TryRead(_plainPayload, out InputPayload parsed) && parsed.Pen is { } pen ? pen.X + pen.Pressure : -1;
 
     [Benchmark]
     public int Seal() => SealNext();
@@ -88,14 +105,31 @@ public class HotPathBenchmarks : IDisposable
         WriteHeader();
         int total = _sender.Seal(_datagram, length);
         return _receiver.TryOpen(_datagram.AsSpan(0, total), out int plain)
-            && InputPayload.TryRead(_datagram.AsSpan(InputCipher.HeaderLength, plain), out _);
+            && InputPayload.TryRead(_datagram.AsSpan(InputCipher.HeaderLength, plain), out InputPayload parsed)
+            && parsed.Pen is not null;
     }
 
     [Benchmark]
-    public DisplayPoint MapPoint() => _mapper.Map(_sample.X, _sample.Y);
+    public double MapPoint()
+    {
+        DisplayPoint p = _mapper.Map(_sample.X, _sample.Y);
+        return p.X + p.Y;
+    }
 
-    [Benchmark]
-    public bool ApplyPressureCurve() => _curve.TryApply(_sample.Pressure, inContact: true, out _);
+    [Benchmark(OperationsPerInvoke = PressureCount)]
+    public int ApplyPressureCurve()
+    {
+        int sum = 0;
+        foreach (ushort pressure in _pressures)
+        {
+            if (_curve.TryApply(pressure, inContact: true, out ushort output))
+            {
+                sum += output;
+            }
+        }
+
+        return sum;
+    }
 
     private int SealNext()
     {

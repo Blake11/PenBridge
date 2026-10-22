@@ -220,15 +220,16 @@ scripts/android-run.sh --device 192.168.1.23:41234 --logs
 dotnet run -c Release --project tests/PenBridge.Core.Benchmarks -- --filter '*' --job short
 ```
 
-Output goes to `BenchmarkDotNet.Artifacts/` (gitignored). Sub-nanosecond rows are JIT-inlined and only indicate "negligible". Reference run (short job, Apple Silicon Mac, .NET 10):
+Output goes to `BenchmarkDotNet.Artifacts/` (gitignored). Rows under about 1 ns are not reliable. `ParsePenSample` includes one `WritePen`, and `ApplyPressureCurve` is per call over 256 pressures. Reference run (short job, Apple Silicon Mac, .NET 10):
 
 | Method | Mean | Allocated |
 |---|---|---|
-| SerializePenSample | ~2 ns | 0 B |
-| ParsePenSample | 0.43 ns | 0 B |
-| SerializePayload | 11.1 ns | 0 B |
-| ParsePayload | 8.9 ns | 0 B |
+| SerializePenSample | 2.7 ns | 0 B |
+| ParsePenSample | 2.9 ns | 0 B |
+| SerializePayload | 10.4 ns | 0 B |
+| ParsePayload | 7.2 ns | 0 B |
 | Seal (AES-GCM) | 1.10 us | 0 B |
-| SealAndOpen | 2.15 us | 0 B |
-| FullRoundTrip | 2.16 us | 0 B |
-| MapPoint | ~0.8 ns | 0 B |
+| SealAndOpen | 2.11 us | 0 B |
+| FullRoundTrip | 2.12 us | 0 B |
+| MapPoint | ~0.7 ns (unreliable) | 0 B |
+| ApplyPressureCurve | 6.0 ns | 0 B |
