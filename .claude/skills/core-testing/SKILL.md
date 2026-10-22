@@ -107,6 +107,19 @@ A new gesture's slop must be at least the slop of every gesture it can still tur
 move and killed the right-click. Use the wider slop until the other gesture can no longer start (`PointerSettleTime`),
 and test the drift *between* the two slops.
 
+## Parallelism
+`TestSupport/Parallelization.cs`: `[assembly: Parallelization(Mode = ParallelMode.All, Algorithm = ParallelAlgorithm.Conservative)]`
+(namespaces `Xunit.v3`, `Xunit.Sdk`). Every test runs in parallel with every other, also tests of one class, at most
+one per core; only `[Collection(AllocationGroup.Name)]` runs alone, afterwards. So:
+- No mutable `static` state shared by tests (a class's instance is per test, so instance fields are fine), no process-wide
+  settings (culture, env vars, `Console`) changed without restoring them, no fixed ports: bind port 0.
+- Don't switch to `ParallelAlgorithm.Aggressive` (about 1 s faster idle): it starts every test at once, and under the
+  soak load the proxy/stall tests (`InputChannelTests`) and the handshake deadline test missed their 10 s
+  `Wait.Limit` in all 24 runs. Conservative passed 24/24.
+- Compare modes without rebuilding: the in-process runner takes `-parallelMode collections|all` and
+  `-parallelAlgorithm`; `dotnet test` takes `--parallel` and `--parallel-algorithm`. Idle M4, Release: collections about 7.5 s,
+  all about 6.0 s.
+
 ## Soak (flaky timing tests)
 Before calling a timing test fixed, run it under full CPU load, in parallel:
 ```bash
