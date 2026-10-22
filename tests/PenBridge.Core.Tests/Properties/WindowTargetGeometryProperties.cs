@@ -50,33 +50,48 @@ public class WindowTargetGeometryProperties
     {
         Gen.Select(Window, PropertyGens.Display.Array[0, 4]).Sample((window, displays) =>
         {
-            int expected = -1;
-            double best = 0;
-            for (int i = 0; i < displays.Length; i++)
+            bool fitted = WindowTargetGeometry.TryFit(window, displays, out int index, out NormalizedRect region);
+            Assert.Equal(index, WindowTargetGeometry.DisplayIndexFor(window, displays));
+            if (!fitted)
             {
-                DisplayRect d = displays[i];
-                double w = Math.Min(window.X + window.Width, d.X + d.Width) - Math.Max(window.X, d.X);
-                double h = Math.Min(window.Y + window.Height, d.Y + d.Height) - Math.Max(window.Y, d.Y);
-                if (w >= WindowTargetGeometry.MinVisibleSide && h >= WindowTargetGeometry.MinVisibleSide && w * h > best)
+                // No display holds a visible part.
+                Assert.Equal(-1, index);
+                Assert.Equal(NormalizedRect.Full, region);
+                foreach (DisplayRect d in displays)
                 {
-                    expected = i;
-                    best = w * h;
+                    (double w, double h) = Overlap(window, d);
+                    Assert.False(w >= WindowTargetGeometry.MinVisibleSide && h >= WindowTargetGeometry.MinVisibleSide, $"{window} is visible on {d}");
                 }
+
+                return;
             }
 
-            Assert.Equal(expected, WindowTargetGeometry.DisplayIndexFor(window, displays));
-            bool fitted = WindowTargetGeometry.TryFit(window, displays, out int index, out NormalizedRect region);
-            Assert.Equal(expected >= 0, fitted);
-            Assert.Equal(expected, index);
-            if (fitted)
+            // The region lies inside the chosen display and maps back onto the window's part of it.
+            DisplayRect chosen = displays[index];
+            Assert.True(region.X >= 0 && region.Y >= 0 && region.Width > 0 && region.Height > 0, $"{region}");
+            Assert.True(region.X + region.Width <= 1 + 1e-12 && region.Y + region.Height <= 1 + 1e-12, $"{region} past the display");
+            double tolerance = 1e-9 * (Math.Max(Math.Abs(chosen.X), Math.Abs(chosen.Y)) + Math.Max(chosen.Width, chosen.Height));
+            Assert.Equal(Math.Max(window.X, chosen.X), chosen.X + (region.X * chosen.Width), tolerance);
+            Assert.Equal(Math.Max(window.Y, chosen.Y), chosen.Y + (region.Y * chosen.Height), tolerance);
+            Assert.Equal(Math.Min(window.X + window.Width, chosen.X + chosen.Width), chosen.X + ((region.X + region.Width) * chosen.Width), tolerance);
+            Assert.Equal(Math.Min(window.Y + window.Height, chosen.Y + chosen.Height), chosen.Y + ((region.Y + region.Height) * chosen.Height), tolerance);
+
+            // No display holds more of it; an earlier one holds strictly less (ties go to the earlier display).
+            (double cw, double ch) = Overlap(window, chosen);
+            double chosenArea = cw * ch;
+            for (int i = 0; i < displays.Length; i++)
             {
-                Assert.True(WindowTargetGeometry.TryRegion(window, displays[index], out NormalizedRect alone));
-                Assert.Equal(alone, region);
-            }
-            else
-            {
-                Assert.Equal(NormalizedRect.Full, region);
+                (double w, double h) = Overlap(window, displays[i]);
+                if (i == index || w < WindowTargetGeometry.MinVisibleSide || h < WindowTargetGeometry.MinVisibleSide)
+                {
+                    continue;
+                }
+
+                Assert.True(i < index ? w * h < chosenArea : w * h <= chosenArea, $"display {i} holds {w * h:R}, the chosen {index} {chosenArea:R}");
             }
         }, iter: PropertyGens.GeometryIterations, threads: PropertyGens.Threads);
     }
+
+    private static (double Width, double Height) Overlap(DisplayRect a, DisplayRect b) =>
+        (Math.Min(a.X + a.Width, b.X + b.Width) - Math.Max(a.X, b.X), Math.Min(a.Y + a.Height, b.Y + b.Height) - Math.Max(a.Y, b.Y));
 }

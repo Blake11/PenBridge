@@ -11,7 +11,8 @@ namespace PenBridge.Core.Tests.Security;
 /// <summary>
 /// No log record, neither its rendered message nor its structured state (the <c>[LoggerMessage]</c> arguments, caught
 /// even when the template doesn't print them), its scopes or its exception, carries a pairing secret or key: the PIN
-/// (right and wrong), the QR token or text, or a device key, as hex, base64 or base64url.
+/// (right and wrong), the QR token or text, or a device key, as hex, base64 or base64url; nor anything secret-shaped
+/// (a long hex or base64 run), which covers what the test can't name: session keys, J-PAKE values, MACs and nonces.
 /// </summary>
 public class SecretsNotLoggedTests
 {
@@ -28,17 +29,21 @@ public class SecretsNotLoggedTests
         IReadOnlyList<FakeLogRecord> records = collector.GetSnapshot();
         AssertLogged(records, "PenBridge.Server", 7, "a pairing attempt");
         AssertLogged(records, "PenBridge.Server", 8, "a pairing");
-        AssertLogged(records, "PenBridge.Server", 9, "the failed PIN");
+        AssertLogged(records, "PenBridge.Server", 9, "the failed PIN and QR token");
+        AssertLogged(records, "PenBridge.Server", 10, "the failed reconnect auth");
         AssertLogged(records, "PenBridge.Server", 11, "a session start");
         Assert.Contains(records, r => r.Category == "PenBridge.Client");
         Assert.True(records.Any(r => Texts(r).Any(t => t.Contains("Test Phone", StringComparison.Ordinal))), "the scan never saw the logged device name");
 
-        var pinPattern = new Regex($"(?<![0-9])({string.Join('|', pins)})(?![0-9])", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+        // Hex letters count as neighbours too, so a 6-digit run inside a GUID or a hex dump isn't taken for a PIN.
+        var pinPattern = new Regex($"(?<![0-9A-Fa-f])({string.Join('|', pins)})(?![0-9A-Fa-f])", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
         foreach (FakeLogRecord record in records)
         {
             foreach (string text in Texts(record))
             {
                 Assert.False(pinPattern.IsMatch(text), $"a PIN in record {record.Id} ({record.Category}): {text}");
+                Match shaped = SecretShaped.Match(DashedGuid.Replace(text, " "));
+                Assert.False(shaped.Success, $"secret-shaped '{shaped.Value}' in record {record.Id} ({record.Category}): {text}");
                 foreach (string secret in secrets)
                 {
                     Assert.False(text.Contains(secret, StringComparison.OrdinalIgnoreCase), $"a secret in record {record.Id} ({record.Category}): {text}");
@@ -46,6 +51,14 @@ public class SecretsNotLoggedTests
             }
         }
     }
+
+    /// <summary>
+    /// 16+ hex characters, or 20+ base64/base64url characters (a 32-byte key is 64 hex or 43 base64 characters; 16 hex
+    /// is an 8-byte prefix). Device ids are logged on purpose, in the dashed GUID form only, which is stripped first.
+    /// </summary>
+    private static readonly Regex SecretShaped = new("[0-9A-Fa-f]{16,}|[A-Za-z0-9+/_-]{20,}", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+    private static readonly Regex DashedGuid = new("[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     /// <summary>PIN pairing (a wrong guess first), reconnect auth and QR pairing, each with a stroke; collects every secret seen.</summary>
     private static async Task RunAsync(ILoggerFactory factory, List<string> secrets, List<string> pins)
@@ -82,6 +95,18 @@ public class SecretsNotLoggedTests
         var pinStore = new InMemorySecretStore();
         await Assert.ThrowsAsync<PenBridgeConnectException>(() => h.CreateClient(pinStore, configure: withLogger).PairWithPinAsync("127.0.0.1", h.Port, wrong, ct).Bounded());
         await Wait.Until(() => h.Server.PairingAttemptsLeft, n => n == PinIssuer.MaxFailedAttempts - 1, "the server counted the wrong PIN");
+
+        // A QR code with the right server but a wrong token.
+        PairingQrPayload firstQr = h.Server.CreateQrPayload("127.0.0.1")!;
+        secrets.Add(firstQr.Format());
+        AddKeyForms(secrets, firstQr.Token.ToArray());
+        byte[] wrongToken = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+        AddKeyForms(secrets, wrongToken);
+        var forged = new PairingQrPayload(firstQr.Host, firstQr.Port, firstQr.Fingerprint, wrongToken, firstQr.Version);
+        secrets.Add(forged.Format());
+        await Assert.ThrowsAsync<PenBridgeConnectException>(() => h.CreateClient(configure: withLogger).PairWithQrAsync(forged, ct).Bounded());
+        await Wait.Until(() => h.Server.PairingAttemptsLeft, n => n == PinIssuer.MaxFailedAttempts - 2, "the server counted the wrong QR token");
+
         PenBridgeClient pinClient = h.CreateClient(pinStore, configure: withLogger);
         await pinClient.PairWithPinAsync("127.0.0.1", h.Port, pin, ct).Bounded();
         await StrokeAsync(h, pinClient);
@@ -96,6 +121,14 @@ public class SecretsNotLoggedTests
         await StrokeAsync(h, again);
         await again.DisconnectAsync().Bounded();
         await Wait.Until(() => !h.Server.GetStats().HasSession, "server freed the reconnected session");
+
+        // Reconnect auth with a tampered stored key fails (event 10).
+        byte[] tampered = DeviceKey(pinStore, h);
+        tampered[0] ^= 0xFF;
+        AddKeyForms(secrets, tampered);
+        new ClientCredentialStore(pinStore).SaveDeviceKey(h.Identity.Fingerprint, tampered);
+        await Assert.ThrowsAsync<PenBridgeConnectException>(() => h.CreateClient(pinStore, configure: withLogger).ConnectAsync("127.0.0.1", h.Port, h.Identity.Fingerprint.ToArray(), ct).Bounded());
+        await Wait.Until(() => !h.Server.GetStats().HasSession, "server dropped the failed auth");
 
         // QR pairing on a second phone, then a stroke.
         h.Server.OpenPairingWindow();

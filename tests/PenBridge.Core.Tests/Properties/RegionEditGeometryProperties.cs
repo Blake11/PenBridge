@@ -35,6 +35,8 @@ public class RegionEditGeometryProperties
     [Fact]
     public void Any_free_drag_sequence_keeps_the_selection_on_the_display_and_big_enough() => CheckDrags(locked: false);
 
+    // Re-enable this property and the theory below with the #267 fix (remove both Skips): until then the aspect-locked
+    // drags are not checked at all.
     [Fact(Skip = "#267: ApplyAspect and the locked Resize throw when the fitted side rounds past the display")]
     public void Any_locked_drag_sequence_keeps_the_selection_on_the_display_big_enough_and_on_the_aspect() => CheckDrags(locked: true);
 
