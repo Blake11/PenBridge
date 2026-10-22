@@ -13,7 +13,7 @@ public class ServerIdentityTests
     [Fact]
     public void Creates_p256_self_signed_cert_valid_for_ten_years()
     {
-        var time = new ManualTimeProvider();
+        var time = new FakeTime();
         using ServerIdentity identity = ServerIdentity.LoadOrCreate(new InMemorySecretStore(), time);
         X509Certificate2 cert = identity.Certificate;
 

@@ -145,7 +145,7 @@ public class TabletEventPlannerTests
     public void Side_button_at_contact_down_through_the_tracker_is_a_right_drag()
     {
         var sink = new PlanningSink();
-        var tracker = new PenStateTracker(sink, new ManualTimeProvider()) { Mapper = new(1, 1, new DisplayRect(0, 0, 65535, 65535)) };
+        var tracker = new PenStateTracker(sink, new FakeTime()) { Mapper = new(1, 1, new DisplayRect(0, 0, 65535, 65535)) };
         PenSample[] frames =
         [
             Samples.Hover(100, 100),
@@ -178,7 +178,7 @@ public class TabletEventPlannerTests
     public void Side_button_and_tip_in_the_same_sample_is_a_right_drag()
     {
         var sink = new PlanningSink();
-        var tracker = new PenStateTracker(sink, new ManualTimeProvider()) { Mapper = new(1, 1, new DisplayRect(0, 0, 65535, 65535)) };
+        var tracker = new PenStateTracker(sink, new FakeTime()) { Mapper = new(1, 1, new DisplayRect(0, 0, 65535, 65535)) };
         tracker.ProcessFrame(1_000, Samples.Hover(100, 100), default, default);
         tracker.ProcessFrame(6_000, Samples.Touch(100, 100, buttons: PenButtons.Primary), default, default);
         tracker.ProcessFrame(11_000, Samples.Hover(100, 100, buttons: PenButtons.Primary), default, default);

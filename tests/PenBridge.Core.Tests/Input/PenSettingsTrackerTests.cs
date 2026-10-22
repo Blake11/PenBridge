@@ -7,7 +7,7 @@ namespace PenBridge.Core.Tests.Input;
 [Collection(AllocationGroup.Name)]
 public class PenSettingsTrackerTests
 {
-    private readonly ManualTimeProvider _time = new();
+    private readonly FakeTime _time = new();
     private readonly LocatingSink _sink = new();
     private readonly PenStateTracker _tracker;
     private uint _timeUs = 10_000;

@@ -473,7 +473,7 @@ public class InputFilterTests
     public void Two_finger_gesture_produces_no_pen_events_on_the_mac()
     {
         var sink = new RecordingSink();
-        var tracker = new PenStateTracker(sink, new ManualTimeProvider()) { Mapper = new(1, 1, new DisplayRect(0, 0, 65535, 65535)) };
+        var tracker = new PenStateTracker(sink, new FakeTime()) { Mapper = new(1, 1, new DisplayRect(0, 0, 65535, 65535)) };
         var f = new InputFilter(Draw);
         uint us = 10_000;
         Send(tracker, f, f.Process(Ms(0), null, [Finger(1, 100, 100)], _out), _out, ref us);
@@ -488,7 +488,7 @@ public class InputFilterTests
     public void Lone_quick_tap_is_a_single_click_on_the_mac()
     {
         var sink = new RecordingSink();
-        var tracker = new PenStateTracker(sink, new ManualTimeProvider()) { Mapper = new(1, 1, new DisplayRect(0, 0, 65535, 65535)) };
+        var tracker = new PenStateTracker(sink, new FakeTime()) { Mapper = new(1, 1, new DisplayRect(0, 0, 65535, 65535)) };
         var f = new InputFilter(Draw);
         uint us = 10_000;
         Send(tracker, f, f.Process(Ms(0), null, [Finger(1, 100, 100)], _out), _out, ref us);

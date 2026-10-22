@@ -50,7 +50,9 @@ DOTNET_TC_QuickJitForLoops=1 DOTNET_OSR_HitLimit=1 scripts/test.sh -c Release   
 ```
 
 ## General
-- Inject time (`ManualTimeProvider` in `Input/TestSupport.cs`) and randomness; no real sleeps.
+- Inject time and randomness; no real sleeps. There is **one test clock**: `FakeTime` (`TestSupport/FakeTime.cs`,
+  root namespace `PenBridge.Core.Tests`, so no using). Timestamps, wall clock (`new FakeTime(start)`) and timers all
+  move only in `Advance`. Don't add another `TimeProvider` fake.
 - Network tests: loopback or fakes with timeouts, never fixed delays.
 - `scripts/test.sh` lists the names of failing tests after the summary (from `TestResults/junit.xml`).
 
@@ -117,8 +119,7 @@ Parallel runs share the build output, so pass `--no-build`; read failures from e
 - `dotnet test` sometimes stalls for minutes before running when launched from the Bash sandbox (observed; cause unknown, test durations then include the stall). The in-process runner (`tests/PenBridge.Core.Tests/bin/<cfg>/net10.0/PenBridge.Core.Tests -class <name>`, `-longRunning <s>`) has no stall and suits soaks.
 
 ## Fake time with real sockets (Net tests)
-- `Net/NetTestSupport.cs` has `FakeTime` (a TimeProvider whose timers fire only inside `Advance`, in due order, on the
-  calling thread) plus `Wait.Until` / `Wait.AdvanceUntil` / `Wait.Step` (bounded real-time polling).
+- `FakeTime`'s timers fire only inside `Advance`, in due order, on the calling thread; `Net/NetTestSupport.cs` adds `Wait.Until` / `Wait.AdvanceUntil` / `Wait.Step` (bounded real-time polling).
 - Never jump past a deadline in one `Advance` while I/O must happen in between (pings, acks): every timer that comes
   due fires before any socket I/O runs. Step with `Wait.Step(time, total[, step, settled])` (≤ 1 s, below the 2 s
   write timeout): after each step it waits, bounded by `Wait.Limit`, until real I/O caught up (its private `Settled`:

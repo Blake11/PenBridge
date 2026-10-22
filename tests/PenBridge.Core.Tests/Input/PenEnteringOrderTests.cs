@@ -17,7 +17,7 @@ public class PenEnteringOrderTests
 
     public PenEnteringOrderTests()
     {
-        _tracker = new PenStateTracker(_sink, new ManualTimeProvider()) { Mapper = Square };
+        _tracker = new PenStateTracker(_sink, new FakeTime()) { Mapper = Square };
     }
 
     private string[] Names() => _sink.Events.Select(e => e.Name).ToArray();
@@ -75,7 +75,7 @@ public class PenEnteringOrderTests
     public void Pen_entering_is_allocation_free()
     {
         var sink = new CountingSink();
-        var tracker = new PenStateTracker(sink, new ManualTimeProvider()) { Mapper = Square };
+        var tracker = new PenStateTracker(sink, new FakeTime()) { Mapper = Square };
         TouchSample[] moved = [new(1, true, 10000, 20000), new(2, true, 20000, 20000)];
         TouchSample[] apart = [new(1, true, 10000, 10000), new(2, true, 20000, 10000)];
         PenSample hover = Samples.Hover(30000, 30000, PenTool.FingerFallback);

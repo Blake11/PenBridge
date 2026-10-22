@@ -10,7 +10,7 @@ public class PairedDeviceRegistryTests
     [Fact]
     public void Add_list_key_touch_remove_and_persist()
     {
-        var time = new ManualTimeProvider();
+        var time = new FakeTime();
         var store = new InMemorySecretStore();
         var registry = new PairedDeviceRegistry(store, time);
         byte[] keyA = KeyScheduleTests.Fill(32, 1);
@@ -43,7 +43,7 @@ public class PairedDeviceRegistryTests
     [Fact]
     public void Re_pairing_replaces_key()
     {
-        var registry = new PairedDeviceRegistry(new InMemorySecretStore(), new ManualTimeProvider());
+        var registry = new PairedDeviceRegistry(new InMemorySecretStore(), new FakeTime());
         registry.Add(A, "old", KeyScheduleTests.Fill(32, 1));
         registry.Add(A, "new", KeyScheduleTests.Fill(32, 7));
         Assert.Single(registry.List());

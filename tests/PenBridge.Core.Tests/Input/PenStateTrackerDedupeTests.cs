@@ -22,7 +22,7 @@ public class PenStateTrackerDedupeTests
     private static readonly PenSample Gone = Samples.Hover(X, Y, PenTool.FingerFallback) with { State = PenState.None };
 
     private readonly RecordingSink _sink = new();
-    private readonly ManualTimeProvider _time = new();
+    private readonly FakeTime _time = new();
     private readonly PenStateTracker _tracker;
 
     public PenStateTrackerDedupeTests()
@@ -116,7 +116,7 @@ public class PenStateTrackerDedupeTests
     [Fact]
     public void Deduped_frames_are_allocation_free()
     {
-        var tracker = new PenStateTracker(new NullSink(), new ManualTimeProvider()) { Mapper = Square };
+        var tracker = new PenStateTracker(new NullSink(), new FakeTime()) { Mapper = Square };
         PenSample[] tap = Tap;
         long frames = 0;
 

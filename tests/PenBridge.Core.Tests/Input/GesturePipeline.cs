@@ -48,7 +48,7 @@ internal sealed class GesturePipeline
     private const int ReleaseRepeats = 2;
     private const int EventIntervalMs = 8;
 
-    private readonly ManualTimeProvider _macClock = new();
+    private readonly FakeTime _macClock = new();
     private readonly List<RawTouch> _fingers = new(10);
     private readonly List<RawTouch> _history = new(40);
     private readonly TouchSample[] _out = new TouchSample[InputFilter.MaxTouches];

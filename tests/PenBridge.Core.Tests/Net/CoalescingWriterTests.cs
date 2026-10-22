@@ -157,7 +157,7 @@ public class CoalescingWriterTests
     [Fact]
     public void Token_bucket_allows_a_burst_then_the_rate()
     {
-        var time = new ManualTimeProvider();
+        var time = new FakeTime();
         var bucket = new TokenBucket(time, perSecond: 20, capacity: 20);
 
         Assert.Equal(20, Take(bucket, 100));
