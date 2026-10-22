@@ -108,7 +108,7 @@ public class NetUnitTests
     public async Task Client_send_state_is_allocation_free_once_connected()
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
         PenSample[] history = [Pens.Contact(1, 1), Pens.Contact(2, 2)];
         TouchSample[] none = [];
 

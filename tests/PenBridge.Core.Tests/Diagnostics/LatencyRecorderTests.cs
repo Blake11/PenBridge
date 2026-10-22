@@ -188,7 +188,7 @@ public class LatencyRecorderTests
             TimeProvider = o.TimeProvider,
             LatencyRecorder = recorder,
         });
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
         uint session = h.Server.ActiveInput!.SessionId;
 
         // Both sides ping every 2 s; one fake-time step per second lets each round cross the loopback.

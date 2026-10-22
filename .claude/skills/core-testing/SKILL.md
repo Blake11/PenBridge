@@ -97,8 +97,9 @@ Await the same signal the assertion checks (the event, not a property set earlie
   deadline assert it is still armed (`CountDeadlines(... remaining == 1 ms) == 1`) instead of sleeping and checking.
 - **Real-time limits** (blocking, dispose): bound them against the product timeout the bug would wait for
   (`ControlChannel.WriteTimeout`, `LingerTimeout`), not a guessed number of milliseconds.
-- **`h.ConnectPairedAsync()`**: an already-paired client (seeded key, reconnect auth). Use it unless the test is about
-  pairing; `h.PairAsync()` runs J-PAKE (about 0.2 s each).
+- **`h.ConnectPairedAsync()`**: an already-paired client (`ServerFixture.SeedPairing`: a fresh device key on both
+  sides, then reconnect auth). Use it unless the test is about pairing; `h.PairAsync()` runs J-PAKE (about 0.2 s
+  each). A takeover test may keep one `PairAsync` when the takeover *by a pairing device* is the subject.
 
 ## Gesture slops
 A new gesture's slop must be at least the slop of every gesture it can still turn into. The one-finger pointer
@@ -137,9 +138,12 @@ Parallel runs share the build output, so pass `--no-build`; read failures from e
   "stream, stop right after an ack, step 6 s, assert still on UDP" catches it.
 - A deadline counts from when its operation *started*, which may be later than the test thinks (a writer drains
   asynchronously). Wait for a real-time condition first (e.g. `ControlWriteInFlightFor > 300 ms`), then advance.
-- Share one `ServerIdentity`: use `NetTestSupport`'s `SharedServerIdentity` (lazy, process-wide). Creating/loading a
-  PKCS#12 costs about 1 s on macOS, so a fresh identity per test makes the suite slow and pushes timing tests
-  past their real-time waits.
+- Share one `ServerIdentity`: the assembly fixture `ServerFixture` (`TestSupport/ServerFixture.cs`,
+  `[assembly: AssemblyFixture]`) owns it (`ServerFixture.Current.Identity`, also `NetHarness.SharedServerIdentity`)
+  plus the relay's second identity, and disposes them after the run. Creating/loading a PKCS#12 costs about 1 s on
+  macOS, so a fresh identity per test makes the suite slow and pushes timing tests past their real-time waits. The
+  fixture starts the identity in the background so it overlaps the first tests; keep it that way (an eager create
+  in `InitializeAsync` delays every test by that second). Only identity tests (`ServerIdentityTests`) make their own.
 - TLS version: assert `Tls12 or Tls13`, never 1.3 only (macOS servers negotiate 1.2, ADR-0013).
 - To stall a TCP writer quickly, shrink both buffers (`PausableProxy` listener receive buffer, client
   `TcpSendBufferSize`) and keep sending until a write is really in flight.

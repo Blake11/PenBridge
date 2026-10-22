@@ -220,19 +220,14 @@ internal sealed class NetHarness : IAsyncDisposable
 {
     public static readonly SurfaceInfoMessage Surface = new(1440, 3088, 500f, 500f, SurfaceOrientation.Portrait, SurfaceCapabilities.None);
 
-    /// <summary>
-    /// One identity for all harnesses: loading a PKCS#12 key on macOS goes through the keychain and costs most of a
-    /// second, and the tests don't depend on distinct server certificates (the relay has its own).
-    /// </summary>
-    private static readonly Lazy<ServerIdentity> SharedIdentity = new(() => ServerIdentity.FromPkcs12(ServerIdentity.CreatePkcs12(DateTimeOffset.UtcNow)));
-
     private readonly List<PenBridgeClient> _clients = [];
 
-    public static ServerIdentity SharedServerIdentity => SharedIdentity.Value;
+    /// <summary>The one identity for all harnesses (<see cref="ServerFixture.Identity"/>).</summary>
+    public static ServerIdentity SharedServerIdentity => ServerFixture.Current.Identity;
 
     public NetHarness(Func<PenBridgeServerOptions, PenBridgeServerOptions>? configure = null)
     {
-        Identity = SharedIdentity.Value;
+        Identity = SharedServerIdentity;
         Registry = new PairedDeviceRegistry(new InMemorySecretStore(), Time);
         var options = new PenBridgeServerOptions
         {
@@ -297,7 +292,7 @@ internal sealed class NetHarness : IAsyncDisposable
         (Server.ActiveConnection ?? throw new InvalidOperationException("No session to settle.")).RoundTripAsync().Bounded();
 
     /// <summary>
-    /// A client that is already paired: seeds both sides with a device key and connects with reconnect auth, then
+    /// A client that is already paired: seeds both sides with a device key (<see cref="ServerFixture.SeedPairing"/>) and connects with reconnect auth, then
     /// waits until the server applied its SurfaceInfo. Much cheaper than <see cref="PairAsync"/> (no J-PAKE); use it
     /// whenever the test isn't about pairing. <paramref name="subscribe"/> runs before the connect.
     /// </summary>
@@ -308,10 +303,7 @@ internal sealed class NetHarness : IAsyncDisposable
         Action<PenBridgeClient>? subscribe = null)
     {
         store ??= new InMemorySecretStore();
-        var credentials = new ClientCredentialStore(store);
-        byte[] key = RandomNumberGenerator.GetBytes(32);
-        Registry.Add(credentials.GetOrCreateDeviceId(), "Test Phone", key);
-        credentials.SaveDeviceKey(Identity.Fingerprint, key);
+        ServerFixture.Current.SeedPairing(Registry, store);
         PenBridgeClient client = CreateClient(store, filter, configure);
         subscribe?.Invoke(client);
         await client.ConnectAsync("127.0.0.1", Port, Identity.Fingerprint.ToArray()).Bounded();
@@ -396,8 +388,7 @@ internal static class Pens
 internal sealed class TlsRelay : IAsyncDisposable
 {
     private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
-    private static readonly Lazy<ServerIdentity> RelayIdentity = new(() => ServerIdentity.FromPkcs12(ServerIdentity.CreatePkcs12(DateTimeOffset.UtcNow)));
-    private readonly ServerIdentity _identity = RelayIdentity.Value;
+    private readonly ServerIdentity _identity = ServerFixture.Current.RelayIdentity;
     private readonly CancellationTokenSource _cts = new();
     private readonly int _targetPort;
     private readonly Task _loop;
