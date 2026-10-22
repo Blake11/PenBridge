@@ -6,6 +6,7 @@
     <Project Path="src/PenBridge.Mac/PenBridge.Mac.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/PenBridge.Core.Benchmarks/PenBridge.Core.Benchmarks.csproj" />
     <Project Path="tests/PenBridge.Core.Tests/PenBridge.Core.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">

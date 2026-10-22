@@ -211,3 +211,25 @@ scripts/android-run.sh --device 192.168.1.23:41234 --logs
 - **Accessibility granted, but nothing happens.** The signature changed. Check `codesign -dr - <app>`: it should show `certificate root`/`certificate leaf`, not `cdhash`. Then run `--reset-tcc`.
 - **Keychain prompt after a rebuild.** Debug builds never touch the Keychain; if one prompts, check the startup log for `development file secret store`. In a local Release build, a prompt is expected after a recompile (see "Keychain prompts"); choose Always Allow. A prompt after *every* launch or a `cdhash` designated requirement means the build signed ad-hoc: check the build output for `PenBridge: no "PenBridge Dev" code-signing identity` and run `scripts/mac-dev-cert.sh`.
 - **Phone paired, but the Mac says it doesn't know it.** It was paired with the other build configuration. Debug and Release have separate identities and paired devices, so pair again.
+
+## Benchmarks
+
+`tests/PenBridge.Core.Benchmarks` (BenchmarkDotNet, `[MemoryDiagnoser]`) measures the hot input path: pen sample and payload serialize/parse, datagram seal and open, the full round trip, `CoordinateMapper.Map` and the pressure curve. It runs by hand only (not in `scripts/test.sh` or CI); `Alloc.AssertZero` in the tests remains the zero-allocation gate.
+
+```bash
+dotnet run -c Release --project tests/PenBridge.Core.Benchmarks -- --filter '*' --job short
+```
+
+Output goes to `BenchmarkDotNet.Artifacts/` (gitignored). Rows under about 1 ns are not reliable. `ParsePenSample` includes one `WritePen`, and `ApplyPressureCurve` is per call over 256 pressures. Reference run (short job, Apple Silicon Mac, .NET 10):
+
+| Method | Mean | Allocated |
+|---|---|---|
+| SerializePenSample | 2.7 ns | 0 B |
+| ParsePenSample | 2.9 ns | 0 B |
+| SerializePayload | 10.4 ns | 0 B |
+| ParsePayload | 7.2 ns | 0 B |
+| Seal (AES-GCM) | 1.10 us | 0 B |
+| SealAndOpen | 2.11 us | 0 B |
+| FullRoundTrip | 2.12 us | 0 B |
+| MapPoint | ~0.7 ns (unreliable) | 0 B |
+| ApplyPressureCurve | 6.0 ns | 0 B |
