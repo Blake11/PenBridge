@@ -115,7 +115,7 @@ public class FuzzTests
                 foreach (SettingEntry entry in snapshot.Entries)
                 {
                     Assert.InRange((int)entry.Type, 1, 5);
-                    Assert.True(entry.Size >= SettingEntry.HeaderSize);
+                    Assert.InRange(entry.Size, SettingEntry.HeaderSize, int.MaxValue);
                 }
             }
 

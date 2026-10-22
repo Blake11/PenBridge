@@ -38,8 +38,8 @@ public class TabletEventMathTests
     public void Tilt_keeps_the_sign_convention()
     {
         // +x right, +y toward the user: same as CGEvent, no flip.
-        Assert.True(TabletEventMath.Tilt(3000) > 0);
-        Assert.True(TabletEventMath.Tilt(-3000) < 0);
+        Assert.InRange(TabletEventMath.Tilt(3000), double.Epsilon, double.PositiveInfinity);
+        Assert.InRange(TabletEventMath.Tilt(-3000), double.NegativeInfinity, -double.Epsilon);
     }
 
     [Theory]
@@ -170,6 +170,6 @@ public class TabletEventMathTests
             sink += TabletEventMath.TicksToNanoseconds(i, 24_000_000);
             ran++;
         }, () => ran);
-        Assert.True(sink != 0);
+        Assert.NotEqual(0, sink);
     }
 }

@@ -22,7 +22,7 @@ public class PenStateTrackerDedupeTests
     private static readonly PenSample Gone = Samples.Hover(X, Y, PenTool.FingerFallback) with { State = PenState.None };
 
     private readonly RecordingSink _sink = new();
-    private readonly ManualTimeProvider _time = new();
+    private readonly FakeTime _time = new();
     private readonly PenStateTracker _tracker;
 
     public PenStateTrackerDedupeTests()
@@ -50,8 +50,8 @@ public class PenStateTrackerDedupeTests
         _tracker.ProcessFrame(10_000, Gone, Tap, []);
 
         Assert.Equal(OneClick, _sink.PenKinds());
-        Assert.All(_sink.Pen, e => Assert.True(e.TimestampUs <= 10_000));
-        Assert.True(_sink.Pen[1].TimestampUs < 10_000); // the Down is placed before the frame time, as in the original
+        Assert.All(_sink.Pen, e => Assert.InRange(e.TimestampUs, long.MinValue, 10_000));
+        Assert.InRange(_sink.Pen[1].TimestampUs, long.MinValue, 9_999); // the Down is placed before the frame time, as in the original
     }
 
     [Fact]
@@ -116,7 +116,7 @@ public class PenStateTrackerDedupeTests
     [Fact]
     public void Deduped_frames_are_allocation_free()
     {
-        var tracker = new PenStateTracker(new NullSink(), new ManualTimeProvider()) { Mapper = Square };
+        var tracker = new PenStateTracker(new NullSink(), new FakeTime()) { Mapper = Square };
         PenSample[] tap = Tap;
         long frames = 0;
 

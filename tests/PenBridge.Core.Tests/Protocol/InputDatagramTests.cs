@@ -92,7 +92,7 @@ public class InputDatagramTests
     public void Max_payload_fits_in_a_datagram()
     {
         Assert.Equal(211, InputPayload.MaxSize);
-        Assert.True(InputDatagram.GetSize(InputPayload.MaxSize) <= InputDatagram.MaxSize);
+        Assert.InRange(InputDatagram.GetSize(InputPayload.MaxSize), int.MinValue, InputDatagram.MaxSize);
     }
 
     [Fact]

@@ -27,8 +27,11 @@ public class RegionEditGeometryTests
 
     private static void Inside(ViewRect r)
     {
-        Assert.True(r.X >= -1e-9 && r.Y >= -1e-9, $"{r} starts off the display");
-        Assert.True(r.X + r.Width <= W + 1e-9 && r.Y + r.Height <= H + 1e-9, $"{r} ends off the display");
+        Assert.Multiple(
+            () => Assert.InRange(r.X, -1e-9, double.PositiveInfinity),
+            () => Assert.InRange(r.Y, -1e-9, double.PositiveInfinity),
+            () => Assert.InRange(r.X + r.Width, double.NegativeInfinity, W + 1e-9),
+            () => Assert.InRange(r.Y + r.Height, double.NegativeInfinity, H + 1e-9));
     }
 
     // ---------------------------------------------------------------- min size
@@ -139,7 +142,9 @@ public class RegionEditGeometryTests
     {
         ViewRect r = RegionEditGeometry.Resize(Sel, handle, dx, dy, W, H, aspect: null);
         Inside(r);
-        Assert.True(r.Width > Sel.Width && r.Height > Sel.Height);
+        Assert.Multiple(
+            () => Assert.InRange(r.Width, Math.BitIncrement(Sel.Width), double.PositiveInfinity),
+            () => Assert.InRange(r.Height, Math.BitIncrement(Sel.Height), double.PositiveInfinity));
     }
 
     [Fact]
@@ -244,10 +249,14 @@ public class RegionEditGeometryTests
         var start = new ViewRect(500, 980, 400, 100);
         ViewRect r = RegionEditGeometry.Resize(start, handle, dx, dy, dw, dh, aspect: 0.5);
         Assert.Equal(0.5, r.Width / r.Height, Precision);
-        Assert.True(r.Width >= RegionEditGeometry.MinSide(dw) - 1e-9, $"{handle}: {r} under the min width");
-        Assert.True(r.Height >= RegionEditGeometry.MinSide(dh) - 1e-9, $"{handle}: {r} under the min height");
+        Assert.InRange(r.Width, RegionEditGeometry.MinSide(dw) - 1e-9, double.PositiveInfinity);
+        Assert.InRange(r.Height, RegionEditGeometry.MinSide(dh) - 1e-9, double.PositiveInfinity);
         Assert.True(RegionEditGeometry.IsBigEnough(r, dw, dh));
-        Assert.True(r.X >= 0 && r.Y >= 0 && r.X + r.Width <= dw + 1e-9 && r.Y + r.Height <= dh + 1e-9, $"{r} off the display");
+        Assert.Multiple(
+            () => Assert.InRange(r.X, 0, double.PositiveInfinity),
+            () => Assert.InRange(r.Y, 0, double.PositiveInfinity),
+            () => Assert.InRange(r.X + r.Width, double.NegativeInfinity, dw + 1e-9),
+            () => Assert.InRange(r.Y + r.Height, double.NegativeInfinity, dh + 1e-9));
     }
 
     [Fact]
@@ -310,7 +319,7 @@ public class RegionEditGeometryTests
     {
         ViewRect r = RegionEditGeometry.ApplyAspect(new ViewRect(990, 595, 10, 5), Ratio, W, H);
         Assert.Equal(Ratio, r.Width / r.Height, Precision);
-        Assert.True(r.Width >= 62 - 1e-9);
+        Assert.InRange(r.Width, 62 - 1e-9, double.PositiveInfinity);
         Inside(r);
     }
 

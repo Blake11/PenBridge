@@ -48,8 +48,9 @@ public class TiltConverterTests
     {
         // Typical right-handed hold: top toward the lower right, so the tip points up-left (orientation ≈ -45°).
         TiltConverter.ToTilt(Rad(40), Rad(-45), out short x, out short y);
-        Assert.True(x > 0);
-        Assert.True(y > 0);
+        Assert.Multiple(
+            () => Assert.InRange(x, 1, short.MaxValue),
+            () => Assert.InRange(y, 1, short.MaxValue));
         Assert.Equal(x, y);
     }
 

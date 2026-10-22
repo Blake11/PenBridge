@@ -7,7 +7,7 @@ namespace PenBridge.Core.Tests.Input;
 public class PenStateTrackerTests
 {
     private readonly RecordingSink _sink = new();
-    private readonly ManualTimeProvider _time = new();
+    private readonly FakeTime _time = new();
     private static readonly CoordinateMapper Square = new(1, 1, new DisplayRect(0, 0, 65535, 65535));
     private readonly PenStateTracker _tracker;
     private uint _timeUs = 10_000;
@@ -469,7 +469,7 @@ public class PenStateTrackerTests
     public void Tracker_and_gestures_are_allocation_free_per_frame()
     {
         var sink = new CountingSink();
-        var time = new ManualTimeProvider();
+        var time = new FakeTime();
         var tracker = new PenStateTracker(sink, time)
         {
             Mapper = new CoordinateMapper(1440, 3088, new DisplayRect(0, 0, 1920, 1080)),

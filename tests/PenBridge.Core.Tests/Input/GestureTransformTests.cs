@@ -61,7 +61,7 @@ public class GestureTransformTests
     {
         Two(400, 500, 600, 500);
         Two(400, 440, 600, 560); // right finger down, left finger up: clockwise with y down
-        Assert.True(Assert.Single(Gestures).RotationDelta > 0);
+        Assert.InRange(Assert.Single(Gestures).RotationDelta, double.Epsilon, double.PositiveInfinity);
     }
 
     [Fact]

@@ -19,7 +19,7 @@ public class InputCipherTests
         byte[] datagram = Build(Session, 1, payload, out int length);
 
         Assert.Equal(16 + 40 + 16, length);
-        Assert.False(datagram.AsSpan(16, 40).SequenceEqual(payload)); // encrypted
+        Assert.NotEqual(payload, datagram[16..56]); // encrypted
         Assert.True(rx.TryOpen(datagram.AsSpan(0, length), out int payloadLength));
         Assert.Equal(40, payloadLength);
         Assert.Equal(payload, datagram.AsSpan(16, 40).ToArray());

@@ -169,7 +169,7 @@ public class GestureSmartZoomSettingTests
     [Fact]
     public void Off_the_tracker_arms_no_tap_timer()
     {
-        var time = new ManualTimeProvider();
+        var time = new FakeTime();
         var tracker = new PenStateTracker(_sink, time, new PenStateTrackerOptions { Gestures = new GestureRecognizerOptions { SmartZoomEnabled = Read } })
         {
             Mapper = new CoordinateMapper(1, 1, new DisplayRect(0, 0, 65535, 65535)),

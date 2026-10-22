@@ -2,17 +2,6 @@ using PenBridge.Core.Input;
 
 namespace PenBridge.Core.Tests.Input;
 
-internal sealed class ManualTimeProvider : TimeProvider
-{
-    private long _ticks = 1_000_000;
-
-    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
-
-    public override long GetTimestamp() => _ticks;
-
-    public void Advance(TimeSpan by) => _ticks += by.Ticks;
-}
-
 internal sealed class RecordingSink : IInputSink
 {
     public List<PenEvent> Pen { get; } = new(4096);

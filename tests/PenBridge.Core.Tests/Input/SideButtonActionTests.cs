@@ -113,7 +113,7 @@ public class SideButtonActionTests
     // Eraser: the tracker turns the held side button into the eraser tool (proximity switch), latched at contact-down.
 
     private readonly RecordingSink _sink = new();
-    private readonly ManualTimeProvider _time = new();
+    private readonly FakeTime _time = new();
     private uint _timeUs = 10_000;
 
     private PenStateTracker EraserTracker()

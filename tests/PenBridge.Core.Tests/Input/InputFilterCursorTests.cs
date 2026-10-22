@@ -17,7 +17,7 @@ public class InputFilterCursorTests
 
     public InputFilterCursorTests()
     {
-        _tracker = new PenStateTracker(new TeeSink(_sink, _clicks), new ManualTimeProvider())
+        _tracker = new PenStateTracker(new TeeSink(_sink, _clicks), new FakeTime())
         {
             Mapper = new(1, 1, new DisplayRect(0, 0, 1512, 982)),
         };

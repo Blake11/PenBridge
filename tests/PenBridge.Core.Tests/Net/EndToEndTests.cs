@@ -30,7 +30,7 @@ public class EndToEndTests
         int down = Array.IndexOf(kinds, PenEventKind.Down);
         int up = Array.IndexOf(kinds, PenEventKind.Up);
         Assert.InRange(down, 1, kinds.Length);
-        Assert.True(up > down, "Up after Down");
+        Assert.InRange(up, down + 1, kinds.Length); // Up after Down
         Assert.Contains(PenEventKind.Drag, kinds[down..up]);
         Assert.Equal(PenEventKind.ProximityLeave, kinds[^1]);
         Assert.All(sink.Pen(), e => Assert.False(e.Synthetic));
@@ -72,7 +72,7 @@ public class EndToEndTests
         Assert.True(stats.HasSession);
         Assert.Equal(client.DeviceId, stats.DeviceId);
         Assert.Equal(InputTransport.Udp, stats.Transport);
-        Assert.True(stats.Counters.Accepted >= 5);
+        Assert.InRange(stats.Counters.Accepted, 5, long.MaxValue);
         Assert.Equal(0, stats.Counters.AuthFailures);
     }
 
@@ -256,7 +256,7 @@ public class EndToEndTests
     public async Task A_second_device_gets_busy_while_takeover_is_off()
     {
         await using var h = new NetHarness();
-        PenBridgeClient first = await h.PairAsync();
+        PenBridgeClient first = await h.ConnectPairedAsync();
 
         PenBridgeClient second = h.CreateClient();
         h.Server.OpenPairingWindow();
@@ -283,7 +283,7 @@ public class EndToEndTests
         });
         var ended = new List<SessionEndedEventArgs>();
         h.Server.SessionEnded += (_, e) => { lock (ended) { ended.Add(e); } };
-        PenBridgeClient first = await h.PairAsync();
+        PenBridgeClient first = await h.ConnectPairedAsync();
         var firstGone = new TaskCompletionSource<ClientDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         first.Disconnected += (_, e) => firstGone.TrySetResult(e);
         first.SendState(Pens.Contact(2000, 2000), []);
@@ -343,7 +343,7 @@ public class EndToEndTests
         }
 
         h.Server.SessionEnded += (_, e) => { lock (serverEnds) { serverEnds.Add(e.Reason); } };
-        PenBridgeClient a = await h.PairAsync();
+        PenBridgeClient a = await h.ConnectPairedAsync();
         a.Disconnected += OnGone;
         PenBridgeClient b = await h.PairAsync(); // the first takeover
         b.Disconnected += OnGone;
@@ -378,7 +378,7 @@ public class EndToEndTests
     {
         await using var h = new NetHarness();
         var store = new InMemorySecretStore();
-        PenBridgeClient stale = await h.PairAsync(store);
+        PenBridgeClient stale = await h.ConnectPairedAsync(store);
 
         PenBridgeClient fresh = h.CreateClient(store);
         await fresh.ConnectAsync("127.0.0.1", h.Port, h.Identity.Fingerprint.ToArray(), TestContext.Current.CancellationToken).Bounded();
@@ -391,7 +391,7 @@ public class EndToEndTests
     public async Task Ping_pong_measures_rtt_on_both_sides()
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
 
         h.Time.Advance(TimeSpan.FromSeconds(2));
 
@@ -403,7 +403,7 @@ public class EndToEndTests
     public async Task Server_dispose_sends_bye_shutdown()
     {
         var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
         var gone = new TaskCompletionSource<ClientDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         client.Disconnected += (_, e) => gone.TrySetResult(e);
 
@@ -453,7 +453,7 @@ public class EndToEndTests
             TimeProvider = o.TimeProvider,
         });
         var store = new InMemorySecretStore();
-        PenBridgeClient first = await h.PairAsync(store);
+        PenBridgeClient first = await h.ConnectPairedAsync(store);
         await first.DisconnectAsync().Bounded();
         await Wait.Until(() => !h.Server.GetStats().HasSession, "first session ended");
 
@@ -497,7 +497,7 @@ public class EndToEndTests
         var ended = new TaskCompletionSource<SessionEndedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         h.Server.SessionEnded += (_, e) => ended.TrySetResult(e);
         var store = new InMemorySecretStore();
-        PenBridgeClient first = await h.PairAsync(store);
+        PenBridgeClient first = await h.ConnectPairedAsync(store);
         var gone = new TaskCompletionSource<ClientDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         first.Disconnected += (_, e) => gone.TrySetResult(e);
 

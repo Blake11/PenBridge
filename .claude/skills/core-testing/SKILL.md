@@ -50,8 +50,15 @@ DOTNET_TC_QuickJitForLoops=1 DOTNET_OSR_HitLimit=1 scripts/test.sh -c Release   
 ```
 
 ## General
-- Inject time (`ManualTimeProvider` in `Input/TestSupport.cs`) and randomness; no real sleeps.
+- Inject time and randomness; no real sleeps. There is **one test clock**: `FakeTime` (`TestSupport/FakeTime.cs`,
+  root namespace `PenBridge.Core.Tests`, so no using). Timestamps, wall clock (`new FakeTime(start)`) and timers all
+  move only in `Advance`. Don't add another `TimeProvider` fake.
 - Network tests: loopback or fakes with timeouts, never fixed delays.
+- Asserts that show values: `Assert.InRange(actual, low, high)` (inclusive) instead of `Assert.True(a <op> b)`,
+  `Assert.Equal(expected, actual)` on arrays/spans instead of `SequenceEqual`, and `Assert.Multiple(() => ..., () => ...)`
+  for several bounds at once. Keep the semantics exact: an open bound is `Math.BitIncrement(x)`/`Math.BitDecrement(x)`
+  (`double.Epsilon` for `> 0`), `n + 1` for integers, and `double.PositiveInfinity`/`long.MaxValue` for a missing
+  side. Keep `Assert.True(cond, "why")` when the message explains what a bare value can't.
 - `scripts/test.sh` lists the names of failing tests after the summary (from `TestResults/junit.xml`).
 
 ## Time-based filters (hold-back)
@@ -90,14 +97,28 @@ Await the same signal the assertion checks (the event, not a property set earlie
   deadline assert it is still armed (`CountDeadlines(... remaining == 1 ms) == 1`) instead of sleeping and checking.
 - **Real-time limits** (blocking, dispose): bound them against the product timeout the bug would wait for
   (`ControlChannel.WriteTimeout`, `LingerTimeout`), not a guessed number of milliseconds.
-- **`h.ConnectPairedAsync()`**: an already-paired client (seeded key, reconnect auth). Use it unless the test is about
-  pairing; `h.PairAsync()` runs J-PAKE (about 0.2 s each).
+- **`h.ConnectPairedAsync()`**: an already-paired client (`ServerFixture.SeedPairing`: a fresh device key on both
+  sides, then reconnect auth). Use it unless the test is about pairing; `h.PairAsync()` runs J-PAKE (about 0.2 s
+  each). A takeover test may keep one `PairAsync` when the takeover *by a pairing device* is the subject.
 
 ## Gesture slops
 A new gesture's slop must be at least the slop of every gesture it can still turn into. The one-finger pointer
 (ADR-0026) once started at 1.5% while a staggered two-finger tap tolerates 3.5%, so a drifting first finger became a
 move and killed the right-click. Use the wider slop until the other gesture can no longer start (`PointerSettleTime`),
 and test the drift *between* the two slops.
+
+## Parallelism
+`TestSupport/Parallelization.cs`: `[assembly: Parallelization(Mode = ParallelMode.All, Algorithm = ParallelAlgorithm.Conservative)]`
+(namespaces `Xunit.v3`, `Xunit.Sdk`). Every test runs in parallel with every other, also tests of one class, at most
+one per core; only `[Collection(AllocationGroup.Name)]` runs alone, afterwards. So:
+- No mutable `static` state shared by tests (a class's instance is per test, so instance fields are fine), no process-wide
+  settings (culture, env vars, `Console`) changed without restoring them, no fixed ports: bind port 0.
+- Don't switch to `ParallelAlgorithm.Aggressive` (about 1 s faster idle): it starts every test at once, and under the
+  soak load the proxy/stall tests (`InputChannelTests`) and the handshake deadline test missed their 10 s
+  `Wait.Limit` in all 24 runs. Conservative passed 24/24.
+- Compare modes without rebuilding: the in-process runner takes `-parallelMode collections|all` and
+  `-parallelAlgorithm`; `dotnet test` takes `--parallel` and `--parallel-algorithm`. Idle M4, Release: collections about 7.5 s,
+  all about 6.0 s.
 
 ## Soak (flaky timing tests)
 Before calling a timing test fixed, run it under full CPU load, in parallel:
@@ -117,8 +138,7 @@ Parallel runs share the build output, so pass `--no-build`; read failures from e
 - `dotnet test` sometimes stalls for minutes before running when launched from the Bash sandbox (observed; cause unknown, test durations then include the stall). The in-process runner (`tests/PenBridge.Core.Tests/bin/<cfg>/net10.0/PenBridge.Core.Tests -class <name>`, `-longRunning <s>`) has no stall and suits soaks.
 
 ## Fake time with real sockets (Net tests)
-- `Net/NetTestSupport.cs` has `FakeTime` (a TimeProvider whose timers fire only inside `Advance`, in due order, on the
-  calling thread) plus `Wait.Until` / `Wait.AdvanceUntil` / `Wait.Step` (bounded real-time polling).
+- `FakeTime`'s timers fire only inside `Advance`, in due order, on the calling thread; `Net/NetTestSupport.cs` adds `Wait.Until` / `Wait.AdvanceUntil` / `Wait.Step` (bounded real-time polling).
 - Never jump past a deadline in one `Advance` while I/O must happen in between (pings, acks): every timer that comes
   due fires before any socket I/O runs. Step with `Wait.Step(time, total[, step, settled])` (≤ 1 s, below the 2 s
   write timeout): after each step it waits, bounded by `Wait.Limit`, until real I/O caught up (its private `Settled`:
@@ -131,9 +151,12 @@ Parallel runs share the build output, so pass `--no-build`; read failures from e
   "stream, stop right after an ack, step 6 s, assert still on UDP" catches it.
 - A deadline counts from when its operation *started*, which may be later than the test thinks (a writer drains
   asynchronously). Wait for a real-time condition first (e.g. `ControlWriteInFlightFor > 300 ms`), then advance.
-- Share one `ServerIdentity`: use `NetTestSupport`'s `SharedServerIdentity` (lazy, process-wide). Creating/loading a
-  PKCS#12 costs about 1 s on macOS, so a fresh identity per test makes the suite slow and pushes timing tests
-  past their real-time waits.
+- Share one `ServerIdentity`: the assembly fixture `ServerFixture` (`TestSupport/ServerFixture.cs`,
+  `[assembly: AssemblyFixture]`) owns it (`ServerFixture.Current.Identity`, also `NetHarness.SharedServerIdentity`)
+  plus the relay's second identity, and disposes them after the run. Creating/loading a PKCS#12 costs about 1 s on
+  macOS, so a fresh identity per test makes the suite slow and pushes timing tests past their real-time waits. The
+  fixture starts the identity in the background so it overlaps the first tests; keep it that way (an eager create
+  in `InitializeAsync` delays every test by that second). Only identity tests (`ServerIdentityTests`) make their own.
 - TLS version: assert `Tls12 or Tls13`, never 1.3 only (macOS servers negotiate 1.2, ADR-0013).
 - To stall a TCP writer quickly, shrink both buffers (`PausableProxy` listener receive buffer, client
   `TcpSendBufferSize`) and keep sending until a write is really in flight.

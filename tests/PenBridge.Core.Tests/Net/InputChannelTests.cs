@@ -456,7 +456,7 @@ public class InputChannelTests
             Assert.True(client.SendState(Pens.Contact((ushort)i, 1000, 30000), [])); // still never blocks
         }
 
-        Assert.True(client.FallbackFramesDropped > 0);
+        Assert.InRange(client.FallbackFramesDropped, 1, long.MaxValue);
 
         var dispose = System.Diagnostics.Stopwatch.StartNew();
         await client.DisposeAsync().AsTask().Bounded();

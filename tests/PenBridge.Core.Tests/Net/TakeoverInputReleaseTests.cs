@@ -48,7 +48,7 @@ public class TakeoverInputReleaseTests
         h.Server.SessionEnded += (_, e) => { lock (lifecycle) { lifecycle.Add("ended " + e.Session.DeviceId); } };
         h.Server.SessionStarted += (_, e) => { lock (lifecycle) { lifecycle.Add("started " + e.Session.DeviceId); } };
 
-        PenBridgeClient first = await h.PairAsync();
+        PenBridgeClient first = await h.ConnectPairedAsync();
         await OpenScrollAsync(h, first, 0);
         int mark = h.Sink.All().Length;
 
@@ -77,7 +77,7 @@ public class TakeoverInputReleaseTests
         await using NetHarness h = CreateTakeoverHarness();
         byte[]? withheld = null;
         bool capture = false;
-        PenBridgeClient first = await h.PairAsync(filter: d =>
+        PenBridgeClient first = await h.ConnectPairedAsync(filter: d =>
         {
             if (!capture)
             {
@@ -118,7 +118,7 @@ public class TakeoverInputReleaseTests
         await using var h = new NetHarness();
         var ended = new TaskCompletionSource<SessionEndedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         h.Server.SessionEnded += (_, e) => ended.TrySetResult(e);
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
         await OpenScrollAsync(h, client, 0);
 
         await client.DisconnectAsync().Bounded();
@@ -129,7 +129,7 @@ public class TakeoverInputReleaseTests
         Assert.False(h.Server.GetStats().HasSession);
 
         // A held pen is released by a server-side disconnect too.
-        PenBridgeClient again = await h.PairAsync();
+        PenBridgeClient again = await h.ConnectPairedAsync();
         Assert.True(again.SendState(Pens.Contact(2000, 2000), []));
         await Wait.Until(() => h.Sink.PenKinds().Contains(PenEventKind.Down), "Down");
         await h.Server.DisconnectSessionAsync().Bounded();

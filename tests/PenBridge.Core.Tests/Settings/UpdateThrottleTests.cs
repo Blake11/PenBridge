@@ -89,11 +89,11 @@ public class UpdateThrottleTests
 
         for (int i = 1; i < sent.Count; i++)
         {
-            Assert.True(sent[i] - sent[i - 1] >= Interval.TotalMilliseconds - 1e-9, $"{sent[i - 1]} -> {sent[i]}");
+            Assert.True(sent[i] - sent[i - 1] >= Interval.TotalMilliseconds - 1e-9, $"sends {i - 1} -> {i}: {sent[i - 1]} -> {sent[i]} ms, closer than {Interval.TotalMilliseconds} ms");
         }
 
         Assert.InRange(sent.Count, 9, 11);
-        Assert.True(sent[^1] >= 496);
+        Assert.InRange(sent[^1], 496, double.PositiveInfinity);
     }
 
     [Fact]

@@ -106,7 +106,7 @@ public class GestureOneFingerTests
             Frame(110 + (i * 8), F(1, 540 + (i * 60), 500)); // 7500 pt/s: past the fast speed
         }
 
-        Assert.True(Events[^1].DeltaX > 60 * 2, "fast movement is accelerated");
+        Assert.InRange(Events[^1].DeltaX, Math.BitIncrement(60 * 2.0), double.PositiveInfinity); // fast movement is accelerated
     }
 
     [Fact]

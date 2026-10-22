@@ -59,10 +59,10 @@ public class GestureScrollAxisLockTests
         Assert.Equal(GesturePhase.Began, scrolls[0].Phase);
         Assert.Equal(GesturePhase.Ended, scrolls[^1].Phase);
         Assert.All(scrolls, e => Assert.Equal(0, e.DeltaY));
-        Assert.True(scrolls.Sum(e => e.DeltaX) > 150);
+        Assert.InRange(scrolls.Sum(e => e.DeltaX), Math.BitIncrement(150.0), double.PositiveInfinity);
 
         (double vx, double vy) = Coast(scrolls);
-        Assert.True(vx > 0);
+        Assert.InRange(vx, double.Epsilon, double.PositiveInfinity);
         Assert.Equal(0, vy);
     }
 
@@ -73,10 +73,10 @@ public class GestureScrollAxisLockTests
 
         List<GestureEvent> scrolls = Scrolls;
         Assert.All(scrolls, e => Assert.Equal(0, e.DeltaX));
-        Assert.True(scrolls.Sum(e => e.DeltaY) < -150);
+        Assert.InRange(scrolls.Sum(e => e.DeltaY), double.NegativeInfinity, Math.BitDecrement(-150.0));
         (double vx, double vy) = Coast(scrolls);
         Assert.Equal(0, vx);
-        Assert.True(vy < 0);
+        Assert.InRange(vy, double.NegativeInfinity, -double.Epsilon);
     }
 
     [Fact]
@@ -88,7 +88,9 @@ public class GestureScrollAxisLockTests
         Assert.Contains(scrolls, e => e.DeltaX != 0 && e.DeltaY != 0);
         Assert.Equal(15.0 / 20, scrolls.Sum(e => e.DeltaY) / scrolls.Sum(e => e.DeltaX), 2);
         (double vx, double vy) = Coast(scrolls);
-        Assert.True(vx > 0 && vy > 0);
+        Assert.Multiple(
+            () => Assert.InRange(vx, double.Epsilon, double.PositiveInfinity),
+            () => Assert.InRange(vy, double.Epsilon, double.PositiveInfinity));
     }
 
     [Theory]
@@ -113,7 +115,7 @@ public class GestureScrollAxisLockTests
         _sink.Clear();
         Swipe(0, 20); // the next scroll decides again
         Assert.All(Scrolls, e => Assert.Equal(0, e.DeltaX));
-        Assert.True(Scrolls.Sum(e => e.DeltaY) > 150);
+        Assert.InRange(Scrolls.Sum(e => e.DeltaY), Math.BitIncrement(150.0), double.PositiveInfinity);
     }
 
     [Fact]

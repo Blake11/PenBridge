@@ -12,136 +12,6 @@ using PenBridge.Core.Security;
 
 namespace PenBridge.Core.Tests.Net;
 
-/// <summary>
-/// Deterministic clock with timers: nothing fires until <see cref="Advance"/>, which runs due callbacks in order
-/// on the calling thread. Wall clock, timestamps and timers all derive from the same virtual time.
-/// </summary>
-internal sealed class FakeTime : TimeProvider
-{
-    private static readonly DateTimeOffset Epoch = new(2026, 10, 13, 12, 0, 0, TimeSpan.Zero);
-    private readonly Lock _lock = new();
-    private readonly List<FakeTimer> _timers = [];
-    private long _ticks;
-
-    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
-
-    public override DateTimeOffset GetUtcNow() => Epoch + TimeSpan.FromTicks(Volatile.Read(ref _ticks));
-
-    public override long GetTimestamp() => 1_000_000_000 + Volatile.Read(ref _ticks);
-
-    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
-    {
-        var timer = new FakeTimer(this, callback, state);
-        lock (_lock)
-        {
-            _timers.Add(timer);
-        }
-
-        timer.Change(dueTime, period);
-        return timer;
-    }
-
-    /// <summary>Moves time forward, firing every timer that comes due (including re-armed ones) in due order.</summary>
-    public void Advance(TimeSpan by)
-    {
-        long target;
-        lock (_lock)
-        {
-            target = _ticks + by.Ticks;
-        }
-
-        while (true)
-        {
-            FakeTimer? next = null;
-            lock (_lock)
-            {
-                foreach (FakeTimer t in _timers)
-                {
-                    if (t.Due <= target && (next is null || t.Due < next.Due))
-                    {
-                        next = t;
-                    }
-                }
-
-                if (next is null)
-                {
-                    Volatile.Write(ref _ticks, target);
-                    return;
-                }
-
-                Volatile.Write(ref _ticks, Math.Max(_ticks, next.Due));
-                next.Due = next.Period > 0 ? next.Due + next.Period : long.MaxValue;
-            }
-
-            next.Callback(next.State);
-        }
-    }
-
-    /// <summary>
-    /// Counts the armed one-shot timers (deadlines) for which <paramref name="match"/>(state, armed for, remaining)
-    /// holds; periodic timers (pings) are skipped. Lets a test wait for real I/O to finish or re-arm a deadline
-    /// instead of guessing a real delay. Not called under any product lock: <paramref name="match"/> must be pure.
-    /// </summary>
-    public int CountDeadlines(Func<object?, TimeSpan, TimeSpan, bool> match)
-    {
-        lock (_lock)
-        {
-            int n = 0;
-            foreach (FakeTimer t in _timers)
-            {
-                if (t.Period == 0 && t.Due != long.MaxValue
-                    && match(t.State, TimeSpan.FromTicks(t.ArmedFor), TimeSpan.FromTicks(t.Due - _ticks)))
-                {
-                    n++;
-                }
-            }
-
-            return n;
-        }
-    }
-
-    private sealed class FakeTimer(FakeTime owner, TimerCallback callback, object? state) : ITimer
-    {
-        public TimerCallback Callback { get; } = callback;
-
-        public object? State { get; } = state;
-
-        public long Due { get; set; } = long.MaxValue;
-
-        public long Period { get; set; }
-
-        /// <summary>The due time of the last <see cref="Change"/>, in ticks (-1 when disarmed).</summary>
-        public long ArmedFor { get; private set; } = -1;
-
-        public bool Change(TimeSpan dueTime, TimeSpan period)
-        {
-            lock (owner._lock)
-            {
-                ArmedFor = dueTime == Timeout.InfiniteTimeSpan ? -1 : dueTime.Ticks;
-                Due = dueTime == Timeout.InfiniteTimeSpan ? long.MaxValue : owner._ticks + Math.Max(0, dueTime.Ticks);
-                Period = period == Timeout.InfiniteTimeSpan || period <= TimeSpan.Zero ? 0 : period.Ticks;
-            }
-
-            return true;
-        }
-
-        public void Dispose()
-        {
-            lock (owner._lock)
-            {
-                owner._timers.Remove(this);
-                Due = long.MaxValue;
-            }
-        }
-
-        public ValueTask DisposeAsync()
-        {
-            Dispose();
-            return ValueTask.CompletedTask;
-        }
-    }
-}
-
 /// <summary>Thread-safe recording sink (the server calls it from pool threads and timer callbacks).</summary>
 internal sealed class ConcurrentSink : IInputSink
 {
@@ -350,19 +220,14 @@ internal sealed class NetHarness : IAsyncDisposable
 {
     public static readonly SurfaceInfoMessage Surface = new(1440, 3088, 500f, 500f, SurfaceOrientation.Portrait, SurfaceCapabilities.None);
 
-    /// <summary>
-    /// One identity for all harnesses: loading a PKCS#12 key on macOS goes through the keychain and costs most of a
-    /// second, and the tests don't depend on distinct server certificates (the relay has its own).
-    /// </summary>
-    private static readonly Lazy<ServerIdentity> SharedIdentity = new(() => ServerIdentity.FromPkcs12(ServerIdentity.CreatePkcs12(DateTimeOffset.UtcNow)));
-
     private readonly List<PenBridgeClient> _clients = [];
 
-    public static ServerIdentity SharedServerIdentity => SharedIdentity.Value;
+    /// <summary>The one identity for all harnesses (<see cref="ServerFixture.Identity"/>).</summary>
+    public static ServerIdentity SharedServerIdentity => ServerFixture.Current.Identity;
 
     public NetHarness(Func<PenBridgeServerOptions, PenBridgeServerOptions>? configure = null)
     {
-        Identity = SharedIdentity.Value;
+        Identity = SharedServerIdentity;
         Registry = new PairedDeviceRegistry(new InMemorySecretStore(), Time);
         var options = new PenBridgeServerOptions
         {
@@ -427,7 +292,7 @@ internal sealed class NetHarness : IAsyncDisposable
         (Server.ActiveConnection ?? throw new InvalidOperationException("No session to settle.")).RoundTripAsync().Bounded();
 
     /// <summary>
-    /// A client that is already paired: seeds both sides with a device key and connects with reconnect auth, then
+    /// A client that is already paired: seeds both sides with a device key (<see cref="ServerFixture.SeedPairing"/>) and connects with reconnect auth, then
     /// waits until the server applied its SurfaceInfo. Much cheaper than <see cref="PairAsync"/> (no J-PAKE); use it
     /// whenever the test isn't about pairing. <paramref name="subscribe"/> runs before the connect.
     /// </summary>
@@ -438,10 +303,7 @@ internal sealed class NetHarness : IAsyncDisposable
         Action<PenBridgeClient>? subscribe = null)
     {
         store ??= new InMemorySecretStore();
-        var credentials = new ClientCredentialStore(store);
-        byte[] key = RandomNumberGenerator.GetBytes(32);
-        Registry.Add(credentials.GetOrCreateDeviceId(), "Test Phone", key);
-        credentials.SaveDeviceKey(Identity.Fingerprint, key);
+        ServerFixture.Current.SeedPairing(Registry, store);
         PenBridgeClient client = CreateClient(store, filter, configure);
         subscribe?.Invoke(client);
         await client.ConnectAsync("127.0.0.1", Port, Identity.Fingerprint.ToArray()).Bounded();
@@ -526,8 +388,7 @@ internal static class Pens
 internal sealed class TlsRelay : IAsyncDisposable
 {
     private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
-    private static readonly Lazy<ServerIdentity> RelayIdentity = new(() => ServerIdentity.FromPkcs12(ServerIdentity.CreatePkcs12(DateTimeOffset.UtcNow)));
-    private readonly ServerIdentity _identity = RelayIdentity.Value;
+    private readonly ServerIdentity _identity = ServerFixture.Current.RelayIdentity;
     private readonly CancellationTokenSource _cts = new();
     private readonly int _targetPort;
     private readonly Task _loop;

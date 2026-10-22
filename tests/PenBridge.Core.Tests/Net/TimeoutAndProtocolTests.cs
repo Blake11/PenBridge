@@ -95,7 +95,7 @@ public class TimeoutAndProtocolTests
         await using var h = new NetHarness(Timeouts(peer: TimeSpan.FromSeconds(6), ping: Timeout.InfiniteTimeSpan));
         var ended = new TaskCompletionSource<SessionEndedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
         h.Server.SessionEnded += (_, e) => ended.TrySetResult(e);
-        PenBridgeClient client = await h.PairAsync(configure: o => new PenBridgeClientOptions
+        PenBridgeClient client = await h.ConnectPairedAsync(configure: o => new PenBridgeClientOptions
         {
             SecretStore = o.SecretStore,
             Surface = o.Surface,
@@ -119,7 +119,7 @@ public class TimeoutAndProtocolTests
     public async Task Pings_keep_an_idle_session_alive()
     {
         await using var h = new NetHarness();
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
 
         // Both session read loops are waiting under a peer-timeout deadline, so the waits below are not vacuous.
         await Wait.Until(() => h.Time.CountDeadlines(static (s, armedFor, _) => s is ControlChannel && armedFor == Wait.PeerTimeout) == 2, "both read deadlines armed");
@@ -256,7 +256,7 @@ public class TimeoutAndProtocolTests
         }
 
         await Wait.Until(() => h.Server.PendingConnections == 0, "reset connections released");
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
         Assert.True(client.IsConnected);
     }
 
@@ -292,7 +292,7 @@ public class TimeoutAndProtocolTests
         Assert.Equal([tcpTaken, udpTaken], h.Server.FailedPorts);
         Assert.NotEqual(tcpTaken, h.Port);
         Assert.NotEqual(udpTaken, h.Port);
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
         EndToEndTests.DrawStroke(client);
         await EndToEndTests.AssertStrokeAsync(h.Sink);
     }

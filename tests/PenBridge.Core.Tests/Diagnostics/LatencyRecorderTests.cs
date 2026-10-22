@@ -167,7 +167,7 @@ public class LatencyRecorderTests
         Assert.Contains("# pen_down_to_inject: count=1 p50_ms=2.700 p95_ms=2.700 max_ms=2.700 min_ms=2.700", lines);
         Assert.Contains("# send_to_receive: count=1 p50_ms=2.200 p95_ms=2.200 max_ms=2.200 min_ms=2.200", lines);
         int columns = Array.IndexOf(lines, LatencyDump.Columns);
-        Assert.True(columns > 0);
+        Assert.InRange(columns, 1, int.MaxValue);
         Assert.Equal("input\t1\t6\t2000\t3000.0\t3500.0", lines[columns + 3]);
         Assert.Equal(columns + 4, lines.Length);
     }
@@ -188,7 +188,7 @@ public class LatencyRecorderTests
             TimeProvider = o.TimeProvider,
             LatencyRecorder = recorder,
         });
-        PenBridgeClient client = await h.PairAsync();
+        PenBridgeClient client = await h.ConnectPairedAsync();
         uint session = h.Server.ActiveInput!.SessionId;
 
         // Both sides ping every 2 s; one fake-time step per second lets each round cross the loopback.
@@ -214,7 +214,7 @@ public class LatencyRecorderTests
 
         LatencyRecord[] records = recorder.Snapshot();
         Assert.All(records, r => Assert.Equal(session, r.SessionId));
-        Assert.True(Count(recorder, LatencyRecordKind.Input) >= 7);
+        Assert.InRange(Count(recorder, LatencyRecordKind.Input), 7, int.MaxValue);
 
         // One shared fake clock that doesn't move during I/O: every corrected latency is exactly zero.
         LatencyReport report = LatencyAnalyzer.Analyze(records, h.Time.TimestampFrequency);

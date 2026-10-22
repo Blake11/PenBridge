@@ -83,10 +83,10 @@ public class GesturePipelineTests
         }
 
         Assert.True(momentum.IsCoasting);
-        Assert.True(momentum.ReleaseVelocityY < 0); // the flick's direction (fingers up)
+        Assert.InRange(momentum.ReleaseVelocityY, double.NegativeInfinity, -double.Epsilon); // the flick's direction (fingers up)
 
         GestureEvent[] scroll = _p.GestureEvents().Where(g => g.Kind == GestureKind.Scroll).ToArray();
-        Assert.True(scroll.Take(10).Sum(g => g.DeltaY) > 0); // the slow part scrolled down first
+        Assert.InRange(scroll.Take(10).Sum(g => g.DeltaY), double.Epsilon, double.PositiveInfinity); // the slow part scrolled down first
         AssertCursorModeStillWorks(moveAt + 1000);
     }
 

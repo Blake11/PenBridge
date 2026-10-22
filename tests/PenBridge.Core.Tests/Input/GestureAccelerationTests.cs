@@ -27,8 +27,8 @@ public class GestureAccelerationTests
         for (double v = 400; v <= 4000; v += 50)
         {
             double g = Curve.GainAt(v);
-            Assert.True(g >= previous);
-            Assert.True(g - previous < 0.05); // no steps
+            Assert.InRange(g, previous, double.PositiveInfinity);
+            Assert.InRange(g - previous, double.NegativeInfinity, Math.BitDecrement(0.05)); // no steps
             previous = g;
         }
     }
@@ -132,6 +132,6 @@ public class GestureAccelerationTests
         }
 
         Assert.True(coasting);
-        Assert.True(momentum.ReleaseVelocityY > 12_000 * 0.99); // 3x 5000 pt/s, capped at MaxSpeed
+        Assert.InRange(momentum.ReleaseVelocityY, Math.BitIncrement(12_000 * 0.99), double.PositiveInfinity); // 3x 5000 pt/s, capped at MaxSpeed
     }
 }

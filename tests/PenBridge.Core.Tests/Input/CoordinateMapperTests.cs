@@ -19,7 +19,9 @@ public class CoordinateMapperTests
         AssertPoint(new DisplayPoint(960, 540), m.Map(Max / 2, Max / 2));
         AssertPoint(new DisplayPoint(0, 0), m.Map(0, m.ActiveArea.Y * Max));
         DisplayPoint far = m.Map(Max, (m.ActiveArea.Y + h) * Max);
-        Assert.True(far.X < 1920 && far.X > 1920 - Tol && far.Y < 1080 && far.Y > 1080 - Tol);
+        Assert.Multiple(
+            () => Assert.InRange(far.X, Math.BitIncrement(1920 - Tol), Math.BitDecrement(1920.0)),
+            () => Assert.InRange(far.Y, Math.BitIncrement(1080 - Tol), Math.BitDecrement(1080.0)));
     }
 
     [Fact]
@@ -31,7 +33,7 @@ public class CoordinateMapperTests
         AssertRect(new NormalizedRect((1 - w) / 2, 0, w, 1), m.ActiveArea);
         AssertPoint(new DisplayPoint(1280, 0), m.Map(Max / 2, 0));
         DisplayPoint bottom = m.Map(Max / 2, Max);
-        Assert.True(bottom.Y < 1600 && bottom.Y > 1600 - Tol);
+        Assert.InRange(bottom.Y, Math.BitIncrement(1600 - Tol), Math.BitDecrement(1600.0));
         AssertPoint(new DisplayPoint(0, 800), m.Map(m.ActiveArea.X * Max, Max / 2));
     }
 
@@ -57,7 +59,7 @@ public class CoordinateMapperTests
         double midY = Max / 2;
         AssertPoint(new DisplayPoint(100, 50 + 540), m.Map(a.X * Max / 2, midY)); // left margin
         DisplayPoint right = m.Map(Max, midY); // right margin
-        Assert.True(right.X < 2020 && right.X > 2020 - Tol);
+        Assert.InRange(right.X, Math.BitIncrement(2020 - Tol), Math.BitDecrement(2020.0));
         Assert.Equal(590, right.Y, Tol);
         AssertPoint(new DisplayPoint(100, 50), m.Map(0, 0)); // corner
     }
@@ -85,7 +87,9 @@ public class CoordinateMapperTests
         var m = new CoordinateMapper(1600, 1000, new DisplayRect(100, 100, 1440, 900));
         AssertPoint(new DisplayPoint(100, 100), m.Map(-5000, double.NaN));
         DisplayPoint p = m.Map(1e9, 1e9);
-        Assert.True(p.X < 1540 && p.Y < 1000);
+        Assert.Multiple(
+            () => Assert.InRange(p.X, double.NegativeInfinity, Math.BitDecrement(1540.0)),
+            () => Assert.InRange(p.Y, double.NegativeInfinity, Math.BitDecrement(1000.0)));
     }
 
     [Fact]
@@ -158,7 +162,7 @@ public class CoordinateMapperTests
         DisplayPoint p = m.MapGesture(-10, double.NaN);
         Assert.Equal(m.GestureRect.X, p.X);
         Assert.Equal(m.GestureRect.Y, p.Y);
-        Assert.True(m.MapGesture(Max, Max).X < m.GestureRect.X + m.GestureRect.Width);
+        Assert.InRange(m.MapGesture(Max, Max).X, double.NegativeInfinity, Math.BitDecrement(m.GestureRect.X + m.GestureRect.Width));
     }
 
     [Fact]
@@ -175,14 +179,14 @@ public class CoordinateMapperTests
         AssertPoint(new DisplayPoint(2000, 250), m.Map(2000 / 2500.0 * Max, Max / 4)); // on B
 
         DisplayPoint gapNearA = m.Map(1200 / 2500.0 * Max, Max / 2);
-        Assert.True(gapNearA.X < 1000 && gapNearA.X > 1000 - Tol);
+        Assert.InRange(gapNearA.X, Math.BitIncrement(1000 - Tol), Math.BitDecrement(1000.0));
         Assert.Equal(500, gapNearA.Y, Tol);
 
         AssertPoint(new DisplayPoint(1500, 200), m.Map(1300 / 2500.0 * Max, 200 / 1000.0 * Max)); // nearer B
 
         DisplayPoint belowB = m.Map(2000 / 2500.0 * Max, 800 / 1000.0 * Max);
         Assert.Equal(2000, belowB.X, Tol);
-        Assert.True(belowB.Y < 500 && belowB.Y > 500 - Tol);
+        Assert.InRange(belowB.Y, Math.BitIncrement(500 - Tol), Math.BitDecrement(500.0));
     }
 
     [Fact]
@@ -202,7 +206,9 @@ public class CoordinateMapperTests
         AssertPoint(new DisplayPoint(0, 0), m.ClampToDisplays(new DisplayPoint(-50, -10)));
         AssertPoint(new DisplayPoint(100, 100), m.ClampToDisplays(new DisplayPoint(100, 100))); // outside the region is fine
         DisplayPoint p = m.ClampToDisplays(new DisplayPoint(5000, 5000));
-        Assert.True(p.X < 1920 && p.Y < 1080 && p.X > 1920 - Tol);
+        Assert.Multiple(
+            () => Assert.InRange(p.X, Math.BitIncrement(1920 - Tol), Math.BitDecrement(1920.0)),
+            () => Assert.InRange(p.Y, double.NegativeInfinity, Math.BitDecrement(1080.0)));
     }
 
     [Theory]
