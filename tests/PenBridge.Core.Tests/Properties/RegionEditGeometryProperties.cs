@@ -21,11 +21,14 @@ public class RegionEditGeometryProperties
 
     private readonly record struct Drag(DragKind Kind, RegionHandle Handle, double AnchorX, double AnchorY, double Dx, double Dy);
 
-    /// <summary>A view, an aspect lock the view can hold at the minimum size (or none), and 1..30 drags.</summary>
+    /// <summary>
+    /// A view, an aspect lock the view can hold at the minimum size (or none), and 1..30 drags. The aspect is drawn from
+    /// the range that fits (the Where only drops rounding at its ends), so the filter never runs out of tries.
+    /// </summary>
     private static Gen<(double Width, double Height, double? Aspect, Drag[] Drags)> Session(bool locked) =>
         PropertyGens.View.SelectMany((w, h) =>
             Gen.Select(
-                locked ? Gen.Double[0.2, 5].Select(a => (double?)a) : Gen.Const((double?)null),
+                locked ? Gen.Double[Math.Max(0.2, MinSide(w) / h), Math.Min(5, w / MinSide(h))].Select(a => (double?)a) : Gen.Const((double?)null),
                 Gen.Select(Gen.Enum<DragKind>(), PropertyGens.Handle, Gen.Double[-0.2 * w, 1.2 * w], Gen.Double[-0.2 * h, 1.2 * h], Gen.Double[-1.5 * w, 1.5 * w], Gen.Double[-1.5 * h, 1.5 * h])
                     .Select((k, handle, ax, ay, dx, dy) => new Drag(k, handle, ax, ay, dx, dy))
                     .Array[1, 30])
@@ -35,12 +38,10 @@ public class RegionEditGeometryProperties
     [Fact]
     public void Any_free_drag_sequence_keeps_the_selection_on_the_display_and_big_enough() => CheckDrags(locked: false);
 
-    // Re-enable this property and the theory below with the #267 fix (remove both Skips): until then the aspect-locked
-    // drags are not checked at all.
-    [Fact(Skip = "#267: ApplyAspect and the locked Resize throw when the fitted side rounds past the display")]
+    [Fact]
     public void Any_locked_drag_sequence_keeps_the_selection_on_the_display_big_enough_and_on_the_aspect() => CheckDrags(locked: true);
 
-    [Theory(Skip = "#267: ApplyAspect throws when the fitted side rounds past the display")]
+    [Theory]
     [InlineData(1512, 982, 1080.0 / 2340)] // MacBook Pro 14" with an S23 in portrait
     [InlineData(3024, 1964, 1080.0 / 2340)]
     [InlineData(1470, 956, 1080.0 / 2340)]
@@ -49,6 +50,25 @@ public class RegionEditGeometryProperties
     {
         ViewRect r = RegionEditGeometry.ApplyAspect(new ViewRect(0, 0, width, height), aspect, width, height);
         AssertValid(r, width, height, aspect, "locked");
+    }
+
+    [Fact]
+    public void No_finite_input_throws()
+    {
+        // #267: any finite doubles, including selections off or larger than the display and degenerate displays.
+        Gen<double> any = Gen.Double.Where(double.IsFinite);
+        Gen.Select(Gen.Select(any, any, any, any).Select((x, y, w, h) => new ViewRect(x, y, w, h)), PropertyGens.Handle, Gen.Select(any, any), Gen.Select(any, any), any)
+            .Sample((r, handle, delta, view, aspect) =>
+            {
+                (double dx, double dy) = delta;
+                (double width, double height) = view;
+                _ = RegionEditGeometry.Move(r, dx, dy, width, height);
+                _ = RegionEditGeometry.Resize(r, handle, dx, dy, width, height, null);
+                _ = RegionEditGeometry.Resize(r, handle, dx, dy, width, height, aspect);
+                _ = RegionEditGeometry.Draw(r.X, r.Y, dx, dy, width, height, aspect);
+                _ = RegionEditGeometry.ApplyAspect(r, aspect, width, height);
+                _ = RegionEditGeometry.ToRegion(r, width, height);
+            }, iter: PropertyGens.GeometryIterations, threads: PropertyGens.Threads);
     }
 
     private static void CheckDrags(bool locked)

@@ -209,6 +209,14 @@ public readonly struct CoordinateMapper
         _active = ActiveAreaFor(surfaceWidth, surfaceHeight, _bounds.Width, _bounds.Height);
         _maxX = Math.BitDecrement(_bounds.X + _bounds.Width);
         _maxY = Math.BitDecrement(_bounds.Y + _bounds.Height);
+        if (!target.IsAllDisplays)
+        {
+            // The region's right/bottom edge is a sum that can round onto or past the display's own edge (#268), which
+            // belongs to the neighbouring display: cap by the display too. All displays: ClampToDisplays does this.
+            DisplayRect display = target.Displays[0];
+            _maxX = Math.Min(_maxX, Math.BitDecrement(display.X + display.Width));
+            _maxY = Math.Min(_maxY, Math.BitDecrement(display.Y + display.Height));
+        }
         _gesture = LetterboxFor(surfaceWidth, surfaceHeight, target.GestureDisplay);
         _gestureMaxX = Math.BitDecrement(_gesture.X + _gesture.Width);
         _gestureMaxY = Math.BitDecrement(_gesture.Y + _gesture.Height);

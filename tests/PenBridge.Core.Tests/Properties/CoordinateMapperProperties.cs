@@ -26,7 +26,7 @@ public class CoordinateMapperProperties
         }, iter: PropertyGens.GeometryIterations, threads: PropertyGens.Threads);
     }
 
-    [Fact(Skip = "#268: a region touching the right or bottom edge can map onto that edge")]
+    [Fact]
     public void A_mapped_point_stays_on_its_display()
     {
         // The right and bottom edges belong to the neighbouring display (ClampToDisplays' convention).
