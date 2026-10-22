@@ -27,7 +27,10 @@ public enum RegionHandle
 /// </summary>
 /// <remarks>
 /// Every rect is a <see cref="ViewRect"/> of a view covering the display (bottom-left origin, y up, points), and every
-/// result stays inside the display of <c>width</c> × <c>height</c>.
+/// result stays inside the display of <c>width</c> × <c>height</c>. Nothing throws (#267): an infinite drag delta or
+/// pointer coordinate saturates at the display's edges; a display side that is not finite and positive, a NaN delta or
+/// coordinate, or a selection with a non-finite field leaves the selection unchanged (<see cref="Draw"/> returns an
+/// empty rect, which is never <see cref="IsBigEnough"/>).
 /// </remarks>
 public static class RegionEditGeometry
 {
@@ -78,6 +81,11 @@ public static class RegionEditGeometry
     /// <summary>The selection moved by (<paramref name="dx"/>, <paramref name="dy"/>), its size kept, clamped onto the display.</summary>
     public static ViewRect Move(ViewRect start, double dx, double dy, double width, double height)
     {
+        if (!IsUsable(start, width, height) || double.IsNaN(dx) || double.IsNaN(dy))
+        {
+            return start;
+        }
+
         double w = Math.Min(start.Width, width);
         double h = Math.Min(start.Height, height);
         return new ViewRect(Math.Clamp(start.X + dx, 0, width - w), Math.Clamp(start.Y + dy, 0, height - h), w, h);
@@ -94,6 +102,11 @@ public static class RegionEditGeometry
     /// </param>
     public static ViewRect Resize(ViewRect start, RegionHandle handle, double dx, double dy, double width, double height, double? aspect)
     {
+        if (!IsUsable(start, width, height) || double.IsNaN(dx) || double.IsNaN(dy))
+        {
+            return start;
+        }
+
         double minW = Math.Min(MinSide(width), width);
         double minH = Math.Min(MinSide(height), height);
         double left = start.X;
@@ -171,9 +184,21 @@ public static class RegionEditGeometry
         }
     }
 
-    // A rect no larger than the display, shifted onto it.
-    private static ViewRect OnDisplay(double x, double y, double w, double h, double width, double height) =>
-        new(Math.Clamp(x, 0, width - w), Math.Clamp(y, 0, height - h), w, h);
+    // A rect capped to the display and shifted onto it. The locked side derived from the other (w / ratio or h * ratio)
+    // can round one ulp past the display (#267); capping it keeps the clamp's max at or above its min.
+    private static ViewRect OnDisplay(double x, double y, double w, double h, double width, double height)
+    {
+        w = Math.Min(w, width);
+        h = Math.Min(h, height);
+        return new(Math.Clamp(x, 0, width - w), Math.Clamp(y, 0, height - h), w, h);
+    }
+
+    // A finite, positive display and a selection with finite fields: what the geometry can clamp.
+    private static bool IsUsable(ViewRect r, double width, double height) =>
+        IsUsable(width, height) && double.IsFinite(r.X) && double.IsFinite(r.Y) && double.IsFinite(r.Width) && double.IsFinite(r.Height);
+
+    private static bool IsUsable(double width, double height) =>
+        width > 0 && height > 0 && double.IsFinite(width) && double.IsFinite(height);
 
     /// <summary>
     /// A new selection dragged from the anchor (<paramref name="anchorX"/>, <paramref name="anchorY"/>) to
@@ -183,6 +208,11 @@ public static class RegionEditGeometry
     /// </summary>
     public static ViewRect Draw(double anchorX, double anchorY, double x, double y, double width, double height, double? aspect)
     {
+        if (!IsUsable(width, height) || double.IsNaN(anchorX) || double.IsNaN(anchorY) || double.IsNaN(x) || double.IsNaN(y))
+        {
+            return default;
+        }
+
         anchorX = Math.Clamp(anchorX, 0, width);
         anchorY = Math.Clamp(anchorY, 0, height);
         double dx = Math.Clamp(x, 0, width) - anchorX;
@@ -213,7 +243,7 @@ public static class RegionEditGeometry
     /// </summary>
     public static ViewRect ApplyAspect(ViewRect selection, double aspect, double width, double height)
     {
-        if (!(aspect > 0) || !double.IsFinite(aspect))
+        if (!(aspect > 0) || !double.IsFinite(aspect) || !IsUsable(selection, width, height))
         {
             return selection;
         }
@@ -222,9 +252,7 @@ public static class RegionEditGeometry
         double minWidth = Math.Max(Math.Min(MinSide(width), width), Math.Min(MinSide(height), height) * aspect);
         w = Math.Min(Math.Max(w, minWidth), Math.Min(width, height * aspect));
         double h = w / aspect;
-        double x = Math.Clamp(selection.X + ((selection.Width - w) / 2), 0, width - w);
-        double y = Math.Clamp(selection.Y + ((selection.Height - h) / 2), 0, height - h);
-        return new ViewRect(x, y, w, h);
+        return OnDisplay(selection.X + ((selection.Width - w) / 2), selection.Y + ((selection.Height - h) / 2), w, h, width, height);
     }
 
     /// <summary>

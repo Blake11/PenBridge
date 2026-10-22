@@ -364,4 +364,79 @@ public class RegionEditGeometryTests
     [Fact]
     public void The_full_display_is_the_full_region() =>
         Assert.True(MacSettings.IsFullRegion(RegionEditGeometry.ToRegion(new ViewRect(0, 0, W, H), W, H)));
+
+    // ---------------------------------------------------------------- rounding and non-finite inputs (#267)
+
+    [Fact]
+    public void Locking_a_portrait_phone_aspect_on_a_macbook_pro_14_stays_on_the_display()
+    {
+        // 982 * (1080 / 2340) / (1080 / 2340) rounds to 982.0000000000001: the fitted height used to break Math.Clamp.
+        const double Width = 1512;
+        const double Height = 982;
+        const double Aspect = 1080.0 / 2340;
+        ViewRect r = RegionEditGeometry.ApplyAspect(new ViewRect(0, 0, Width, Height), Aspect, Width, Height);
+        Assert.True(r.Y >= 0 && r.Height <= Height && r.Y + r.Height <= Height, $"{r} off the display");
+        Assert.Equal(Height, r.Height, Precision);
+        Assert.Equal(Height * Aspect, r.Width, Precision);
+        Assert.Equal((Width - r.Width) / 2, r.X, Precision);
+
+        // The locked edge and corner drags hit the same fit when they grow to the full height.
+        foreach (RegionHandle handle in new[] { RegionHandle.Top, RegionHandle.Bottom, RegionHandle.TopRight, RegionHandle.BottomLeft, RegionHandle.Left, RegionHandle.Right })
+        {
+            foreach (double d in new[] { 5000.0, -5000.0 })
+            {
+                ViewRect resized = RegionEditGeometry.Resize(r, handle, d, d, Width, Height, Aspect);
+                Assert.True(resized.X >= 0 && resized.Y >= 0 && resized.X + resized.Width <= Width && resized.Y + resized.Height <= Height, $"{handle} {d}: {resized} off the display");
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(double.NaN, 0)]
+    [InlineData(0, double.NaN)]
+    public void A_nan_delta_leaves_the_selection_unchanged(double dx, double dy)
+    {
+        Equal(Sel, RegionEditGeometry.Move(Sel, dx, dy, W, H));
+        Equal(Sel, RegionEditGeometry.Resize(Sel, RegionHandle.TopRight, dx, dy, W, H, null));
+        Equal(Sel, RegionEditGeometry.Resize(Sel, RegionHandle.TopRight, dx, dy, W, H, 2));
+    }
+
+    [Fact]
+    public void An_infinite_delta_saturates_at_the_display_edges()
+    {
+        Equal(new ViewRect(600, 300, 400, 300), RegionEditGeometry.Move(Sel, double.PositiveInfinity, double.PositiveInfinity, W, H));
+        Equal(new ViewRect(0, 0, 600, 400), RegionEditGeometry.Resize(Sel, RegionHandle.BottomLeft, double.NegativeInfinity, double.NegativeInfinity, W, H, null));
+        ViewRect locked = RegionEditGeometry.Resize(Sel, RegionHandle.TopRight, double.PositiveInfinity, double.PositiveInfinity, W, H, 2);
+        Inside(locked);
+        Assert.Equal(2, locked.Width / locked.Height, Precision);
+        Equal(new ViewRect(500, 300, 500, 300), RegionEditGeometry.Draw(500, 300, double.PositiveInfinity, double.PositiveInfinity, W, H, null));
+    }
+
+    [Theory]
+    [InlineData(double.NaN, H)]
+    [InlineData(W, double.PositiveInfinity)]
+    [InlineData(0, H)]
+    [InlineData(W, -1)]
+    public void An_unusable_display_leaves_the_selection_unchanged(double width, double height)
+    {
+        Equal(Sel, RegionEditGeometry.Move(Sel, 10, 10, width, height));
+        Equal(Sel, RegionEditGeometry.Resize(Sel, RegionHandle.Right, 10, 10, width, height, null));
+        Equal(Sel, RegionEditGeometry.Resize(Sel, RegionHandle.Right, 10, 10, width, height, 2));
+        Equal(Sel, RegionEditGeometry.ApplyAspect(Sel, 2, width, height));
+        Equal(default, RegionEditGeometry.Draw(10, 10, 100, 100, width, height, null));
+    }
+
+    [Fact]
+    public void A_non_finite_selection_or_draw_point_is_left_alone()
+    {
+        var bad = new ViewRect(double.NaN, 0, 100, 100);
+        Assert.Equal(bad, RegionEditGeometry.Move(bad, 10, 10, W, H));
+        Assert.Equal(bad, RegionEditGeometry.Resize(bad, RegionHandle.Right, 10, 10, W, H, 2));
+        Assert.Equal(bad, RegionEditGeometry.ApplyAspect(bad, 2, W, H));
+        var huge = new ViewRect(0, 0, double.PositiveInfinity, 100);
+        Assert.Equal(huge, RegionEditGeometry.Move(huge, 10, 10, W, H));
+        ViewRect drawn = RegionEditGeometry.Draw(10, 10, double.NaN, 100, W, H, null);
+        Equal(default, drawn);
+        Assert.False(RegionEditGeometry.IsBigEnough(drawn, W, H));
+    }
 }

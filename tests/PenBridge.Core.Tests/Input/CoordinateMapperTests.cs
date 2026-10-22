@@ -212,6 +212,23 @@ public class CoordinateMapperTests
     }
 
     [Theory]
+    [InlineData(-2547, -992.4583333333334, 280.67469879518075, 5054.223953804909, 0.001)] // #268's property case
+    [InlineData(0, 0, 1512, 982, 0.1)] // MacBook Pro 14", lower 90%: 0.1 * 982 + 0.9 * 982 = 982.0000000000001
+    public void A_region_reaching_the_bottom_right_corner_maps_inside_the_display(double x, double y, double w, double h, double regionY)
+    {
+        // The region's right/bottom edge (origin + fraction * size, summed) rounds past the display's own edge.
+        var display = new DisplayRect(x, y, w, h);
+        var m = new CoordinateMapper(1, 1, display, new NormalizedRect(0, regionY, 1, 1 - regionY));
+        foreach (double input in new[] { Max, double.PositiveInfinity })
+        {
+            DisplayPoint p = m.Map(input, input);
+            Assert.True(p.X < x + w && p.X >= x, $"x {p.X:R} off {display}");
+            Assert.True(p.Y < y + h && p.Y >= y, $"y {p.Y:R} off {display}");
+            Assert.True(p.Y > y + h - Tol, $"y {p.Y:R} not at the bottom of {display}");
+        }
+    }
+
+    [Theory]
     [InlineData(0, 100)]
     [InlineData(100, -1)]
     [InlineData(double.NaN, 100)]
