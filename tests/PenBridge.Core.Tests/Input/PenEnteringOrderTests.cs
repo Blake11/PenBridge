@@ -33,7 +33,7 @@ public class PenEnteringOrderTests
         _tracker.ProcessFrame(160_000, hover with { State = PenState.None }, [hover, Samples.Touch(30000, 30000, 0x8000, PenTool.FingerFallback)], []);
 
         Assert.Equal(["TouchDown", "Tap", "ProximityEnter", "Down", "Up", "ProximityLeave"], Names());
-        Assert.True(_sink.Events[1].Gesture.TimestampUs <= _sink.Events[2].Pen.TimestampUs);
+        Assert.InRange(_sink.Events[1].Gesture.TimestampUs, long.MinValue, _sink.Events[2].Pen.TimestampUs);
         Assert.Null(_tracker.Gestures.PendingDeadlineUs);
     }
 

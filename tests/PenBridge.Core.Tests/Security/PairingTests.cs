@@ -212,7 +212,7 @@ public class PairingTests
 
         first!.Dispose();
         Assert.Equal(2, issuer.AttemptsLeft);
-        Assert.True(first.Secret.IndexOfAnyExcept((byte)0) < 0); // secret copy zeroed
+        Assert.Equal(-1, first.Secret.IndexOfAnyExcept((byte)0)); // secret copy zeroed
         Assert.Equal(PairingAttemptStart.Started, issuer.TryBeginAttempt(PairingSecretKind.Pin, out second));
         Assert.Equal(new PairingResult(PairingOutcome.Failed, 1), second!.Complete(false));
         Assert.Equal(new PairingResult(PairingOutcome.Failed, 1), second.Complete(true)); // idempotent

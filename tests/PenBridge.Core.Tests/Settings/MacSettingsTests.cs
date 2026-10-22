@@ -177,8 +177,8 @@ public class MacSettingsTests
         SettingEntry edge = SettingEntry.Rect(MacSettingKey.Region, new NormalizedRect(0.3f, 0.7f, 0.7f, 0.3f));
         Assert.True(MacSettings.TryValidate(edge, Defaults, NoDisplays, out SettingEntry normalized));
         NormalizedRect r = normalized.RectValue;
-        Assert.True(r.X + r.Width <= 1 + 1e-6);
-        Assert.True(r.Y + r.Height <= 1 + 1e-6);
+        Assert.InRange(r.X + r.Width, double.NegativeInfinity, 1 + 1e-6);
+        Assert.InRange(r.Y + r.Height, double.NegativeInfinity, 1 + 1e-6);
     }
 
     [Theory]

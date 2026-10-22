@@ -76,7 +76,7 @@ public class NetUnitTests
             () => input.Accepted,
             () => sink.Pen);
         Assert.Equal(0, input.Counters.AuthFailures);
-        Assert.True(sink.Gestures > 0);
+        Assert.InRange(sink.Gestures, 1, long.MaxValue);
     }
 
     [Fact]

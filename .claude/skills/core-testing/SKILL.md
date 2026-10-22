@@ -54,6 +54,11 @@ DOTNET_TC_QuickJitForLoops=1 DOTNET_OSR_HitLimit=1 scripts/test.sh -c Release   
   root namespace `PenBridge.Core.Tests`, so no using). Timestamps, wall clock (`new FakeTime(start)`) and timers all
   move only in `Advance`. Don't add another `TimeProvider` fake.
 - Network tests: loopback or fakes with timeouts, never fixed delays.
+- Asserts that show values: `Assert.InRange(actual, low, high)` (inclusive) instead of `Assert.True(a <op> b)`,
+  `Assert.Equal(expected, actual)` on arrays/spans instead of `SequenceEqual`, and `Assert.Multiple(() => ..., () => ...)`
+  for several bounds at once. Keep the semantics exact: an open bound is `Math.BitIncrement(x)`/`Math.BitDecrement(x)`
+  (`double.Epsilon` for `> 0`), `n + 1` for integers, and `double.PositiveInfinity`/`long.MaxValue` for a missing
+  side. Keep `Assert.True(cond, "why")` when the message explains what a bare value can't.
 - `scripts/test.sh` lists the names of failing tests after the summary (from `TestResults/junit.xml`).
 
 ## Time-based filters (hold-back)

@@ -201,7 +201,7 @@ public class FingerTouchesTests
     {
         await using NetHarness h = Harness();
         PenBridgeClient client = await h.ConnectPairedAsync(); // NetHarness.Surface: SurfaceCapabilities.None
-        Assert.True((client.NegotiatedCapabilities & ProtocolCapabilities.FingerTouches) != 0);
+        Assert.Equal(ProtocolCapabilities.FingerTouches, client.NegotiatedCapabilities & ProtocolCapabilities.FingerTouches);
 
         var drop = new StrongBoxInt();
         client.SendState(null, Down);

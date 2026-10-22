@@ -23,7 +23,7 @@ public class ServerIdentityTests
         using ECDsa? key = cert.GetECDsaPublicKey();
         Assert.NotNull(key);
         Assert.Equal(256, key.KeySize);
-        Assert.True(cert.NotAfter.ToUniversalTime() >= time.GetUtcNow().AddYears(10).AddDays(-1).UtcDateTime);
+        Assert.InRange(cert.NotAfter.ToUniversalTime(), time.GetUtcNow().AddYears(10).AddDays(-1).UtcDateTime, DateTime.MaxValue);
         Assert.Equal(SHA256.HashData(cert.RawData), identity.Fingerprint.ToArray());
         Assert.Equal(43, identity.FingerprintBase64Url.Length);
     }
@@ -50,7 +50,7 @@ public class ServerIdentityTests
         using ServerIdentity identity = ServerIdentity.LoadOrCreate(new InMemorySecretStore());
         Span<byte> parsed = stackalloc byte[32];
         Assert.True(CertificateFingerprint.TryParseBase64Url(identity.FingerprintBase64Url, parsed));
-        Assert.True(parsed.SequenceEqual(identity.Fingerprint));
+        Assert.Equal(identity.Fingerprint, parsed);
         Assert.True(CertificateFingerprint.Matches(identity.Certificate, parsed));
 
         parsed[0] ^= 1;

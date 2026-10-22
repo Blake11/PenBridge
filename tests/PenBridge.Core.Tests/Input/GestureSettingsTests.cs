@@ -94,7 +94,7 @@ public class GestureSettingsTests
         double normal = SumDy(GestureKind.Scroll);
         _sink.Clear();
         Move(Recognizer(new InputSettings { ScrollSpeed = 2.5 }), 400, 600);
-        Assert.True(normal > 50);
+        Assert.InRange(normal, Math.BitIncrement(50.0), double.PositiveInfinity);
         Assert.Equal(normal * 2.5, SumDy(GestureKind.Scroll), 6);
     }
 
@@ -105,7 +105,7 @@ public class GestureSettingsTests
         double drag = SumDy(GestureKind.Drag);
         _sink.Clear();
         Move(Recognizer(new InputSettings { PointerSpeed = 0.5 }), 300, 500, 700);
-        Assert.True(drag > 50);
+        Assert.InRange(drag, Math.BitIncrement(50.0), double.PositiveInfinity);
         Assert.Equal(drag * 0.5, SumDy(GestureKind.Drag), 6);
 
         _sink.Clear();
@@ -113,7 +113,7 @@ public class GestureSettingsTests
         double pointer = SumDy(GestureKind.PointerMove);
         _sink.Clear();
         Move(Recognizer(new InputSettings { PointerSpeed = 3 }, oneFinger: true), 500);
-        Assert.True(pointer > 50);
+        Assert.InRange(pointer, Math.BitIncrement(50.0), double.PositiveInfinity);
         Assert.Equal(pointer * 3, SumDy(GestureKind.PointerMove), 6);
     }
 
@@ -167,7 +167,7 @@ public class GestureSettingsTests
         List<GestureEvent> pinch = Gestures.Where(g => g.Kind == GestureKind.Pinch).ToList();
         Assert.NotEmpty(pinch);
         Assert.All(pinch, g => Assert.Equal(1, g.ScaleDelta));
-        Assert.True(pinch.Sum(g => g.RotationDelta) > 20);
+        Assert.InRange(pinch.Sum(g => g.RotationDelta), Math.BitIncrement(20.0), double.PositiveInfinity);
     }
 
     [Fact]
@@ -177,7 +177,7 @@ public class GestureSettingsTests
         List<GestureEvent> pinch = Gestures.Where(g => g.Kind == GestureKind.Pinch).ToList();
         Assert.NotEmpty(pinch);
         Assert.All(pinch, g => Assert.Equal(0, g.RotationDelta));
-        Assert.True(pinch.Aggregate(1.0, (s, g) => s * g.ScaleDelta) > 1.3);
+        Assert.InRange(pinch.Aggregate(1.0, (s, g) => s * g.ScaleDelta), Math.BitIncrement(1.3), double.PositiveInfinity);
 
         _sink.Clear();
         Turn(Recognizer(new InputSettings { RotateEnabled = false }));
@@ -313,7 +313,7 @@ public class GestureSettingsTests
         rec.Process([], false, Ms(9 * 50));
         List<GestureEvent> rest = Gestures.Skip(before).Where(g => g.Phase == GesturePhase.Changed).ToList();
         Assert.NotEmpty(rest);
-        Assert.All(rest, g => Assert.True(g.ScaleDelta > 1)); // the running pinch keeps zooming
+        Assert.All(rest, g => Assert.InRange(g.ScaleDelta, Math.BitIncrement(1.0), double.PositiveInfinity)); // the running pinch keeps zooming
 
         _sink.Clear();
         Spread(rec); // the next gesture: zoom off

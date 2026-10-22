@@ -117,7 +117,7 @@ public class ScrollMomentumTests
         for (long t = 16_667; t <= 500_000; t += 16_667)
         {
             Assert.True(a.Step(t, out double dx, out _));
-            Assert.True(Math.Abs(dx) < previous);
+            Assert.InRange(Math.Abs(dx), double.NegativeInfinity, Math.BitDecrement(previous));
             previous = Math.Abs(dx);
             sumA += dx;
         }
@@ -128,7 +128,7 @@ public class ScrollMomentumTests
         Assert.True(b.Step(end, out double second, out _));
         sumB += second;
         Assert.Equal(sumA, sumB, 1e-9);
-        Assert.True(sumA < 0); // keeps the sign of the release velocity
+        Assert.InRange(sumA, double.NegativeInfinity, -double.Epsilon); // keeps the sign of the release velocity
     }
 
     [Fact]
@@ -140,9 +140,9 @@ public class ScrollMomentumTests
         Assert.Equal((long)Math.Ceiling(0.4 * Math.Log(1000 / 20.0) * 1e6), durationUs);
 
         Assert.True(_m.Step(durationUs - 1_000, out _, out double dy));
-        Assert.True(dy > 0);
+        Assert.InRange(dy, double.Epsilon, double.PositiveInfinity);
         Assert.True(_m.Step(durationUs + 1, out _, out double last)); // clamped to the end: the remainder
-        Assert.True(last > 0);
+        Assert.InRange(last, double.Epsilon, double.PositiveInfinity);
         Assert.True(_m.IsCoasting);
         Assert.False(_m.Step(durationUs + 2, out double dx2, out double dy2));
         Assert.Equal(0, dx2);

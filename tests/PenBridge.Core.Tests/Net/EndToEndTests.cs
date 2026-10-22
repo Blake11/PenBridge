@@ -30,7 +30,7 @@ public class EndToEndTests
         int down = Array.IndexOf(kinds, PenEventKind.Down);
         int up = Array.IndexOf(kinds, PenEventKind.Up);
         Assert.InRange(down, 1, kinds.Length);
-        Assert.True(up > down, "Up after Down");
+        Assert.InRange(up, down + 1, kinds.Length); // Up after Down
         Assert.Contains(PenEventKind.Drag, kinds[down..up]);
         Assert.Equal(PenEventKind.ProximityLeave, kinds[^1]);
         Assert.All(sink.Pen(), e => Assert.False(e.Synthetic));
@@ -72,7 +72,7 @@ public class EndToEndTests
         Assert.True(stats.HasSession);
         Assert.Equal(client.DeviceId, stats.DeviceId);
         Assert.Equal(InputTransport.Udp, stats.Transport);
-        Assert.True(stats.Counters.Accepted >= 5);
+        Assert.InRange(stats.Counters.Accepted, 5, long.MaxValue);
         Assert.Equal(0, stats.Counters.AuthFailures);
     }
 

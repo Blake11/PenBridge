@@ -41,12 +41,12 @@ public class InputSettingsWiringTests
         NormalizedRect letterboxed = h.Server.ActiveInput!.ActiveArea;
         await Wait.Until(() => client.LastActiveArea is { } a && Near(letterboxed, a), "the first active area");
         AssertArea(letterboxed, client.LastActiveArea!.Value);
-        Assert.True(client.LastActiveArea.Value.Height < 1);
+        Assert.InRange(client.LastActiveArea.Value.Height, double.NegativeInfinity, Math.BitDecrement(1.0));
 
         // A wide target: a horizontal band.
         h.Server.SetTarget(MappingTarget.ForDisplay(new DisplayRect(0, 0, 2000, 1000)));
         NormalizedRect band = h.Server.ActiveInput.ActiveArea;
-        Assert.True(band.Height < 0.5);
+        Assert.InRange(band.Height, double.NegativeInfinity, Math.BitDecrement(0.5));
         await Wait.Until(() => Near(client.LastActiveArea!.Value, band), "the area of the new target");
 
         // Mouse mode: the whole surface.

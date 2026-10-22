@@ -99,8 +99,8 @@ public class WindowTargetGeometryTests
         // Edges that don't divide evenly must stay inside 0..1 so MappingTarget accepts them.
         var display = new DisplayRect(0.1, 0.3, 1512.7, 982.3);
         Assert.True(WindowTargetGeometry.TryRegion(new DisplayRect(33.3, 17.7, 2000, 2000), display, out NormalizedRect region));
-        Assert.True(region.X + region.Width <= 1);
-        Assert.True(region.Y + region.Height <= 1);
+        Assert.InRange(region.X + region.Width, double.NegativeInfinity, 1);
+        Assert.InRange(region.Y + region.Height, double.NegativeInfinity, 1);
         MappingTarget target = MappingTarget.ForDisplay(display, region);
         Assert.Equal(region, target.Region);
     }

@@ -50,8 +50,8 @@ public class PenStateTrackerDedupeTests
         _tracker.ProcessFrame(10_000, Gone, Tap, []);
 
         Assert.Equal(OneClick, _sink.PenKinds());
-        Assert.All(_sink.Pen, e => Assert.True(e.TimestampUs <= 10_000));
-        Assert.True(_sink.Pen[1].TimestampUs < 10_000); // the Down is placed before the frame time, as in the original
+        Assert.All(_sink.Pen, e => Assert.InRange(e.TimestampUs, long.MinValue, 10_000));
+        Assert.InRange(_sink.Pen[1].TimestampUs, long.MinValue, 9_999); // the Down is placed before the frame time, as in the original
     }
 
     [Fact]

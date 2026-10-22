@@ -111,7 +111,7 @@ public class LatencyAnalyzerTests
 
         // Pings spanning under a minute (no drift fit) applied to inputs 4 minutes later: off by about 50 ppm × 280 s.
         LatencyReport early = LatencyAnalyzer.Analyze([.. earlyPings, .. lateInputs], Frequency);
-        Assert.True(early.Receive.P50Us > 3400 + 8000, early.Receive.P50Us.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Assert.InRange(early.Receive.P50Us, Math.BitIncrement(3400.0 + 8000), double.PositiveInfinity);
     }
 
     [Fact]

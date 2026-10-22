@@ -44,7 +44,7 @@ public sealed class SessionInputSettingsTests : IDisposable
         _input.ConfigureSurface(3088, 1440);
         Assert.Equal([Landscape16x9, Landscape16x9], _areas);
         Assert.Equal(Landscape16x9, _input.ActiveArea);
-        Assert.True(Landscape16x9.Width < 1);
+        Assert.InRange(Landscape16x9.Width, double.NegativeInfinity, Math.BitDecrement(1.0));
     }
 
     [Fact]
@@ -92,7 +92,7 @@ public sealed class SessionInputSettingsTests : IDisposable
         Frame(Pens.Contact(21000, 20000));
         Assert.Equal(Down, _sink.Pen[^1].Kind);
         Assert.Equal(SideButtonAction.MiddleClick, _sink.Pen[^1].SideButton);
-        Assert.True(_sink.Pen[^1].Sample.Pressure < Pens.Contact(0, 0).Pressure);
+        Assert.InRange(_sink.Pen[^1].Sample.Pressure, 0, Pens.Contact(0, 0).Pressure - 1);
     }
 
     [Fact]

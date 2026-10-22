@@ -216,7 +216,7 @@ public class PenSettingsTrackerTests
             Frame(Samples.Hover(Mm(10 + (5 * i)), Mm(50)));
         }
 
-        Assert.True(Last.Position.X - 100 > 2 * 25 * 8, $"moved {Last.Position.X - 100}");
+        Assert.InRange(Last.Position.X - 100, Math.BitIncrement(2 * 25 * 8.0), double.PositiveInfinity);
     }
 
     [Fact]
@@ -226,7 +226,7 @@ public class PenSettingsTrackerTests
         _sink.Cursor = new DisplayPoint(950, 500);
         Frame(Samples.Hover(Mm(10), Mm(10)));
         Frame(Samples.Hover(Mm(60), Mm(10))); // +400 pt: past the right edge
-        Assert.True(Last.Position.X < 1000 && Last.Position.X > 999.99);
+        Assert.InRange(Last.Position.X, Math.BitIncrement(999.99), Math.BitDecrement(1000.0));
         Frame(Samples.Hover(Mm(50), Mm(10))); // back 80 pt from the edge, no movement lost beyond it
         Assert.Equal(920, Last.Position.X, 0.1);
     }
