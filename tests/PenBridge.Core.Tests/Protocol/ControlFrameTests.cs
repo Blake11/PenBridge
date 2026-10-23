@@ -113,6 +113,8 @@ public class ControlFrameTests
         Assert.Equal(new string('a', 255), cut);
         Assert.Equal("Paul’s Mac", WireString.Truncate("Paul’s Mac"));
         Assert.Equal("ab", WireString.Truncate("ab😀", 5));
+        Assert.Equal("ab😀", WireString.Truncate("ab😀c", 6)); // the emoji ends exactly at the limit
+        Assert.Equal("abé", WireString.Truncate("abéc", 4));
     }
 
     [Fact]
@@ -168,6 +170,16 @@ public class ControlFrameTests
         var buffer = new byte[16];
         int n = ControlFrame.WriteRaw(buffer, ControlMessageType.InputFrame, Hex.Bytes("00000064 00 00 00"));
         Assert.Equal("0000000824000000640000" + "00", Hex.Of(buffer.AsSpan(0, n)));
+    }
+
+    [Fact]
+    public void Write_raw_accepts_exactly_the_max_payload()
+    {
+        var buffer = new byte[ControlFrame.HeaderSize + ControlFrame.MaxPayloadSize + 1];
+        int n = ControlFrame.WriteRaw(buffer, ControlMessageType.InputFrame, new byte[ControlFrame.MaxPayloadSize]);
+        Assert.Equal(ControlFrame.HeaderSize + ControlFrame.MaxPayloadSize, n);
+        Assert.Equal("0001000024", Hex.Of(buffer.AsSpan(0, ControlFrame.HeaderSize)));
+        Assert.Equal("payload", Assert.Throws<ArgumentException>(() => ControlFrame.WriteRaw(buffer, ControlMessageType.InputFrame, new byte[ControlFrame.MaxPayloadSize + 1])).ParamName);
     }
 
     [Fact]
@@ -240,6 +252,8 @@ public class ControlFrameTests
     [Theory]
     [InlineData("00")]
     [InlineData("000000")]
+    [InlineData("0002")] // read as a whole prefix it would be a too-large length instead
+    [InlineData("000200")]
     [InlineData("00000009 30 00000000")]
     public async Task Stream_ending_mid_frame_is_a_protocol_violation(string hex)
     {
@@ -256,6 +270,15 @@ public class ControlFrameTests
 
         using var unknown = new ControlFrameReader(new MemoryStream(Hex.Bytes("00000001 03")));
         Assert.Equal(ProtocolErrorCode.UnknownMessageType, (await Assert.ThrowsAsync<ProtocolException>(async () => await unknown.ReadAsync(TestContext.Current.CancellationToken))).Code);
+    }
+
+    [Fact]
+    public async Task Stream_reader_can_be_disposed_twice_and_then_refuses_to_read()
+    {
+        var reader = new ControlFrameReader(new MemoryStream(Hex.Bytes("00000009 30 0000000000000001")));
+        reader.Dispose();
+        reader.Dispose();
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () => await reader.ReadAsync(TestContext.Current.CancellationToken));
     }
 
     [Fact]

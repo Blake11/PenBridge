@@ -213,4 +213,87 @@ public class SettingsMessageTests
         Assert.Equal("11:Float=2", SettingEntry.Float(11, 2f).ToString());
         Assert.Equal("0.25,0.5,0.5,0.25", AllTypes[4].FormatValue());
     }
+
+    [Theory]
+    [InlineData(SettingType.Int)]
+    [InlineData(SettingType.Float)]
+    [InlineData(SettingType.String)]
+    [InlineData(SettingType.Rect)]
+    public void Bool_value_of_another_type_throws(SettingType type) =>
+        Assert.Throws<InvalidOperationException>(() => Entry(type).BoolValue);
+
+    [Theory]
+    [InlineData(SettingType.Bool)]
+    [InlineData(SettingType.Int)]
+    [InlineData(SettingType.String)]
+    [InlineData(SettingType.Rect)]
+    public void Float_value_of_another_type_throws(SettingType type) =>
+        Assert.Throws<InvalidOperationException>(() => Entry(type).FloatValue);
+
+    [Theory]
+    [InlineData(SettingType.Bool)]
+    [InlineData(SettingType.Float)]
+    [InlineData(SettingType.String)]
+    [InlineData(SettingType.Rect)]
+    public void Int_value_of_another_type_throws(SettingType type) =>
+        Assert.Throws<InvalidOperationException>(() => Entry(type).IntValue);
+
+    [Theory]
+    [InlineData(SettingType.Bool)]
+    [InlineData(SettingType.Int)]
+    [InlineData(SettingType.Float)]
+    [InlineData(SettingType.Rect)]
+    public void String_value_of_another_type_throws(SettingType type) =>
+        Assert.Throws<InvalidOperationException>(() => Entry(type).StringValue);
+
+    [Theory]
+    [InlineData(SettingType.Bool)]
+    [InlineData(SettingType.Int)]
+    [InlineData(SettingType.Float)]
+    [InlineData(SettingType.String)]
+    public void Rect_value_of_another_type_throws(SettingType type) =>
+        Assert.Throws<InvalidOperationException>(() => Entry(type).RectValue);
+
+    // The far edges may pass 1 by at most RectEpsilon (as f32), inclusive, on both axes.
+    [Theory]
+    [InlineData(0, 0, 1, 1, true)]
+    [InlineData(0, 0, 1 + SettingEntry.RectEpsilon, 1, true)]
+    [InlineData(0, 0, 1, 1 + SettingEntry.RectEpsilon, true)]
+    [InlineData(0, 0, 1.0000012f, 1, false)]
+    [InlineData(0, 0, 1, 1.0000012f, false)]
+    [InlineData(0, 0.5f, 1, 0.5f, true)]
+    [InlineData(0, 0.5f, 1, 0.5000012f, false)]
+    [InlineData(0, 0, 1, 0, false)] // empty height
+    [InlineData(0, -0.5f, 1, 1, false)] // negative y
+    public void Rect_far_edges_allow_exactly_the_epsilon(float x, float y, float w, float h, bool valid)
+    {
+        Assert.Equal(valid, SettingEntry.IsValidRect(x, y, w, h));
+        byte[] payload = Hex.Bytes($"01 0002 05 0010 {F32(x)} {F32(y)} {F32(w)} {F32(h)}");
+        Assert.True(SettingsSnapshotMessage.TryRead(payload, out SettingsSnapshotMessage snapshot));
+        Assert.Equal(valid ? 1 : 0, snapshot.Entries.Count);
+    }
+
+    [Theory]
+    [InlineData(double.NaN, 0, 1, 1)]
+    [InlineData(0, double.NaN, 1, 1)]
+    [InlineData(0, 0, double.NaN, 1)]
+    [InlineData(0, 0, 1, double.NaN)]
+    [InlineData(double.NegativeInfinity, 0, 1, 1)]
+    [InlineData(0, double.PositiveInfinity, 1, 1)]
+    [InlineData(0, 0, double.PositiveInfinity, 1)]
+    [InlineData(0, 0, 1, double.NegativeInfinity)]
+    public void Active_area_from_normalized_rejects_any_non_finite_component(double x, double y, double w, double h) =>
+        Assert.Throws<ArgumentOutOfRangeException>(() => ActiveAreaMessage.FromNormalized(new NormalizedRect(x, y, w, h)));
+
+    [Fact]
+    public void A_failed_read_leaves_the_message_default()
+    {
+        Assert.False(SettingsUpdateMessage.TryRead(Hex.Bytes("01 0017 01"), out SettingsUpdateMessage update));
+        Assert.Empty(update.Entries);
+        Assert.Throws<InvalidOperationException>(() => update.PayloadSize);
+    }
+
+    private static SettingEntry Entry(SettingType type) => AllTypes[(int)type - 1];
+
+    private static string F32(float value) => BitConverter.SingleToUInt32Bits(value).ToString("X8", System.Globalization.CultureInfo.InvariantCulture);
 }
