@@ -453,6 +453,67 @@ public class PairingTests
             new PairingSession(PairingRole.Server, PairingSecretKind.Pin, Ascii("424242"), DeviceId, _challenge, _serverFp));
     }
 
+    [Fact]
+    public void Server_session_refuses_a_completed_qr_attempt()
+    {
+        // A completed attempt's secret is zeroed. Zero bytes are no PIN digits, so only a QR-token
+        // attempt reaches the "already completed" check itself.
+        var issuer = Open(new FakeTime());
+        Assert.Equal(PairingAttemptStart.Started, issuer.TryBeginAttempt(PairingSecretKind.QrToken, out PinAttempt? a));
+        a!.Complete(false);
+
+        var ex = Assert.Throws<ArgumentException>(() => PairingSession.ForServer(a, DeviceId, _challenge, _serverFp));
+        Assert.Equal("attempt", ex.ParamName);
+    }
+
+    [Fact]
+    public void Peer_round2_before_peer_round1_throws_and_keeps_the_session()
+    {
+        var server = NewServer();
+        Assert.Throws<InvalidOperationException>(() => server.TryProcessPeerRound2(new byte[PairingSession.Round2Length]));
+        Assert.Throws<InvalidOperationException>(() => server.TryProcessPeerRound2(new byte[3]));
+        server.CreateRound1();
+        Assert.Throws<InvalidOperationException>(() => server.TryProcessPeerRound2(new byte[3]));
+        Assert.Equal(PairingState.InProgress, server.State);
+        Assert.Null(server.AttemptResult);
+    }
+
+    [Fact]
+    public void Attempt_completing_after_expiry_closes_the_window_once()
+    {
+        var time = new FakeTime();
+        var issuer = Open(time);
+        Assert.Equal(PairingAttemptStart.Started, issuer.TryBeginAttempt(PairingSecretKind.Pin, out PinAttempt? first));
+        first!.Complete(false);
+        Assert.Equal(2, issuer.AttemptsLeft);
+        Assert.Equal(PairingAttemptStart.Started, issuer.TryBeginAttempt(PairingSecretKind.Pin, out PinAttempt? late));
+        int changed = 0;
+        issuer.SecretsChanged += (_, _) => changed++;
+
+        time.Advance(PinIssuer.Lifetime); // nothing reads the issuer, so the window is still open
+        Assert.Equal(new PairingResult(PairingOutcome.Expired, 0), late!.Complete(true));
+
+        Assert.Equal(1, changed);
+        Assert.Equal(3, issuer.AttemptsLeft); // closing reset the strikes
+        Assert.False(issuer.IsWindowOpen);
+        Assert.Null(issuer.CurrentPin);
+        Assert.Equal(1, changed); // already closed: reading it raises nothing more
+    }
+
+    [Fact]
+    public void Attempt_from_replaced_secrets_reports_expired_with_full_attempts()
+    {
+        // While an attempt is open no other can strike, and both ways to replace the secrets reset the
+        // strikes, so "attempts left" on this path is always the full count.
+        var issuer = Open(new FakeTime());
+        Assert.Equal(PairingAttemptStart.Started, issuer.TryBeginAttempt(PairingSecretKind.Pin, out PinAttempt? a));
+        a!.Complete(false);
+        Assert.Equal(PairingAttemptStart.Started, issuer.TryBeginAttempt(PairingSecretKind.Pin, out a));
+        issuer.ClosePairingWindow();
+        Assert.Equal(new PairingResult(PairingOutcome.Expired, PinIssuer.MaxFailedAttempts), a!.Complete(false));
+        Assert.Equal(PinIssuer.MaxFailedAttempts, issuer.AttemptsLeft);
+    }
+
     private PairingSession NewServer()
     {
         Open(new FakeTime(), () => 424242).TryBeginAttempt(PairingSecretKind.Pin, out PinAttempt? attempt);

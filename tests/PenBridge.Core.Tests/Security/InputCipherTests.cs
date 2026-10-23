@@ -107,6 +107,35 @@ public class InputCipherTests
         Assert.False(ok.TryOpen([], out _));
     }
 
+    [Theory]
+    [InlineData(0)]                               // header + tag only: the smallest datagram
+    [InlineData(InputCipher.MaxPayloadLength)]    // exactly MaxDatagramLength on the wire
+    public void Datagrams_at_the_length_bounds_round_trip(int payloadLength)
+    {
+        using var tx = new InputCipher(_key, Session);
+        using var rx = new InputCipher(_key, Session);
+        byte[] d = Sealed(tx, 1, payloadLength, out int length);
+        Assert.Equal(InputCipher.HeaderLength + payloadLength + InputCipher.TagLength, length);
+
+        Assert.True(rx.TryOpen(d.AsSpan(0, length), out int opened));
+        Assert.Equal(payloadLength, opened);
+        Assert.Equal(1UL, rx.HighestSequence);
+    }
+
+    [Fact]
+    public void Disposed_cipher_throws()
+    {
+        var cipher = new InputCipher(_key, Session);
+        cipher.Dispose();
+        cipher.Dispose(); // idempotent
+
+        Assert.Throws<ObjectDisposedException>(() => cipher.TryOpen(new byte[3], out _));
+        Assert.Throws<ObjectDisposedException>(() => cipher.TryOpen(new byte[64], out _));
+        byte[] d = new byte[64];
+        WriteHeader(d, Session, 1);
+        Assert.Throws<ObjectDisposedException>(() => cipher.Seal(d, 8));
+    }
+
     [Fact]
     public void Seal_enforces_increasing_sequence_and_matching_session()
     {
