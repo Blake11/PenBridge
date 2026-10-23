@@ -292,6 +292,175 @@ public class ScrollMomentumTests
     }
 
     [Fact]
+    public void Options_validation_checks_each_bound_and_accepts_the_limits()
+    {
+        ScrollMomentumOptions ok = new();
+        ScrollMomentumOptions[] invalid =
+        [
+            ok with { VelocityWindow = TimeSpan.Zero },
+            ok with { VelocityWindow = TimeSpan.FromMilliseconds(-1) },
+            ok with { MaxReleasePause = TimeSpan.FromTicks(-1) },
+            ok with { DecayTimeConstant = TimeSpan.Zero },
+            ok with { TickInterval = TimeSpan.Zero },
+            ok with { StopSpeed = double.NaN },
+            ok with { StopSpeed = -1 },
+            ok with { MinStartSpeed = double.NaN },
+            ok with { MinStartSpeed = 19.999 },
+            ok with { MaxSpeed = 149.999 },
+            ok with { MaxSpeed = double.NaN },
+            ok with { MaxSpeed = double.PositiveInfinity },
+        ];
+        foreach (ScrollMomentumOptions o in invalid)
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => new ScrollMomentum(o));
+        }
+
+        // Equal speeds and no release pause are allowed.
+        _ = new ScrollMomentum(ok with { MaxReleasePause = TimeSpan.Zero });
+        _ = new ScrollMomentum(ok with { StopSpeed = 150, MinStartSpeed = 150, MaxSpeed = 150 });
+    }
+
+    [Fact]
+    public void Release_velocity_reads_zero_when_not_coasting()
+    {
+        Assert.Equal((0.0, 0.0), (_m.ReleaseVelocityX, _m.ReleaseVelocityY));
+        long release = Feed(20, 6, 8) + FrameUs; // 750 and 1000 pt/s
+        Assert.True(_m.TryStart(release));
+        Assert.Equal(750, _m.ReleaseVelocityX, 6);
+        Assert.Equal(1000, _m.ReleaseVelocityY, 6);
+
+        _m.Reset();
+        Assert.Equal((0.0, 0.0, 0L), (_m.ReleaseVelocityX, _m.ReleaseVelocityY, _m.DurationUs));
+    }
+
+    [Fact]
+    public void A_release_speed_exactly_at_the_minimum_starts_a_coast()
+    {
+        var m = new ScrollMomentum(new ScrollMomentumOptions { MinStartSpeed = 125 });
+        for (int i = 0; i < 20; i++)
+        {
+            m.AddSample(0, 1, i * FrameUs); // 1 pt / 8 ms = 125 pt/s
+        }
+
+        Assert.True(m.TryStart(20 * FrameUs));
+        Assert.Equal(125, m.ReleaseVelocityY, 9);
+    }
+
+    [Fact]
+    public void A_release_at_the_stop_speed_coasts_for_one_microsecond()
+    {
+        var m = new ScrollMomentum(new ScrollMomentumOptions { MinStartSpeed = 125, StopSpeed = 125 });
+        for (int i = 0; i < 20; i++)
+        {
+            m.AddSample(0, 1, i * FrameUs);
+        }
+
+        Assert.True(m.TryStart(20 * FrameUs));
+        Assert.Equal(1, m.DurationUs); // ln(1) = 0, but a started coast lasts at least 1 µs
+        Assert.True(m.Step(1, out _, out double dy));
+        Assert.Equal(125 * 0.4 * (1 - Math.Exp(-1e-6 / 0.4)), dy, 1e-12);
+        Assert.False(m.Step(2, out _, out _));
+    }
+
+    [Fact]
+    public void A_step_exactly_at_the_duration_is_the_last()
+    {
+        long release = Feed(20, 0, 8) + FrameUs;
+        Assert.True(_m.TryStart(release));
+        long d = _m.DurationUs;
+        Assert.True(_m.Step(d, out _, out double dy));
+        Assert.Equal((1000 - 20) * 0.4, dy, 1e-3); // the whole coast in one step: v0·τ·(1 − stop/v0)
+        Assert.False(_m.Step(d, out _, out _));
+        Assert.False(_m.IsCoasting);
+    }
+
+    [Fact]
+    public void The_delta_exactly_one_window_before_the_last_is_the_time_base_and_not_counted()
+    {
+        // Every 10 ms; the sample at 100 ms (the window start for the last one at 200 ms) carries a big delta.
+        for (int i = 0; i <= 20; i++)
+        {
+            _m.AddSample(0, i == 10 ? 100 : 10, i * 10_000L);
+        }
+
+        Assert.True(_m.TryStart(200_000));
+        Assert.Equal(1000, _m.ReleaseVelocityY, 6); // 10 deltas of 10 pt over 100 ms
+    }
+
+    [Fact]
+    public void Deltas_without_elapsed_time_start_no_momentum()
+    {
+        _m.AddSample(0, 8, 1_000);
+        _m.AddSample(0, 8, 1_000);
+        Assert.False(_m.TryStart(1_000));
+        Assert.False(_m.IsCoasting);
+        Assert.False(_m.Step(16_667, out _, out _));
+    }
+
+    [Fact]
+    public void A_delta_stamped_before_the_newest_counts_at_the_newest_time()
+    {
+        _m.AddSample(0, 8, 0);
+        _m.AddSample(0, 8, 8_000);
+        _m.AddSample(0, 8, 16_000);
+        _m.AddSample(0, 8, 4_000); // out of order: never steps back in time
+        Assert.True(_m.TryStart(24_000));
+        Assert.Equal(1500, _m.ReleaseVelocityY, 6); // 24 pt over 16 ms
+    }
+
+    [Fact]
+    public void A_window_longer_than_the_buffer_uses_the_oldest_kept_delta_as_the_time_base()
+    {
+        var m = new ScrollMomentum(new ScrollMomentumOptions { VelocityWindow = TimeSpan.FromSeconds(10) });
+        for (int i = 0; i < 100; i++)
+        {
+            m.AddSample(0, 8, i * FrameUs);
+        }
+
+        Assert.True(m.TryStart(100 * FrameUs));
+        Assert.Equal(1000, m.ReleaseVelocityY, 6); // 63 deltas over 63 frames
+    }
+
+    [Fact]
+    public void Two_deltas_are_enough_for_a_release_velocity()
+    {
+        _m.AddSample(0, 500, 0); // the time base
+        _m.AddSample(0, 8, FrameUs);
+        Assert.True(_m.TryStart(2 * FrameUs));
+        Assert.Equal(1000, _m.ReleaseVelocityY, 6);
+    }
+
+    [Fact]
+    public void Began_right_after_a_fast_scroll_starts_the_estimate_afresh()
+    {
+        long last = Feed(20, 0, 8);
+        Assert.False(_m.Observe(Scroll(GesturePhase.Began, 0, 500, last + FrameUs))); // only sets the time base
+        Assert.False(_m.Observe(Scroll(GesturePhase.Changed, 0, 4, last + (2 * FrameUs))));
+        Assert.True(_m.Observe(Scroll(GesturePhase.Ended, 0, 0, last + (3 * FrameUs))));
+        Assert.Equal(500, _m.ReleaseVelocityY, 6); // 4 pt in 8 ms, nothing of the earlier scroll or the Began delta
+    }
+
+    [Fact]
+    public void After_a_reset_an_earlier_clock_is_a_new_time_base()
+    {
+        Feed(20, 0, 8, startUs: 10_000_000);
+        _m.Reset();
+        long last = Feed(20, 0, 8); // a restarted clock: earlier timestamps than before the reset
+        Assert.True(_m.TryStart(last + FrameUs));
+        Assert.Equal(1000, _m.ReleaseVelocityY, 6);
+    }
+
+    [Fact]
+    public void Observe_cancelled_scroll_stops_a_coast_in_progress()
+    {
+        long release = Feed(20, 0, 8) + FrameUs;
+        Assert.True(_m.TryStart(release));
+        Assert.False(_m.Observe(Scroll(GesturePhase.Cancelled, 0, 0, release + 1_000)));
+        Assert.False(_m.IsCoasting);
+        Assert.False(_m.Step(16_667, out _, out _));
+    }
+
+    [Fact]
     public void Feeding_and_coasting_do_not_allocate()
     {
         var m = new ScrollMomentum();
