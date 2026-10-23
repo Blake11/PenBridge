@@ -104,4 +104,80 @@ public class WindowTargetGeometryTests
         MappingTarget target = MappingTarget.ForDisplay(display, region);
         Assert.Equal(region, target.Region);
     }
+
+    [Fact]
+    public void A_window_whose_visible_part_is_exactly_the_minimum_side_fits()
+    {
+        var display = new DisplayRect(0, 0, 100, 100);
+        double min = WindowTargetGeometry.MinVisibleSide;
+        // Overlaps by exactly MinVisibleSide on each axis (at the right/bottom corner).
+        var corner = new DisplayRect(100 - min, 100 - min, 50, 50);
+        Assert.True(WindowTargetGeometry.TryRegion(corner, display, out NormalizedRect region));
+        Assert.Equal(new NormalizedRect(0.99, 0.99, 0.01, 0.01), region);
+        Assert.True(WindowTargetGeometry.TryFit(corner, [display], out int index, out _));
+        Assert.Equal(0, index);
+        Assert.Equal(0, WindowTargetGeometry.DisplayIndexFor(corner, [display]));
+
+        // Just under it on one axis does not, on either axis.
+        double under = min - 1e-6;
+        Assert.False(WindowTargetGeometry.TryRegion(new DisplayRect(100 - under, 10, 50, 50), display, out _));
+        Assert.False(WindowTargetGeometry.TryRegion(new DisplayRect(10, 100 - under, 50, 50), display, out _));
+        Assert.Equal(-1, WindowTargetGeometry.DisplayIndexFor(new DisplayRect(100 - under, 10, 50, 50), [display]));
+        Assert.Equal(-1, WindowTargetGeometry.DisplayIndexFor(new DisplayRect(10, 100 - under, 50, 50), [display]));
+
+        // A window of exactly the minimum size inside the display.
+        Assert.True(WindowTargetGeometry.TryRegion(new DisplayRect(10, 20, min, min), display, out region));
+        Assert.Equal(new NormalizedRect(0.1, 0.2, 0.01, 0.01), region);
+        Assert.False(WindowTargetGeometry.TryRegion(new DisplayRect(10, 20, under, min), display, out _));
+        Assert.False(WindowTargetGeometry.TryRegion(new DisplayRect(10, 20, min, under), display, out _));
+    }
+
+    [Fact]
+    public void A_zero_or_negative_size_display_never_fits_and_leaves_the_full_region()
+    {
+        var window = new DisplayRect(0, 0, 10, 10);
+        foreach (DisplayRect display in new[] { new DisplayRect(0, 0, 0, 10), new DisplayRect(0, 0, 10, 0), new DisplayRect(0, 0, -10, 10), new DisplayRect(0, 0, 10, -10), new DisplayRect(0, 0, double.NaN, 10), new DisplayRect(0, 0, 10, double.NaN) })
+        {
+            Assert.False(WindowTargetGeometry.TryRegion(window, display, out NormalizedRect region));
+            Assert.Equal(NormalizedRect.Full, region);
+        }
+    }
+
+    [Fact]
+    public void A_window_clipped_to_a_sliver_on_one_axis_does_not_fit()
+    {
+        var display = new DisplayRect(0, 0, 100, 100);
+        Assert.False(WindowTargetGeometry.TryRegion(new DisplayRect(99.5, 0, 50, 50), display, out _));
+        Assert.False(WindowTargetGeometry.TryRegion(new DisplayRect(0, 99.5, 50, 50), display, out _));
+        Assert.False(WindowTargetGeometry.TryRegion(new DisplayRect(-49.5, 0, 50, 50), display, out _));
+        Assert.False(WindowTargetGeometry.TryRegion(new DisplayRect(0, -49.5, 50, 50), display, out _));
+        Assert.False(WindowTargetGeometry.TryRegion(new DisplayRect(10, 10, 0, 50), display, out _));
+        Assert.False(WindowTargetGeometry.TryRegion(new DisplayRect(10, 10, 50, 0), display, out _));
+    }
+
+    [Fact]
+    public void A_region_on_a_display_with_an_origin_is_relative_to_it_on_both_axes()
+    {
+        var display = new DisplayRect(-500, -200, 400, 100);
+        Assert.True(WindowTargetGeometry.TryRegion(new DisplayRect(-400, -175, 100, 50), display, out NormalizedRect region));
+        Assert.Equal(new NormalizedRect(0.25, 0.25, 0.25, 0.5), region);
+        // Clipped on the left and top: starts at 0, width and height are the visible part only.
+        Assert.True(WindowTargetGeometry.TryRegion(new DisplayRect(-600, -250, 200, 100), display, out region));
+        Assert.Equal(new NormalizedRect(0, 0, 0.25, 0.5), region);
+    }
+
+    [Fact]
+    public void Display_index_picks_the_largest_part_and_ignores_slivers()
+    {
+        var a = new DisplayRect(0, 0, 100, 100);
+        var b = new DisplayRect(100, 0, 100, 100);
+        // 30 x 50 on A, 20 x 50 on B.
+        Assert.Equal(0, WindowTargetGeometry.DisplayIndexFor(new DisplayRect(70, 0, 50, 50), [a, b]));
+        Assert.Equal(1, WindowTargetGeometry.DisplayIndexFor(new DisplayRect(70, 0, 50, 50), [b, a])); // listed order does not change the winner
+        Assert.Equal(1, WindowTargetGeometry.DisplayIndexFor(new DisplayRect(80, 0, 50, 50), [a, b]));
+        // Wide and short on a short A (60 x 10 = 600) versus narrow and tall on B (10 x 100 = 1000): areas, not widths.
+        var shortA = new DisplayRect(0, 0, 100, 10);
+        Assert.Equal(1, WindowTargetGeometry.DisplayIndexFor(new DisplayRect(40, 0, 70, 100), [shortA, b]));
+        Assert.Equal(-1, WindowTargetGeometry.DisplayIndexFor(new DisplayRect(10, 10, 0.5, 0.5), [a, b]));
+    }
 }
