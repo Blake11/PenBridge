@@ -182,7 +182,7 @@ public static class TabletEventPlanner
                     ReleaseSide(ref state, steps, ref n);
 
                     state.Left = true;
-                    steps[n++] = new TabletStep(TabletAction.LeftDown, state.Tool, true, false);
+                    steps[n++] = new TabletStep(TabletAction.LeftDown, state.Tool, true, state.Side);
                 }
 
                 break;
@@ -191,7 +191,7 @@ public static class TabletEventPlanner
                 if (state.Left)
                 {
                     state.Left = false;
-                    steps[n++] = new TabletStep(TabletAction.LeftUp, state.Tool, false, state.Right);
+                    steps[n++] = new TabletStep(TabletAction.LeftUp, state.Tool, false, state.Side);
                 }
                 else if (state.RightStroke)
                 {

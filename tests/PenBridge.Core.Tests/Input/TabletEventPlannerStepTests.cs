@@ -511,6 +511,35 @@ public class TabletEventPlannerStepTests
         Assert.True(state.Side);
     }
 
+    [Fact]
+    public void Left_up_carries_the_side_state_of_a_middle_button_still_posted()
+    {
+        Plan(PenEventKind.ProximityEnter);
+        Plan(PenEventKind.Down, held: Primary, action: SideButtonAction.MiddleClick);
+        Plan(PenEventKind.Up);
+        TabletEventPlanner.Revert(ref _state, Step(TabletAction.MiddleUp, false, false)); // the release failed: middle stays down
+        AssertState(inProximity: true, middle: true, middleUsed: true);
+
+        // A Down without the held button releases the middle first, then starts a left stroke.
+        AssertPlan(
+            [Step(TabletAction.MiddleUp, false, false), Step(TabletAction.LeftDown, true, false)],
+            PenEventKind.Down);
+        TabletEventPlanner.Revert(ref _state, Step(TabletAction.MiddleUp, false, false)); // that release failed too
+        AssertState(inProximity: true, left: true, middle: true, middleUsed: true);
+
+        AssertPlan(Step(TabletAction.LeftUp, false, true), PenEventKind.Up);
+    }
+
+    [Fact]
+    public void Left_up_carries_the_side_state_of_a_right_button_still_posted()
+    {
+        Plan(PenEventKind.ProximityEnter);
+        Plan(PenEventKind.Down);
+        // A right button still posted during a left stroke (its release failed and was reverted).
+        TabletEventPlanner.Revert(ref _state, Step(TabletAction.RightUp, false, false));
+        AssertPlan(Step(TabletAction.LeftUp, false, true), PenEventKind.Up);
+    }
+
     private static TabletStep Step(TabletAction action, bool contact, bool side, PenTool tool = PenTool.Pen, int clickState = 0) =>
         new(action, tool, contact, side, clickState);
 
