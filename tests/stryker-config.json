@@ -1,0 +1,13 @@
+{
+  "stryker-config": {
+    "project": "PenBridge.Core.csproj",
+    "test-projects": ["tests/PenBridge.Core.Tests/PenBridge.Core.Tests.csproj"],
+    "test-runner": "mtp",
+    "mutate": ["**/*.cs", "!**/Net/**/*.cs"],
+    "concurrency": 5,
+    "coverage-analysis": "perTest",
+    "additional-timeout": 5000,
+    "reporters": ["Dots", "Html", "Json"],
+    "thresholds": { "high": 80, "low": 60, "break": 0 }
+  }
+}
