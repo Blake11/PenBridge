@@ -11,7 +11,7 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <Version>1.3.1</Version><!-- x-release-please-version -->
+    <Version>1.3.2</Version><!-- x-release-please-version -->
     <Company>PenBridge</Company>
     <Product>PenBridge</Product>
     <Authors>Paul Ciurea</Authors>
