@@ -60,6 +60,23 @@ DOTNET_TC_QuickJitForLoops=1 DOTNET_OSR_HitLimit=1 scripts/test.sh -c Release   
   (`double.Epsilon` for `> 0`), `n + 1` for integers, and `double.PositiveInfinity`/`long.MaxValue` for a missing
   side. Keep `Assert.True(cond, "why")` when the message explains what a bare value can't.
 - `scripts/test.sh` lists the names of failing tests after the summary (from `TestResults/junit.xml`).
+- Exact geometric ties: use a 1:1 mapper (65535x65535) and whole-number coordinates. Corner ties near
+  `BitDecrement` edges differ by ulps otherwise.
+- A test that sets a process-wide environment variable restores it in `finally`, and nothing else may read that
+  variable concurrently.
+- Assert the whole record (a full `TabletStep`), not one field: a mutant in another field then dies too.
+- Guard tests assert `ParamName` as well as the exception type.
+
+## Mutation testing
+Commands and setup: `docs/development.md#mutation-testing`. Rules from the test-gaps round:
+- Run at low host load. Per-test coverage capture times out under load and reports false survivors; compare
+  scores only between runs made at similar load.
+- Use the Core-only `tests/stryker.slnx` (the config already does). Never run it unsandboxed.
+- Pass one `-m` per glob. A CLI `-m` replaces the config's mutate list, so the `Net/` exclusion is dropped.
+- Before writing a test for a doubtful survivor, hand-mutate `src`, run the test, revert. If it still passes, the
+  mutant is equivalent or the test doesn't cover it.
+- A statement mutant may be a `break` (loop exit); check the column in the report.
+- Exception-message mutants are ignored: don't assert message text to kill them.
 
 ## Time-based filters (hold-back)
 A filter that holds input back until a deadline (`InputFilter` holds a lone finger for `FingerFallbackArmDelay`) can't
