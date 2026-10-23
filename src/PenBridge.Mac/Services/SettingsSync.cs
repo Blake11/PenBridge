@@ -13,7 +13,8 @@ namespace PenBridge.Mac.Services;
 /// <summary>
 /// Applies the Mac settings (ADR-0030–0033) and keeps the phone in sync: <see cref="SettingsStore"/> and the
 /// displays → the server's input settings and mapping target, the settings snapshot and the display list; and the
-/// phone's SettingsUpdate → validated (Core's <see cref="MacSettingValues.ApplyUpdate"/>) → the store.
+/// phone's SettingsUpdate → validated (Core's <see cref="MacSettingValues.ApplyUpdate"/>) → the store (Core's
+/// <see cref="SettingsWriteRules"/> over <see cref="SettingsStoreWriter"/>).
 /// </summary>
 /// <remarks>
 /// <para><b>Main thread only.</b> Every source is main-thread: store setters (menu, Settings window), the resolver's
@@ -41,6 +42,7 @@ public sealed partial class SettingsSync : IDisposable
     private readonly CGEventTabletInjector _injector;
     private readonly ILogger _log;
     private readonly WindowTarget _windowTarget;
+    private readonly SettingsStoreWriter _writer;
     private readonly UpdateThrottle _throttle = new(UpdateThrottle.ActiveAreaInterval);
     private int _throttleGeneration;
     private DisplayListEntry[] _displayList = [];
@@ -66,6 +68,7 @@ public sealed partial class SettingsSync : IDisposable
         _injector = injector;
         _log = log;
         _windowTarget = windowTarget;
+        _writer = new SettingsStoreWriter(store, resolver);
 
         _store.Changed += OnStoreChanged;
         _resolver.TargetChanged += OnTargetChanged;
@@ -190,49 +193,9 @@ public sealed partial class SettingsSync : IDisposable
 
         MacSettingValues values = CurrentValues();
         IReadOnlyList<SettingEntry> changed = values.ApplyUpdate(e.Entries, _displayList);
-        Write(e.Entries, changed, values);
+        SettingsWriteRules.Write(_writer, e.Entries, changed, values, _displayList); // the target first; ADR-0037
         Log.UpdateFromPhone(_log, e.Entries.Count, changed.Count);
         Apply(forceSnapshot: true);
-    }
-
-    /// <summary>Stores the accepted values of a phone update; the target first, so a Region in it is the new target's.</summary>
-    private void Write(IReadOnlyList<SettingEntry> requested, IReadOnlyList<SettingEntry> changed, MacSettingValues values)
-    {
-        // TargetDisplay and Region are written when the update carried an accepted one, not by "changed": the
-        // values read a stored but disconnected display as main, and a Region equal to the old target's would
-        // otherwise not reach the new target.
-        SettingEntry? target = LastOf(requested, MacSettingKey.TargetDisplay, SettingType.String);
-        if (target is { } t && string.Equals(values.TargetDisplay, t.StringValue, StringComparison.Ordinal))
-        {
-            _store.TargetDisplay = values.TargetDisplay; // also re-targets the resolver (OnStoreChanged)
-        }
-
-        // The pair was validated together: write the end that widens the range first so the store's clamp never bites.
-        bool fullFirst = values.FullPressureAt > _store.FullPressureAt;
-        foreach (SettingEntry entry in changed)
-        {
-            if (fullFirst && entry.Key == (ushort)MacSettingKey.FullPressureAt)
-            {
-                _ = _store.TryWrite(entry);
-            }
-        }
-
-        foreach (SettingEntry entry in changed)
-        {
-            if (!(fullFirst && entry.Key == (ushort)MacSettingKey.FullPressureAt))
-            {
-                _ = _store.TryWrite(entry); // false for TargetDisplay and Region, handled here
-            }
-        }
-
-        SettingEntry? region = LastOf(requested, MacSettingKey.Region, SettingType.Rect);
-        string? regionDisplay = RegionDisplayUuid();
-        if (region is { } r && regionDisplay is not null
-            && MacSettings.TryValidate(r, values, _displayList, out SettingEntry normalized)
-            && normalized.RectValue == values.Region)
-        {
-            _store.SetRegion(regionDisplay, values.Region);
-        }
     }
 
     private static bool Carries(IReadOnlyList<SettingEntry> entries, MacSettingKey key)
@@ -246,19 +209,6 @@ public sealed partial class SettingsSync : IDisposable
         }
 
         return false;
-    }
-
-    private static SettingEntry? LastOf(IReadOnlyList<SettingEntry> entries, MacSettingKey key, SettingType type)
-    {
-        for (int i = entries.Count - 1; i >= 0; i--)
-        {
-            if (entries[i].Key == (ushort)key && entries[i].Type == type)
-            {
-                return entries[i];
-            }
-        }
-
-        return null;
     }
 
     private void QueueApply()
@@ -365,8 +315,7 @@ public sealed partial class SettingsSync : IDisposable
     }
 
     /// <summary>The display a Region belongs to: the resolved target (main for "" or a missing display), none for All displays.</summary>
-    private string? RegionDisplayUuid() =>
-        _resolver.IsAllDisplays || !_resolver.HasDisplay ? null : _resolver.Target.Uuid;
+    private string? RegionDisplayUuid() => _writer.RegionDisplay;
 
     private void PublishDisplays()
     {
