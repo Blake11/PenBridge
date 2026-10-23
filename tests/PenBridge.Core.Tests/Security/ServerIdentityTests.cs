@@ -62,6 +62,75 @@ public class ServerIdentityTests
     }
 
     [Fact]
+    public void Fingerprint_of_der_bytes_writes_into_the_destination()
+    {
+        X509Certificate2 cert = ServerFixture.Current.Identity.Certificate;
+        byte[] wide = new byte[40];
+        CertificateFingerprint.Compute(cert.RawData, wide);
+        Assert.Equal(CertificateFingerprint.Compute(cert), wide[..32]);
+        Assert.Equal(new byte[8], wide[32..]);
+
+        var ex = Assert.Throws<ArgumentException>(() => CertificateFingerprint.Compute(cert.RawData, new byte[31]));
+        Assert.Equal("destination", ex.ParamName);
+    }
+
+    [Fact]
+    public void Fingerprint_parsing_checks_text_length_and_destination()
+    {
+        byte[] fp = KeyScheduleTests.Fill(32, 7);
+        string text = CertificateFingerprint.ToBase64Url(fp);
+        Assert.Equal(43, text.Length);
+        byte[] parsed = new byte[32];
+
+        Assert.False(CertificateFingerprint.TryParseBase64Url(text, new byte[31]));
+        Assert.True(CertificateFingerprint.TryParseBase64Url(text, new byte[33]));
+
+        // The decoder skips whitespace, so only the length cap stops long text that still decodes to 32 bytes.
+        Assert.True(CertificateFingerprint.TryParseBase64Url(text + new string(' ', 64 - 43), parsed));
+        Assert.Equal(fp, parsed);
+        Assert.False(CertificateFingerprint.TryParseBase64Url(text + new string(' ', 65 - 43), parsed));
+
+        Assert.False(CertificateFingerprint.TryParseBase64Url(text + "A", parsed));   // 44 chars: 33 bytes
+        Assert.False(CertificateFingerprint.TryParseBase64Url(text.Remove(42), parsed));   // 31 bytes
+        Assert.False(CertificateFingerprint.TryParseBase64Url(text.Remove(42) + "!", parsed));
+    }
+
+    [Fact]
+    public void Pkcs12_without_a_private_key_is_rejected()
+    {
+        using X509Certificate2 publicOnly = X509CertificateLoader.LoadCertificate(ServerFixture.Current.Identity.Certificate.RawData);
+        byte[] pfx = publicOnly.Export(X509ContentType.Pkcs12);
+
+        var ex = Assert.Throws<CryptographicException>(() => ServerIdentity.FromPkcs12(pfx));
+        Assert.Contains("no private key", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Pkcs12_with_a_non_ecdsa_key_is_rejected()
+    {
+        DateTimeOffset now = new FakeTime().GetUtcNow();
+        using RSA rsa = RSA.Create(2048);
+        var request = new CertificateRequest("CN=not-ecdsa", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        using X509Certificate2 cert = request.CreateSelfSigned(now.AddDays(-1), now.AddDays(1));
+        byte[] pfx = cert.ExportPkcs12(Pkcs12ExportPbeParameters.Pbes2Aes256Sha256, password: null);
+
+        var ex = Assert.Throws<CryptographicException>(() => ServerIdentity.FromPkcs12(pfx));
+        Assert.Contains("not an ECDSA", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Loaded_pkcs12_bytes_are_zeroed()
+    {
+        var inner = new InMemorySecretStore();
+        inner.Set(ServerIdentity.StoreKey, ServerIdentity.CreatePkcs12(new FakeTime().GetUtcNow()));
+        var store = new PairedDeviceRegistryTests.HandOutStore(inner);
+
+        using ServerIdentity identity = ServerIdentity.LoadOrCreate(store);
+        Assert.NotNull(store.LastHandedOut);
+        Assert.Equal(new byte[store.LastHandedOut.Length], store.LastHandedOut);
+    }
+
+    [Fact]
     public async Task Reloaded_identity_serves_tls_over_loopback_with_fingerprint_pin()
     {
         var store = new InMemorySecretStore();

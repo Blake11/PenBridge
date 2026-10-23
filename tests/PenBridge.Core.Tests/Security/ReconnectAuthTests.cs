@@ -37,6 +37,20 @@ public class ReconnectAuthTests
         Assert.False(ReconnectAuth.Verify(_key, _challenge, _nonce, _fp, []));
     }
 
+    [Fact]
+    public void Proof_destination_must_hold_32_bytes()
+    {
+        var ex = Assert.Throws<ArgumentException>(() => ReconnectAuth.ComputeProof(_key, _challenge, _nonce, _fp, new byte[31]));
+        Assert.Equal("proof", ex.ParamName);
+
+        byte[] wide = new byte[33];
+        ReconnectAuth.ComputeProof(_key, _challenge, _nonce, _fp, wide);
+        byte[] exact = new byte[32];
+        ReconnectAuth.ComputeProof(_key, _challenge, _nonce, _fp, exact);
+        Assert.Equal(exact, wide[..32]);
+        Assert.Equal(0, wide[32]);
+    }
+
     private static byte[] Flip(byte[] b)
     {
         byte[] c = (byte[])b.Clone();

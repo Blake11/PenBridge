@@ -48,6 +48,7 @@ public sealed class SecretStoreTests : IDisposable
         {
             Assert.Throws<ArgumentException>(() => store.Set(bad, [1]));
             Assert.Throws<ArgumentException>(() => store.TryGet(bad, out _));
+            Assert.Throws<ArgumentException>(() => store.Delete(bad));
         }
     }
 
@@ -68,5 +69,24 @@ public sealed class SecretStoreTests : IDisposable
         }
 
         Assert.Single(Directory.GetFiles(_dir)); // no temp files left behind
+    }
+
+    [Fact]
+    public void File_store_tightens_an_existing_directory()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        const UnixFileMode loose = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+            UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+        Directory.CreateDirectory(_dir, loose);
+        File.SetUnixFileMode(_dir, loose);
+
+        new FileSecretStore(_dir).Set("k", [1]);
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(_dir));
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(Path.Combine(_dir, "k.secret")));
     }
 }
