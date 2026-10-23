@@ -44,6 +44,7 @@ Cite ADRs by number (and section) rather than reading this whole file.
 | 0034 | Post-MVP work runs as standalone milestones, each ending with a release | accepted |
 | 0035 | Menu-bar region picker and a tint outside the active region | accepted |
 | 0036 | A window as the target: click to pick, follows moves and resizes | accepted |
+| 0037 | Host settings-write rules live in Core; an empty target display from the phone keeps a remembered, disconnected display | accepted |
 
 ## ADR-0001 — .NET 10 LTS, native platform heads + shared Core
 **Status:** accepted (2026-10-13)
@@ -415,3 +416,13 @@ Cite ADRs by number (and section) rather than reading this whole file.
 - **Why click-to-pick over a menu list:** window titles in a list need the Screen Recording permission, and clicking the window you see is quicker.
 - **Why follow instead of a one-time snapshot:** a snapshot goes stale as soon as the window moves.
 - **Consequences / deferred:** a window spanning two displays maps only its part on the main-share display. Restoring the window target after a restart, picking from the phone, and per-app targets are out of scope.
+
+## ADR-0037 — Host settings-write rules live in Core; an empty target display from the phone keeps a remembered, disconnected display
+**Status:** accepted (2026-10-24). Refines ADR-0030 and ADR-0031 (#204).
+- **Context:** the rules for applying a settings update from the phone were in the Mac head (`SettingsSync.Write`) with no tests: which keys are written only when the update carried an accepted value, the pressure pair written widening end first, and the region tied to the resolved target. A future Windows host needs the same rules. Separately, a phone that echoes the whole snapshot back sends `TargetDisplay = ""` when it can't see the remembered display, which today overwrites the stored display UUID while the monitor is only unplugged.
+- **Decision:**
+  - The write rules move into Core as a platform-free helper over a small settings-writer interface; each host implements the interface over its own store. The Mac head calls the helper, and Core tests cover every rule.
+  - An empty `TargetDisplay` from the phone is ignored while the stored display UUID names a display that's currently disconnected. The Mac keeps mapping to its fallback (main display) as before and returns to the remembered display when it's reconnected. Only a non-empty value, or All displays, changes the stored target. While the stored display is connected, the phone's value is applied as before.
+- **Why:** an echo of what the phone could see shouldn't silently discard a choice the user made on the Mac.
+- **Consequences:** no protocol change; old phones behave the same. A phone can't clear the remembered display while it's unplugged; picking another display or All displays does.
+
