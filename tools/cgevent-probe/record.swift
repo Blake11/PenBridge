@@ -9,6 +9,8 @@
 //
 // Needs Input Monitoring for the host app (Terminal/iTerm). Never alters events (listen-only).
 // Line format: t_ms(since first event) +dt_ms type(name) ns=<CGEvent timestamp, ns, CLOCK_UPTIME_RAW base> @x,y ...
+// Names follow CGEventType in CGEventTypes.h (22 scroll, 23 tablet pointer, 24 tablet proximity, 25-27 other mouse);
+// key down/up/flags-changed (10-12) are printed with keycode and flags; unlisted types print as "unknown".
 // Gesture types (18-20, 29-34, 37, 38) add the NSEvent type, phase, touches and every non-zero field as f<n>=int[/double].
 import AppKit
 import CoreGraphics
@@ -60,9 +62,9 @@ print("# cols: t_ms +dt_ms type(name) ns=<timestamp> @x,y ... ; gestures dump no
 
 let names: [UInt32: String] = [
     0: "Null", 1: "LDown", 2: "LUp", 3: "RDown", 4: "RUp", 5: "Moved", 6: "LDrag", 7: "RDrag",
-    10: "KeyDown", 11: "KeyUp", 12: "Flags", 13: "AppKitDefined", 14: "SysDefined", 15: "AppDefined",
+    10: "KeyDown", 11: "KeyUp", 12: "FlagsChanged", 13: "AppKitDefined", 14: "SysDefined", 15: "AppDefined",
     16: "Periodic", 17: "CursorUpdate", 18: "Rotate", 19: "BeginGesture", 20: "EndGesture",
-    21: "TabletPointer", 22: "Scroll", 23: "TabletProx", 24: "ODown", 25: "OUp", 26: "ODrag",
+    22: "Scroll", 23: "TabletPointer", 24: "TabletProx", 25: "ODown", 26: "OUp", 27: "ODrag",
     29: "Gesture", 30: "Magnify", 31: "Swipe", 32: "SmartMagnify", 33: "QuickLook", 34: "Pressure",
     37: "DirectTouch", 38: "ChangeMode",
     0xFFFFFFFE: "TapDisabledTimeout", 0xFFFFFFFF: "TapDisabledUser",
@@ -98,7 +100,7 @@ let cb: CGEventTapCallBack = { _, type, e, _ in
     if let only = onlyTypes, !only.contains(t) { return Unmanaged.passUnretained(e) }
     let ts = e.timestamp
     if first == 0 { first = ts; prev = ts }
-    var line = String(format: "%10.2f +%7.2f %2u(%@)", ms(ts - min(ts, first)), ts < prev ? 0 : ms(ts - prev), t, names[t] ?? "?")
+    var line = String(format: "%10.2f +%7.2f %2u(%@)", ms(ts - min(ts, first)), ts < prev ? 0 : ms(ts - prev), t, names[t] ?? "unknown")
     prev = max(prev, ts)
     line += " ns=\(ts)"
     let l = e.location
@@ -106,7 +108,7 @@ let cb: CGEventTapCallBack = { _, type, e, _ in
     // What AppKit sees as the event time (seconds since boot); compare with ns= to spot bad posted time fields.
     if let ns = NSEvent(cgEvent: e) { line += String(format: " nsts=%.3f", ns.timestamp) }
     switch t {
-    case 1, 2, 3, 4, 5, 6, 7, 24, 25, 26:
+    case 1, 2, 3, 4, 5, 6, 7, 25, 26, 27:
         line += " click=\(e.getIntegerValueField(.mouseEventClickState)) btn=\(e.getIntegerValueField(.mouseEventButtonNumber))"
         let p = e.getDoubleValueField(.mouseEventPressure)
         if p != 0 { line += String(format: " pr=%.3f", p) }
@@ -122,6 +124,10 @@ let cb: CGEventTapCallBack = { _, type, e, _ in
         if allFields { line += " |" + dump(e, 0...200) }
     case 10, 11, 12:
         line += " key=\(e.getIntegerValueField(.keyboardEventKeycode)) flags=0x" + String(e.flags.rawValue, radix: 16)
+        if t != 12 { line += " repeat=\(e.getIntegerValueField(.keyboardEventAutorepeat))" }
+        if allFields { line += " |" + dump(e, 0...200) }
+    case 23, 24:
+        line += " pr=\(e.getDoubleValueField(.tabletEventPointPressure)) |" + dump(e, 0...200)
     default:
         if gestureTypes.contains(t) {
             if let ns = NSEvent(cgEvent: e) {
