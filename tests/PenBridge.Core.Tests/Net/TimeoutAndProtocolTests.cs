@@ -29,6 +29,10 @@ public class TimeoutAndProtocolTests
             PingInterval = ping ?? o.PingInterval,
         };
 
+    /// <summary>Armed control-channel deadlines (both sides share the fake clock) that were armed for <paramref name="armedFor"/>.</summary>
+    private static int Armed(FakeTime time, TimeSpan armedFor) =>
+        time.CountDeadlines((s, a, _) => s is ControlChannel && a == armedFor);
+
     [Fact]
     public async Task A_silent_tcp_connection_is_closed_at_the_handshake_deadline()
     {
@@ -54,9 +58,19 @@ public class TimeoutAndProtocolTests
         await using RawClient raw = await RawClient.ConnectTlsAsync(h.Port);
         await raw.HelloAsync(Guid.NewGuid()); // then stall before Auth/pairing
 
+        // Step fake time only once the server reads under the 5 s deadline. The phone can hold the HelloAck while the
+        // server's write is still unwinding; stepping then fires that write's 2 s deadline, which closes the socket
+        // without the Timeout error.
+        TimeSpan readTimeout = TimeSpan.FromSeconds(5);
+        await Wait.Until(() => Armed(h.Time, readTimeout) == 1, "read deadline armed");
+        Assert.Equal(0, Armed(h.Time, ControlChannel.WriteTimeout));
         Task<ReceivedControlFrame?> read = raw.ReadAsync();
-        await Wait.AdvanceUntil(h.Time, TimeSpan.FromSeconds(1), () => read.IsCompleted, "read deadline");
 
+        h.Time.Advance(TimeSpan.FromSeconds(4));
+        Assert.Equal(1, h.Time.CountDeadlines((s, armedFor, remaining) => s is ControlChannel && armedFor == readTimeout && remaining == TimeSpan.FromSeconds(1)));
+        Assert.False(read.IsCompleted);
+
+        h.Time.Advance(TimeSpan.FromSeconds(1));
         ReceivedControlFrame? frame = await read;
         Assert.NotNull(frame);
         Assert.Equal(ProtocolErrorCode.Timeout, frame.Value.Read<ErrorMessage>().Code);
@@ -80,6 +94,9 @@ public class TimeoutAndProtocolTests
         var busy = await Assert.ThrowsAsync<PenBridgeConnectException>(() => h.CreateClient().PairWithPinAsync("127.0.0.1", h.Port, pin, TestContext.Current.CancellationToken).Bounded());
         Assert.Equal(ConnectFailure.PairingUnavailable, busy.Failure);
 
+        // The phone can hold ServerPairRound1 while the server's write is still unwinding: jumping 20 s then would fire
+        // that write's 2 s deadline instead of the pairing deadline under test.
+        await Wait.Until(() => Armed(h.Time, ControlChannel.WriteTimeout) == 0, "control writes finished");
         h.Time.Advance(TimeSpan.FromSeconds(20)); // the raw client never sends Round2
 
         await Wait.Until(() => raw.IsClosed, "stalled pairing closed");
@@ -108,8 +125,18 @@ public class TimeoutAndProtocolTests
             HoverKeepaliveInterval = TimeSpan.FromHours(1),
         });
 
-        await Wait.AdvanceUntil(h.Time, TimeSpan.FromSeconds(1), () => ended.Task.IsCompleted, "peer timeout");
+        // Step only once the session is idle: no write in flight (its 2 s deadline would end the session instead) and
+        // the server's read waits under the 6 s peer timeout (the phone's waits under an hour).
+        TimeSpan peerTimeout = TimeSpan.FromSeconds(6);
+        await h.SettleAsync();
+        await Wait.Until(() => Armed(h.Time, ControlChannel.WriteTimeout) == 0, "control writes finished");
+        await Wait.Until(() => Armed(h.Time, peerTimeout) == 1, "server peer deadline armed");
 
+        h.Time.Advance(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, h.Time.CountDeadlines((s, armedFor, remaining) => s is ControlChannel && armedFor == peerTimeout && remaining == TimeSpan.FromSeconds(1)));
+        Assert.False(ended.Task.IsCompleted);
+
+        h.Time.Advance(TimeSpan.FromSeconds(1));
         SessionEndedEventArgs e = await ended.Task.Bounded();
         Assert.Equal(SessionEndReason.Timeout, e.Reason);
         await Wait.Until(() => !client.IsConnected, "client saw the close");
