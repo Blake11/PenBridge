@@ -7,6 +7,8 @@ public class DiscoveryTests
     private static readonly byte[] Fingerprint = Hex.Range(0x00, 32);
     private static readonly byte[] Token = Hex.Range(0xE0, 32);
     private const string FingerprintText = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+    private const string TokenText = "4OHi4-Tl5ufo6err7O3u7_Dx8vP09fb3-Pn6-_z9_v8";
+    private const string ValidQuery = "h=10.0.0.1&p=47820&fp=" + FingerprintText + "&t=" + TokenText + "&v=1.2";
 
     [Fact]
     public void Txt_record_entries_golden()
@@ -116,4 +118,110 @@ public class DiscoveryTests
     [Fact]
     public void Qr_payload_rejects_oversized_text() =>
         Assert.False(PairingQrPayload.TryParse(PairingQrPayload.Prefix + new string('a', PairingQrPayload.MaxLength), out _));
+
+    // 43 characters each. The decoder skips whitespace, so the padded rows decode fewer than 32 bytes.
+    [Theory]
+    [InlineData("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwd   ")]
+    [InlineData("   AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwd")]
+    [InlineData("AAECAwQFBgcICQoLDA0ODxAR   EhMUFRYXGBkaGxwd")]
+    [InlineData("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh9")] // unused low bits set
+    [InlineData("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh=")]
+    public void Base64url_rejects_partial_and_non_canonical_text(string text)
+    {
+        Assert.Equal(Base64UrlBytes.EncodedLength32, text.Length);
+        Assert.True(Base64UrlBytes.TryDecode32(FingerprintText, out _));
+        Assert.False(Base64UrlBytes.TryDecode32(text, out byte[] value));
+        Assert.Empty(value);
+    }
+
+    [Theory]
+    [InlineData("v")]
+    [InlineData("fp")]
+    [InlineData("name")]
+    public void Txt_record_entries_missing_one_field_are_rejected(string missing)
+    {
+        KeyValuePair<string, string>[] all = [new("v", "1.2"), new("fp", FingerprintText), new("name", "Mac")];
+        Assert.True(BonjourTxtRecord.TryParse(all, out _));
+        Assert.False(BonjourTxtRecord.TryParse(all.Where(e => e.Key != missing).ToArray(), out _));
+    }
+
+    [Fact]
+    public void Txt_record_name_limit_is_in_utf8_bytes_and_inclusive()
+    {
+        string atLimit = new string('é', BonjourTxtRecord.MaxNameBytes / 2);
+        string overLimit = atLimit + "x";
+        Assert.True(BonjourTxtRecord.TryParse("1.2", FingerprintText, atLimit, out BonjourTxtRecord? parsed));
+        Assert.Equal(atLimit, parsed!.Name);
+        Assert.Equal(atLimit, new BonjourTxtRecord(ProtocolInfo.Version, Fingerprint, atLimit).Name);
+        Assert.False(BonjourTxtRecord.TryParse("1.2", FingerprintText, overLimit, out _));
+        Assert.Throws<ArgumentException>(() => new BonjourTxtRecord(ProtocolInfo.Version, Fingerprint, overLimit));
+    }
+
+    [Theory]
+    [InlineData("h")]
+    [InlineData("p")]
+    [InlineData("fp")]
+    [InlineData("t")]
+    [InlineData("v")]
+    public void Qr_payload_missing_one_field_is_rejected(string missing)
+    {
+        Assert.True(PairingQrPayload.TryParse(PairingQrPayload.Prefix + ValidQuery, out _));
+        string query = string.Join('&', ValidQuery.Split('&').Where(pair => pair[..pair.IndexOf('=', StringComparison.Ordinal)] != missing));
+        Assert.False(PairingQrPayload.TryParse(PairingQrPayload.Prefix + query, out _));
+    }
+
+    // The bad value sits in an ignored key, so only the escape check itself can reject it.
+    [Theory]
+    [InlineData("%zz")] // not hex
+    [InlineData("%4")] // escape cut off at the end
+    [InlineData("a%")] // lone percent at the end
+    [InlineData("%C3")] // invalid UTF-8
+    [InlineData("%41é")] // a raw non-ASCII character
+    [InlineData("%C2\u0080")] // U+0080 raw: would complete the escaped lead byte to valid UTF-8
+    public void Qr_payload_rejects_bad_escapes_even_in_unknown_keys(string value)
+    {
+        Assert.True(PairingQrPayload.TryParse(PairingQrPayload.Prefix + ValidQuery + "&x=%41", out _));
+        Assert.False(PairingQrPayload.TryParse(PairingQrPayload.Prefix + ValidQuery + "&x=" + value, out _));
+    }
+
+    [Fact]
+    public void Qr_payload_decodes_escapes_in_values()
+    {
+        Assert.True(PairingQrPayload.TryParse(PairingQrPayload.Prefix + ValidQuery.Replace("h=10.0.0.1", "h=%31%30.0.0.1", StringComparison.Ordinal), out PairingQrPayload? qr));
+        Assert.Equal("10.0.0.1", qr!.Host);
+    }
+
+    [Fact]
+    public void Qr_payload_port_takes_at_most_five_digits()
+    {
+        Assert.True(PairingQrPayload.TryParse(PairingQrPayload.Prefix + ValidQuery.Replace("p=47820", "p=00080", StringComparison.Ordinal), out PairingQrPayload? qr));
+        Assert.Equal(80, qr!.Port);
+        Assert.False(PairingQrPayload.TryParse(PairingQrPayload.Prefix + ValidQuery.Replace("p=47820", "p=000080", StringComparison.Ordinal), out _));
+    }
+
+    [Fact]
+    public void Qr_payload_host_limit_is_inclusive()
+    {
+        // Labels of at most 63 characters, so only the total length decides.
+        string atLimit = string.Join('.', new string('a', 63), new string('b', 63), new string('c', 63), new string('d', 61));
+        string overLimit = atLimit + "d";
+        Assert.Equal(PairingQrPayload.MaxHostLength, atLimit.Length);
+        Assert.Equal(atLimit, new PairingQrPayload(atLimit, 1, Fingerprint, Token, ProtocolInfo.Version).Host);
+        Assert.True(PairingQrPayload.TryParse(PairingQrPayload.Prefix + ValidQuery.Replace("10.0.0.1", atLimit, StringComparison.Ordinal), out PairingQrPayload? qr));
+        Assert.Equal(atLimit, qr!.Host);
+        Assert.Throws<ArgumentException>(() => new PairingQrPayload(overLimit, 1, Fingerprint, Token, ProtocolInfo.Version));
+        Assert.False(PairingQrPayload.TryParse(PairingQrPayload.Prefix + ValidQuery.Replace("10.0.0.1", overLimit, StringComparison.Ordinal), out _));
+    }
+
+    [Fact]
+    public void Qr_payload_constructor_rejects_each_invalid_argument()
+    {
+        Assert.Equal("host", Assert.Throws<ArgumentException>(() => new PairingQrPayload("bad host", 1, Fingerprint, Token, ProtocolInfo.Version)).ParamName);
+        Assert.Equal("host", Assert.Throws<ArgumentException>(() => new PairingQrPayload(string.Empty, 1, Fingerprint, Token, ProtocolInfo.Version)).ParamName);
+        Assert.Equal("port", Assert.Throws<ArgumentOutOfRangeException>(() => new PairingQrPayload("10.0.0.1", 0, Fingerprint, Token, ProtocolInfo.Version)).ParamName);
+        Assert.Equal("fingerprint", Assert.Throws<ArgumentException>(() => new PairingQrPayload("10.0.0.1", 1, new byte[31], Token, ProtocolInfo.Version)).ParamName);
+        Assert.Equal("fingerprint", Assert.Throws<ArgumentException>(() => new PairingQrPayload("10.0.0.1", 1, new byte[33], Token, ProtocolInfo.Version)).ParamName);
+        Assert.Equal("token", Assert.Throws<ArgumentException>(() => new PairingQrPayload("10.0.0.1", 1, Fingerprint, new byte[31], ProtocolInfo.Version)).ParamName);
+        Assert.Equal("token", Assert.Throws<ArgumentException>(() => new PairingQrPayload("10.0.0.1", 1, Fingerprint, new byte[33], ProtocolInfo.Version)).ParamName);
+    }
 }
