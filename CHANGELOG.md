@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.3.2](https://github.com/Blake11/PenBridge/compare/v1.3.1...v1.3.2) (2026-10-23)
+
+
+### Bug Fixes
+
+* **core:** report a held middle button as side on the pen-up step ([#289](https://github.com/Blake11/PenBridge/issues/289)) ([2c719ae](https://github.com/Blake11/PenBridge/commit/2c719aeadc1d908aa9e9782126d269f41598fcb7)), closes [#281](https://github.com/Blake11/PenBridge/issues/281)
+
+
+### Refactoring
+
+* **core:** move the host settings-write rules into core ([#296](https://github.com/Blake11/PenBridge/issues/296)) ([a62a807](https://github.com/Blake11/PenBridge/commit/a62a80778d5450bcabe34082cd1e1d185b823ea6)), closes [#204](https://github.com/Blake11/PenBridge/issues/204)
+
+
+### Documentation
+
+* add mutation testing rules and test tips to the core-testing skill ([#294](https://github.com/Blake11/PenBridge/issues/294)) ([36f86d7](https://github.com/Blake11/PenBridge/commit/36f86d7cc699860007aeeb03551685c041e94cd2)), closes [#257](https://github.com/Blake11/PenBridge/issues/257)
+
 ## [1.3.1](https://github.com/Blake11/PenBridge/compare/v1.3.0...v1.3.1) (2026-10-23)
 
 
