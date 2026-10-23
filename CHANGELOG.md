@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/Blake11/PenBridge/compare/v1.3.0...v1.3.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **core:** keep region editing and pen mapping inside the display ([#271](https://github.com/Blake11/PenBridge/issues/271)) ([5769193](https://github.com/Blake11/PenBridge/commit/5769193391f2928d164b5a8049ce1f8ff0ba7954))
+
 ## [1.3.0](https://github.com/Blake11/PenBridge/compare/v1.2.1...v1.3.0) (2026-10-21)
 
 
