@@ -139,4 +139,146 @@ public class PressureCurveTests
             Assert.Throws<ArgumentOutOfRangeException>(s.Validate);
         }
     }
+
+    [Fact]
+    public void Constructor_validates_each_parameter()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new PressureCurve(double.NaN, 0, 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new PressureCurve(double.PositiveInfinity, 0, 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new PressureCurve(double.NegativeInfinity, 0, 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new PressureCurve(0, -0.01, 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new PressureCurve(0, double.NaN, 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new PressureCurve(0, 0, 1.01));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new PressureCurve(0, 0, double.NaN));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new PressureCurve(0, 0.5, 0.5)); // full must exceed the threshold
+        Assert.Throws<ArgumentOutOfRangeException>(() => new PressureCurve(0, 0.6, 0.5));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new PressureCurve(0, 0, 0));
+
+        // The limits themselves are valid.
+        _ = new PressureCurve(-1, 0, 1);
+        _ = new PressureCurve(1, 0.5, Math.BitIncrement(0.5));
+        _ = new PressureCurve(100, 0, 1);
+    }
+
+    [Fact]
+    public void Only_the_exact_default_parameters_are_the_identity()
+    {
+        Assert.True(new PressureCurve(0, 0, 1).IsIdentity);
+        Assert.False(new PressureCurve(0.01, 0, 1).IsIdentity);
+        Assert.False(new PressureCurve(0, 0.1, 1).IsIdentity);
+        Assert.False(new PressureCurve(0, 0, 0.9).IsIdentity);
+        Assert.False(default(PressureCurve).IsIdentity);
+    }
+
+    [Fact]
+    public void Threshold_property_returns_the_click_threshold()
+    {
+        Assert.Equal(0.25, new PressureCurve(0, 0.25, 0.75).Threshold);
+        Assert.Equal(0, PressureCurve.Linear.Threshold);
+    }
+
+    [Theory]
+    [InlineData(-0.5, 0)]
+    [InlineData(0, 0)]
+    [InlineData(0.25, 0.25)]
+    [InlineData(1, 1)]
+    [InlineData(1.0000001, 1)]
+    [InlineData(7, 1)]
+    [InlineData(double.PositiveInfinity, 1)]
+    [InlineData(double.NegativeInfinity, 0)]
+    public void Apply_clamps_to_0_1_on_the_identity_and_the_default_struct(double input, double expected)
+    {
+        Assert.Equal(expected, PressureCurve.Linear.Apply(input));
+        Assert.Equal(expected, default(PressureCurve).Apply(input));
+    }
+
+    [Fact]
+    public void Apply_at_the_threshold_and_just_below_it()
+    {
+        var c = new PressureCurve(0, 0.2, 0.8);
+        Assert.Equal(0, c.Apply(Math.BitDecrement(0.2)));
+        Assert.Equal(0, c.Apply(0.2));
+        Assert.InRange(c.Apply(Math.BitIncrement(0.2)), double.Epsilon, 1e-12);
+        Assert.Equal(1, c.Apply(0.8), 12);
+        Assert.Equal(1, c.Apply(0.8000001), 12);
+        Assert.Equal(1, c.Apply(1));
+        Assert.Equal(1, c.Apply(5));
+    }
+
+    [Fact]
+    public void Apply_with_a_gamma_clamps_above_full_and_curves_below()
+    {
+        var firm = new PressureCurve(1, 0.2, 0.8); // gamma 2
+        Assert.Equal(1, firm.Apply(0.9), 12); // an unclamped u of 1.17 would give 1.36
+        Assert.Equal(1, firm.Apply(1));
+        Assert.Equal(0.25, firm.Apply(0.5), 12); // u = 0.5, squared
+        var soft = new PressureCurve(-1, 0.2, 0.8); // gamma 0.5
+        Assert.Equal(Math.Sqrt(0.5), soft.Apply(0.5), 12);
+        Assert.Equal(1, soft.Apply(0.95), 12);
+        Assert.Equal(0, soft.Apply(0.2));
+        Assert.Equal(0, soft.Apply(0.1));
+        Assert.Equal(0, firm.Apply(-1));
+    }
+
+    [Fact]
+    public void Wire_pressure_at_the_threshold_presses_with_zero_output_and_one_below_hovers()
+    {
+        const ushort Wire = 30000;
+        var c = new PressureCurve(0, Wire / 65535.0, 1);
+        Assert.True(c.TryApply(Wire, out ushort atThreshold));
+        Assert.Equal(0, atThreshold);
+        Assert.False(c.TryApply(Wire - 1, out ushort below));
+        Assert.Equal(0, below);
+        Assert.True(c.TryApply(Wire + 1, out ushort above));
+        Assert.InRange(above, (ushort)1, (ushort)3);
+        Assert.True(c.TryApply(ushort.MaxValue, out ushort full));
+        Assert.Equal(ushort.MaxValue, full);
+    }
+
+    [Fact]
+    public void The_two_argument_overload_is_a_new_press_not_a_held_stroke()
+    {
+        var c = new PressureCurve(0, 0.3, 0.9);
+        ushort between = W(0.29);
+        Assert.False(c.TryApply(between, out ushort o));
+        Assert.Equal(0, o);
+        Assert.True(c.TryApply(between, inContact: true, out _));
+        Assert.False(c.TryApply(between, inContact: false, out _));
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(-0.4)]
+    [InlineData(0.6)]
+    [InlineData(1)]
+    public void Between_the_release_level_and_the_threshold_a_held_stroke_outputs_zero_for_any_gamma(double tipFeel)
+    {
+        var c = new PressureCurve(tipFeel, 0.3, 0.9);
+        Assert.True(c.TryApply(W(0.29), inContact: true, out ushort o));
+        Assert.Equal(0, o);
+    }
+
+    [Fact]
+    public void Release_level_is_the_threshold_minus_the_hysteresis_when_above_it()
+    {
+        var c = new PressureCurve(0, 0.03, 0.5); // release at 0.01
+        Assert.True(c.TryApply(W(0.012), inContact: true, out _));
+        Assert.False(c.TryApply(W(0.008), inContact: true, out _));
+        Assert.False(c.TryApply(W(0.012), inContact: false, out _));
+        var atHysteresis = new PressureCurve(0, PressureCurve.ReleaseHysteresis, 0.5); // release level 0: never lifts
+        Assert.True(atHysteresis.TryApply(0, inContact: true, out _));
+        Assert.False(atHysteresis.TryApply(0, inContact: false, out _));
+    }
+
+    [Fact]
+    public void Wire_output_is_rounded_and_never_exceeds_full()
+    {
+        var c = new PressureCurve(0, 0.2, 0.8);
+        Assert.True(c.TryApply(ushort.MaxValue, out ushort full));
+        Assert.Equal(ushort.MaxValue, full);
+        Assert.True(c.TryApply(W(0.5), out ushort mid));
+        Assert.InRange(mid, (ushort)32767, (ushort)32768);
+        Assert.True(c.TryApply(W(0.8), out ushort atFull));
+        Assert.Equal(ushort.MaxValue, atFull);
+    }
 }
