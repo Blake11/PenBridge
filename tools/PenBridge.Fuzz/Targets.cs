@@ -29,6 +29,7 @@ internal static class Targets
     public const string Payload = "payload";
     public const string Datagram = "datagram";
     public const string Qr = "qr";
+    public const string Pairing = "pairing";
 
     /// <summary>Session id the datagram seeds and the receiving cipher share.</summary>
     internal const uint SessionId = 0x0A0B0C0D;
@@ -56,6 +57,7 @@ internal static class Targets
         new(Payload, RunPayload, InputPayload.MaxSize + 32, "input payload after decryption (UDP and InputFrame)"),
         new(Datagram, RunDatagram, InputDatagram.MaxSize + 32, "UDP datagram header, split and AEAD open before decryption"),
         new(Qr, RunQr, PairingQrPayload.MaxLength + 64, "pairing QR text, Bonjour TXT values, protocol version text"),
+        new(Pairing, PairingTarget.Run, PairingTarget.MaxLength, "J-PAKE Round1/Round2/confirm blobs from the peer, before pairing completes"),
     ];
 
     public static FuzzTarget? Find(string name)
@@ -75,61 +77,80 @@ internal static class Targets
 
     private static void RunControl(ReadOnlySpan<byte> data)
     {
-        // 1. The buffer codec, as a stream of frames.
+        // 1. The buffer codec, as a stream of frames. Only ControlFrame.TryRead may throw (ProtocolException); the
+        // message parsers and the round trip run outside the catch, so an exception from them is a finding.
         ReadOnlySpan<byte> rest = data;
-        try
+        while (true)
         {
-            while (true)
+            ControlFrameStatus status;
+            ControlMessageType type;
+            ReadOnlySpan<byte> payload;
+            int consumed;
+            try
             {
-                ControlFrameStatus status = ControlFrame.TryRead(rest, out ControlMessageType type, out ReadOnlySpan<byte> payload, out int consumed);
-                if (status == ControlFrameStatus.NeedMoreData)
-                {
-                    Check(consumed == 0, "NeedMoreData consumed bytes");
-                    break;
-                }
-
-                Check(consumed >= ControlFrame.HeaderSize && consumed <= rest.Length, "consumed out of range");
-                Check(payload.Length == consumed - ControlFrame.HeaderSize, "payload length != consumed - header");
-                Check(payload.Length <= ControlFrame.MaxPayloadSize, "payload over the cap");
-                if (status == ControlFrameStatus.Frame)
-                {
-                    Check(ControlMessageTypes.IsKnown((byte)type), "Frame status for an unknown type");
-                    Dispatch(type, payload);
-                }
-                else
-                {
-                    Check(ControlMessageTypes.IsReserved((byte)type), "Ignored status for a non-reserved type");
-                }
-
-                rest = rest[consumed..];
+                status = ControlFrame.TryRead(rest, out type, out payload, out consumed);
             }
-        }
-        catch (ProtocolException e)
-        {
-            CheckCode(e);
+            catch (ProtocolException e)
+            {
+                CheckCode(e);
+                break;
+            }
+
+            if (status == ControlFrameStatus.NeedMoreData)
+            {
+                Check(consumed == 0, "NeedMoreData consumed bytes");
+                break;
+            }
+
+            Check(consumed >= ControlFrame.HeaderSize && consumed <= rest.Length, "consumed out of range");
+            Check(payload.Length == consumed - ControlFrame.HeaderSize, "payload length != consumed - header");
+            Check(payload.Length <= ControlFrame.MaxPayloadSize, "payload over the cap");
+            if (status == ControlFrameStatus.Frame)
+            {
+                Check(ControlMessageTypes.IsKnown((byte)type), "Frame status for an unknown type");
+                Dispatch(type, payload);
+            }
+            else
+            {
+                Check(ControlMessageTypes.IsReserved((byte)type), "Ignored status for a non-reserved type");
+            }
+
+            rest = rest[consumed..];
         }
 
         // 2. The stream reader over the same bytes, parsing every frame the way the client and server do (Read<T>).
+        // ReadAsync and Read<T> both document ProtocolException; each gets its own catch.
         using var reader = new ControlFrameReader(new MemoryStream(data.ToArray(), writable: false));
-        try
+        while (true)
         {
-            while (true)
+            ReceivedControlFrame? next;
+            try
             {
                 ValueTask<ReceivedControlFrame?> pending = reader.ReadAsync();
-                ReceivedControlFrame? next = pending.IsCompleted
+                next = pending.IsCompleted
                     ? pending.Result
                     : throw new ContractViolationException("ReadAsync over a MemoryStream did not complete synchronously");
-                if (next is not { } frame)
-                {
-                    break;
-                }
+            }
+            catch (ProtocolException e)
+            {
+                CheckCode(e);
+                break;
+            }
 
+            if (next is not { } frame)
+            {
+                break;
+            }
+
+            try
+            {
                 ReadTyped(frame);
             }
-        }
-        catch (ProtocolException e)
-        {
-            CheckCode(e);
+            catch (ProtocolException e)
+            {
+                CheckCode(e);
+                break;
+            }
         }
     }
 

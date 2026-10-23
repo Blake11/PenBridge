@@ -70,19 +70,31 @@ public class FuzzRegressionTests
         values.ToInputSettings().Validate();
     }
 
+    /// <summary>Only the frame decoder may throw (ProtocolException); a throwing message parser fails the test.</summary>
     private static void DecodeFrames(ReadOnlySpan<byte> rest)
     {
-        try
+        while (true)
         {
-            while (ControlFrame.TryRead(rest, out ControlMessageType _, out ReadOnlySpan<byte> payload, out int consumed) != ControlFrameStatus.NeedMoreData)
+            ControlFrameStatus status;
+            ReadOnlySpan<byte> payload;
+            int consumed;
+            try
             {
-                Assert.InRange(consumed, ControlFrame.HeaderSize, rest.Length);
-                ParseAll(payload);
-                rest = rest[consumed..];
+                status = ControlFrame.TryRead(rest, out _, out payload, out consumed);
             }
-        }
-        catch (ProtocolException)
-        {
+            catch (ProtocolException)
+            {
+                return;
+            }
+
+            if (status == ControlFrameStatus.NeedMoreData)
+            {
+                return;
+            }
+
+            Assert.InRange(consumed, ControlFrame.HeaderSize, rest.Length);
+            ParseAll(payload);
+            rest = rest[consumed..];
         }
     }
 

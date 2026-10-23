@@ -19,7 +19,7 @@ internal static class Program
           minimize <target> <FILE>                  shrink a finding while it keeps its signature (FILE.min)
           libfuzzer <target>                        child process for libfuzzer-dotnet (Linux)
           afl <target>                              child process for afl-fuzz (AFL++)
-        targets: control, payload, datagram, qr
+        targets: control, payload, datagram, qr, pairing
         """;
 
     public static int Main(string[] args)
@@ -214,7 +214,7 @@ internal static class Commands
     }
 
     private static FuzzTarget Get(string name) =>
-        Targets.Find(name) ?? throw new ArgumentException($"Unknown target '{name}'. Targets: control, payload, datagram, qr.");
+        Targets.Find(name) ?? throw new ArgumentException($"Unknown target '{name}'. Targets: control, payload, datagram, qr, pairing.");
 
     private static string? Option(string[] options, string name)
     {

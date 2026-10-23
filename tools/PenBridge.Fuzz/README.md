@@ -1,7 +1,7 @@
 # PenBridge.Fuzz
 
 Coverage-guided fuzzing of the protocol parsers that read untrusted bytes (#262). It runs locally and on demand.
-CI doesn't run it. `tests/PenBridge.Core.Tests/Protocol/FuzzTests.cs` keeps the fast, blind, fixed-seed checks in
+It is **not built in CI** because it's a one-off tool: fix it up when Core APIs change. `tests/PenBridge.Core.Tests/Protocol/FuzzTests.cs` keeps the fast, blind, fixed-seed checks in
 the normal test run. Inputs that fail here become `type: bug` issues, and their minimized bytes go in
 `tests/PenBridge.Core.Tests/Protocol/FuzzRegressionTests.cs`.
 
@@ -13,7 +13,8 @@ the normal test run. Inputs that fail here become `type: bug` issues, and their 
 - `penbridge-fuzz fuzz` is a small AFL-style engine that runs in the same process (`InProcessFuzzer.cs`). It owns the
   map, keeps each input that reaches a new edge or a new hit-count bucket, and mutates the corpus with havoc
   operators, a per-target dictionary, splicing and length-prefix fixing. Exec rates on an M-series Mac are about
-  100k/s (control) to 350k/s (payload).
+  53k/s for control (90k/s at the start, slower as inputs grow), 170k–320k/s for the other parsers, and about 30/s
+  for pairing (3072-bit J-PAKE math).
 - A finding is any exception that escapes a target, or one execution that takes longer than `--hang-seconds`
   (default 2 s). After a hang the input is saved and the process exits with code 2.
 
@@ -28,9 +29,10 @@ On macOS this in-process engine is the only option. The native fuzzers don't wor
 
 | Target | What it feeds | Contract checked |
 |---|---|---|
-| `control` | control-channel bytes: `ControlFrame.TryRead` in a loop, every `ControlMessageType` parser, then `ControlFrameReader` + `ReceivedControlFrame.Read<T>` over the same bytes. Parsed settings are applied the way each side does it: `MacSettingValues.FromEntries`/`ApplyUpdate`/`TryApply` and `InputSettings.Validate` | only `ProtocolException` (with a defined code) escapes the frame layer; `TryRead` never throws; consumed/payload sizes add up; whatever is accepted re-encodes, and decoding that gives the same bytes; applied settings stay valid |
+| `control` | control-channel bytes: `ControlFrame.TryRead` in a loop, every `ControlMessageType` parser, then `ControlFrameReader` + `ReceivedControlFrame.Read<T>` over the same bytes. Parsed settings are applied the way each side does it: `MacSettingValues.FromEntries`/`ApplyUpdate`/`TryApply` and `InputSettings.Validate` | only `ControlFrame.TryRead`, `ReadAsync` and `Read<T>` may throw `ProtocolException` (with a defined code); the message parsers run outside that catch; `TryRead` never throws; consumed/payload sizes add up; whatever is accepted re-encodes, and decoding that gives the same bytes; applied settings stay valid |
 | `payload` | the plaintext input payload after decryption (`InputPayload.TryRead`, also used by `InputFrame`) | never throws; caps hold; samples valid; the round trip is stable |
 | `datagram` | the UDP datagram before decryption: `InputDatagramHeader.TryRead`, `InputDatagram.TrySplit`, `InputCipher.TryOpen` with a key the sender doesn't have. Then the same bytes as the plaintext a paired phone sealed: seal, split, open, parse | slices are consistent; nothing forged opens; sealed datagrams open to the same plaintext |
+| `pairing` | the peer's J-PAKE blobs before pairing completes: `PairingSession.TryProcessPeerRound1`/`TryProcessPeerRound2`/`TryVerifyPeerConfirm`, on the server (Mac) and client (phone) side. Selector byte, then the blob; the earlier steps replay a recorded real exchange that uses fixed-seed randomness | never throws; false leaves the session Failed; only the recorded blob is ever accepted (no forged proof or MAC) |
 | `qr` | untrusted text: `PairingQrPayload.TryParse` (the scanned QR), `BonjourTxtRecord.TryParse` (the input split on `\n` into version, fingerprint and name), `ProtocolVersion.TryParse` | never throws; `Format()`/`ToEntries()` output parses back to the same values; `ToString()` doesn't print the token |
 
 Seeds are valid messages written by the protocol writers (`Seeds.cs`): every message type, settings snapshot,
@@ -54,8 +56,9 @@ Each target runs on one thread. Run the targets as separate processes to use mor
 `--corpus` directory continues from that corpus. `--seed` makes the mutations repeatable, but a run isn't fully
 deterministic because the stop time is set in minutes.
 
-`fuzz.sh` always rebuilds, and the build copies a fresh `PenBridge.Core.dll` over the instrumented one whenever
-Core changed, so the instrumentation never goes stale. Don't run the instrumented `bin/Release` output for
+`fuzz.sh` always rebuilds. Every build re-copies `PenBridge.Core.dll` over the instrumented copy (their sizes
+differ), and the script then instruments it again, so the instrumentation never goes stale. Don't rebuild while a
+campaign is running: the build overwrites the DLLs that are loaded. Don't run the instrumented `bin/Release` output for
 anything else: instrumented code without a trace map crashes.
 
 ### Linux, optional (libFuzzer)
@@ -83,6 +86,8 @@ Each target ran for 13 minutes on an M-series Mac mini, with `--seed 262` and th
 | 2026-10-22 | payload | 251 M | 322k | 4 → 43 | 152 → 175 | 0 |
 | 2026-10-22 | datagram | 131 M | 168k | 8 → 50 | 207 → 232 | 0 |
 | 2026-10-22 | qr | 194 M | 249k | 5 → 98 | 218 → 287 | 0 |
+| 2026-10-23 | control (narrowed catch, 5 min, seed 263) | 18.0 M | 60k | 29 → 1172 | 1413 → 1695 | 0 |
+| 2026-10-23 | pairing (4 processes × 10 min, seeds 1–4) | 70.1 k | 29–30 each | 9 → 16–17 | 290 → 303 | 0 |
 
 Edges stopped growing within about 2 minutes on every target: the parsers are small, and the seeds already cover
 the valid paths. The only report was a writer/reader asymmetry. A SettingsUpdate whose entries all fail to decode

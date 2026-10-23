@@ -18,6 +18,7 @@ internal static class Seeds
         Targets.Payload => [.. PayloadSamples().Select(Encode)],
         Targets.Datagram => DatagramSeeds(),
         Targets.Qr => QrSeeds(),
+        Targets.Pairing => PairingTarget.Seeds(),
         _ => throw new ArgumentException($"Unknown target '{target}'.", nameof(target)),
     };
 
