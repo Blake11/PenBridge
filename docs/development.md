@@ -236,7 +236,7 @@ Output goes to `BenchmarkDotNet.Artifacts/` (gitignored). Rows under about 1 ns 
 
 ## Mutation testing
 
-An occasional [Stryker.NET](https://stryker-mutator.io/docs/stryker-net/introduction/) run shows where the Core tests execute code without checking its result. It runs by hand only (not in `scripts/test.sh` or CI). `tests/stryker-config.json` mutates PenBridge.Core without `Net/` (slow, timing-sensitive tests) and uses the MTP runner: with the VSTest runner the per-test coverage capture fails on our xUnit v3 setup, so every mutant runs the whole suite. Install the tool into a scratch directory and keep the output out of the tree:
+An occasional [Stryker.NET](https://stryker-mutator.io/docs/stryker-net/introduction/) run shows where the Core tests execute code without checking its result. It runs by hand only (not in `scripts/test.sh` or CI). `tests/stryker-config.json` mutates PenBridge.Core without `Net/` (slow, timing-sensitive tests) and uses the MTP runner: with the VSTest runner the per-test coverage capture fails on our xUnit v3 setup, so every mutant runs the whole suite. The config builds `tests/stryker.slnx` (Core and its tests only), so the Mac and Android heads are never built and no sandbox exception is needed. Install the tool into a scratch directory and keep the output out of the tree:
 
 ```bash
 T=$(mktemp -d)
@@ -244,5 +244,7 @@ dotnet tool install dotnet-stryker --tool-path "$T/tool"
 "$T/tool/dotnet-stryker" -f tests/stryker-config.json -O "$T/out"           # from the repo root; report: $T/out/reports/mutation-report.html
 "$T/tool/dotnet-stryker" -f tests/stryker-config.json -O "$T/out" -m "**/Protocol/**/*.cs"   # one folder
 ```
+
+Run it at low host load: per-test coverage capture times out under load and reports false survivors. Each `-m` takes one glob, so pass `-m` once per pattern (`-m "**/A.cs" -m "**/B.cs"`).
 
 A full run takes about an hour on an Apple Silicon Mac (5 minutes of it is the per-test coverage capture); the config sets the concurrency to 5 (Stryker's own default is half the cores); `-c` overrides it. Timeouts count as killed: most are loop mutations that never end. The first run (issue #257) scored 86% overall.

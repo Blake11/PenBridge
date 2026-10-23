@@ -1,5 +1,6 @@
 {
   "stryker-config": {
+    "solution": "tests/stryker.slnx",
     "project": "PenBridge.Core.csproj",
     "test-projects": ["tests/PenBridge.Core.Tests/PenBridge.Core.Tests.csproj"],
     "test-runner": "mtp",

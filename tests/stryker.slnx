@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="../src/PenBridge.Core/PenBridge.Core.csproj" />
+  <Project Path="PenBridge.Core.Tests/PenBridge.Core.Tests.csproj" />
+</Solution>
