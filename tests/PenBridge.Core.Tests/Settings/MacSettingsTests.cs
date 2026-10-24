@@ -37,6 +37,9 @@ public class MacSettingsTests
             (MacSettingKey.Rotate, 24, SettingType.Bool, "true"),
             (MacSettingKey.ThreeFingerDrag, 25, SettingType.Bool, "true"),
             (MacSettingKey.FourFingerGestures, 26, SettingType.Bool, "true"),
+            (MacSettingKey.MirrorEnabled, 30, SettingType.Bool, "false"),
+            (MacSettingKey.MirrorQuality, 31, SettingType.Int, "1"),
+            (MacSettingKey.MirrorFps, 32, SettingType.Int, "0"),
         ];
         Assert.Equal(expected.Length, MacSettings.All.Count);
         for (int i = 0; i < expected.Length; i++)
@@ -54,6 +57,12 @@ public class MacSettingsTests
         Assert.Equal(["Pen", "Mouse"], MacSettings.Get(MacSettingKey.StylusMode).Values);
         Assert.Equal(["RightClick", "MiddleClick", "Eraser", "DoubleClick", "None"], MacSettings.Get(MacSettingKey.SideButton).Values);
         Assert.Equal(["FollowSystem", "On", "Off"], MacSettings.Get(MacSettingKey.SmartZoom).Values);
+        Assert.Equal(["Low", "Balanced", "High"], MacSettings.Get(MacSettingKey.MirrorQuality).Values);
+        Assert.Equal([0, 1, 2], MacSettings.Get(MacSettingKey.MirrorQuality).IntValues);
+        Assert.Empty(MacSettings.Get(MacSettingKey.MirrorFps).Values);
+        Assert.Equal([0, 30, 60, 120], MacSettings.Get(MacSettingKey.MirrorFps).IntValues);
+        Assert.Equal([0, 1], MacSettings.Get(MacSettingKey.StylusMode).IntValues);
+        Assert.Empty(MacSettings.Get(MacSettingKey.Zoom).IntValues);
     }
 
     [Theory]
@@ -79,6 +88,7 @@ public class MacSettingsTests
     [InlineData(MacSettingKey.StylusMode, 2)]
     [InlineData(MacSettingKey.SideButton, 5)]
     [InlineData(MacSettingKey.SmartZoom, 3)]
+    [InlineData(MacSettingKey.MirrorQuality, 3)]
     public void Int_enums(MacSettingKey key, int count)
     {
         for (int v = 0; v < count; v++)
@@ -99,6 +109,7 @@ public class MacSettingsTests
     [InlineData(MacSettingKey.Rotate)]
     [InlineData(MacSettingKey.ThreeFingerDrag)]
     [InlineData(MacSettingKey.FourFingerGestures)]
+    [InlineData(MacSettingKey.MirrorEnabled)]
     public void Bools(MacSettingKey key)
     {
         Assert.True(Valid(SettingEntry.Bool(key, false)));
