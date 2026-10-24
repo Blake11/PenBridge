@@ -5,7 +5,8 @@
 #   --mac              the Mac: screen unlocked (CGSSessionScreenIsLocked), display awake, PenBridge running and its
 #                      server listening (unified log, subsystem com.blake11.penbridge, since the app started),
 #                      Accessibility granted (system TCC database when readable, else the app's own log line;
-#                      a warning when neither tells — never prompts)
+#                      a warning when neither tells — never prompts), and Screen Recording (screen mirroring, opt-in:
+#                      granted / denied / unknown from the TCC database when readable; always only a warning)
 #   --android <serial> that adb device is online (scripts/android-device.sh list)
 #   --android-auto     exactly one phone (not an emulator) is online; prints its serial
 #   --gh               gh is logged in to github.com with the repo and workflow scopes
@@ -60,6 +61,21 @@ if [[ $DO_MAC -eq 1 ]]; then
     granted) ok "Accessibility granted" ;;
     denied)  bad "Accessibility not granted to $APP_ID" "System Settings → Privacy & Security → Accessibility → enable PenBridge (or scripts/mac-run.sh --reset-tcc and accept the prompt)" ;;
     *)       warn "Accessibility: can't tell without prompting (TCC database not readable, no app log line yet)" ;;
+  esac
+
+  # Screen Recording is needed only for screen mirroring (opt-in): never a failure.
+  sc=unknown
+  for db in "/Library/Application Support/com.apple.TCC/TCC.db" "$HOME/Library/Application Support/com.apple.TCC/TCC.db"; do
+    [[ -r "$db" ]] || continue
+    if v="$(/usr/bin/sqlite3 -readonly "$db" \
+        "SELECT auth_value FROM access WHERE service='kTCCServiceScreenCapture' AND client='$APP_ID' LIMIT 1;" 2>/dev/null)"; then
+      if [[ "$v" == 2 ]]; then sc=granted; break; elif [[ -n "$v" ]]; then sc=denied; fi
+    fi
+  done
+  case "$sc" in
+    granted) ok "Screen Recording granted (screen mirroring)" ;;
+    denied)  warn "Screen Recording not granted to $APP_ID (only screen mirroring needs it): System Settings → Privacy & Security → Screen & System Audio Recording → enable PenBridge" ;;
+    *)       warn "Screen Recording: can't tell (TCC database not readable or no entry yet; only screen mirroring needs it)" ;;
   esac
 fi
 

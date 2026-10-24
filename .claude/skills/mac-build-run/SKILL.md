@@ -1,6 +1,6 @@
 ---
 name: mac-build-run
-description: Build, sign, run, and debug the PenBridge macOS menu-bar server (net10.0-macos) — "PenBridge Dev" signing cert, Accessibility/TCC permission handling, logs, LSUIElement behaviour, and verifying CGEvent tablet input (pressure/tilt) in Krita. Use when building or running the Mac app, when injected input does nothing, when the Accessibility grant is lost, or when testing the CGEvent injector.
+description: Build, sign, run, and debug the PenBridge macOS menu-bar server (net10.0-macos) — "PenBridge Dev" signing cert, Accessibility/TCC permission handling, logs, LSUIElement behaviour, and verifying CGEvent tablet input (pressure/tilt) in Krita. Use when building or running the Mac app, when injected input does nothing, when the Accessibility or Screen Recording grant is lost, or when testing the CGEvent injector.
 ---
 
 # Mac: build, run, verify
@@ -22,7 +22,7 @@ scripts/mac-dev-cert.sh --delete   # then mac-run.sh --reset-tcc once
 scripts/mac-run.sh                 # Debug build → sign → open (kills a running instance first)
 scripts/mac-run.sh --release       # dotnet publish -c Release → universal NativeAOT app (#42)
 scripts/mac-run.sh --no-build      # relaunch last build
-scripts/mac-run.sh --reset-tcc     # tccutil reset Accessibility com.blake11.penbridge, then run
+scripts/mac-run.sh --reset-tcc     # tccutil reset Accessibility + ScreenCapture for com.blake11.penbridge, then run
 scripts/mac-run.sh --reset-keychain   # delete all com.blake11.penbridge Keychain items (Release; asks "yes"; pairings lost)
 scripts/mac-run.sh --reset-dev-secrets   # delete ~/Library/Application Support/PenBridge-Dev/secrets (Debug store; asks)
 scripts/mac-run.sh --logs          # + log stream --style compact --level debug --predicate 'process == "PenBridge"'
@@ -65,6 +65,15 @@ scripts/device-test-setup.sh       # device-test round: preflight, Release app, 
 - `AXIsProcessTrusted()` false → posted CGEvents are dropped silently. The app prompts and links to System Settings ▸ Privacy & Security ▸ Accessibility.
 - Granted but nothing happens: signature changed → `--reset-tcc`, trigger injection, grant again. If it ever ran unsigned, remove the old entry with `–` first.
 - The grant is per signed identity; running a build from another worktree path may need a re-grant — prefer running from the main tree.
+
+## Screen Recording (TCC)
+Needed only for screen mirroring (ADR-0038, opt-in); service `kTCCServiceScreenCapture`, System Settings ▸ Privacy & Security ▸ Screen & System Audio Recording.
+- Flow: `CGPreflightScreenCaptureAccess()` checks silently; `CGRequestScreenCaptureAccess()` prompts once (and registers the app in the list). Call the request only when the user turns mirroring on.
+- Denied: ScreenCaptureKit throws or returns no shareable content/frames — treat that as "permission missing", not a capture bug, and tell the user where to enable it.
+- A newly granted permission may need an app restart before capture works (macOS offers "Quit & Reopen").
+- Dev-cert signing keeps the grant across rebuilds (same designated requirement as Accessibility); ad-hoc builds lose it.
+- Reset: `scripts/mac-run.sh --reset-tcc` (also resets Accessibility) or `tccutil reset ScreenCapture com.blake11.penbridge`.
+- `scripts/device-preflight.sh --mac` reports granted / denied / unknown as a warning only (TCC db when readable).
 
 ## Verifying tablet input
 - No phone: `tools/PenBridge.SimClient` streams scripted strokes to the server.
