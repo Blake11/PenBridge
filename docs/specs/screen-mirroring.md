@@ -51,7 +51,7 @@ Same validation and snapshot rules as the 1.2 keys (`MacSettings`, `SettingsWrit
 - **Header (24 B, also the AEAD associated data):** `u8 version(1)` ‖ `u8 kind` ‖ `u8 epoch` ‖ `u8 flags` ‖ `u32 sessionId` ‖ `u64 sequence` ‖ `u32 frameNumber` ‖ `u16 fragmentIndex` ‖ `u16 fragmentCount`.
 - **Body:** AES-256-GCM ciphertext + 16 B tag.
 - **Max datagram size:** 1200 B (so the payload is ≤ 1160 B).
-- **kind 1 — VideoFragment (Mac → phone, `K_vs`):** `flags` bit 0 Keyframe (on every fragment of a keyframe). The first fragment's payload starts with `u32 captureTimeUs` (Mac session clock, the server's Ping clock) ‖ `u32 frameLength`, then the bytes; later fragments are bytes only. A frame is one Annex-B access unit; keyframes start with VPS/SPS/PPS (HEVC) or SPS/PPS (H.264). `fragmentCount` 1..1024, `fragmentIndex < fragmentCount`, `frameLength` ≤ 1 MiB and must equal the reassembled size; `frameNumber` strictly increases within an epoch.
+- **kind 1 — VideoFragment (Mac → phone, `K_vs`):** `flags` bit 0 Keyframe (on every fragment of a keyframe). The first fragment's payload starts with `u32 captureTimeUs` (Mac session clock, the server's Ping clock) ‖ `u32 frameLength`, then the bytes; later fragments are bytes only. A frame is one Annex-B access unit; keyframes start with VPS/SPS/PPS (HEVC) or SPS/PPS (H.264). `fragmentCount` 1..1024, `fragmentIndex < fragmentCount`, `frameLength` ≤ 1 MiB and must equal the reassembled size; `frameNumber` increases by 1 per access unit within an epoch, also over one the Mac dropped unsent, so the phone sees every lost frame as a gap.
 - **kind 2 — Probe (phone → Mac, `K_vc`):** `frameNumber`, `fragmentIndex`, `fragmentCount` = 0; payload empty. Sent from the phone's video socket to the Mac's `videoUdpPort` right after each MirrorConfig and every 1 s while streaming.
 - Unknown `version` or `kind`, an inconsistent header, an epoch other than the current one, or a failed tag → drop the datagram silently (counted).
 
@@ -67,9 +67,9 @@ Same validation and snapshot rules as the 1.2 keys (`MacSettings`, `SettingsWrit
 - **Threads:** the Mac input receive → inject path runs at the highest priority (user-interactive QoS). Capture callbacks, encode and the video send loop run below it (user-initiated or lower). On Android, `PadSendQueue` stays above the video receive and decode threads.
 - **Pacing (Mac):** a frame's fragments go out spread over at most half the frame interval, through a token bucket at 1.5 × the target bitrate. A keyframe may take up to one full interval.
 - **Input guard (Core `MirrorRateController`):**
-  - Inputs: the server's Ping RTT samples; gaps between input datagrams while the pen or a touch is in contact (the phone's 50 ms keepalive rule makes > 30 ms a gap); video loss from MirrorReport.
+  - Inputs: the server's Ping RTT samples; gaps between input datagrams while the pen or a touch is in contact, measured against the phone's own spacing (arrival interval minus the `timeUs` interval), so a still pen's 40 ms contact keepalives are no gap; video loss from MirrorReport.
   - Baseline: the minimum RTT over the last 10 s.
-  - Degraded: RTT > baseline + 8 ms over 2 consecutive samples, an input gap > 30 ms during contact, or fragment loss > 2 % over a report.
+  - Degraded: RTT > baseline + 8 ms over 2 consecutive samples, an input datagram during contact arriving > 30 ms later than its `timeUs` spacing says, or fragment loss > 2 % over a report.
   - Ladder, one step per 500 ms while degraded: bitrate × 0.7 down to the preset floor, then fps halves (e.g. 120 → 60 → 30, never below 30), then pause video (`Throttled`).
   - Recovery: after 2 s healthy, one step back up every 1 s (fps first back up to the planned rate, then bitrate × 1.15 up to the preset).
   - Pure logic with an injected `TimeProvider`; each step yields a new MirrorConfig.
