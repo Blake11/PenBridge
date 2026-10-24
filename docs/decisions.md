@@ -9,7 +9,7 @@ Cite ADRs by number (and section) rather than reading this whole file.
 | ADR | Title | Status |
 |---|---|---|
 | 0001 | .NET 10 LTS, native platform heads + shared Core | accepted |
-| 0002 | Phone shows a blank pad; mirroring later | accepted |
+| 0002 | Phone shows a blank pad; mirroring later | accepted; mirroring by 0038 |
 | 0003 | Mac input via CGEvent tablet events behind IInputInjector | accepted |
 | 0004 | Bonjour discovery, PIN/QR pairing, TLS control + encrypted UDP input | accepted; TLS version refined by 0013 |
 | 0005 | Absolute mapping to one configurable display | accepted; refined by 0031 |
@@ -45,6 +45,7 @@ Cite ADRs by number (and section) rather than reading this whole file.
 | 0035 | Menu-bar region picker and a tint outside the active region | accepted |
 | 0036 | A window as the target: click to pick, follows moves and resizes | accepted |
 | 0037 | Host settings-write rules live in Core; an empty target display from the phone keeps a remembered, disconnected display | accepted |
+| 0038 | Screen mirroring: the mapped target streamed to the phone over encrypted UDP, input always first | accepted |
 
 ## ADR-0001 — .NET 10 LTS, native platform heads + shared Core
 **Status:** accepted (2026-10-13)
@@ -426,3 +427,24 @@ Cite ADRs by number (and section) rather than reading this whole file.
 - **Why:** an echo of what the phone could see shouldn't silently discard a choice the user made on the Mac.
 - **Consequences:** no protocol change; old phones behave the same. A phone can't clear the remembered display while it's unplugged; picking another display or All displays does.
 
+
+## ADR-0038 — Screen mirroring: the mapped target streamed to the phone over encrypted UDP, input always first
+**Status:** accepted (2026-10-25). Follows ADR-0002 (#16).
+- **Context:** the phone shows a blank pad (ADR-0002), so the user draws while looking at the Mac. Mirroring has to share the Wi-Fi link with the pen without hurting it. The Windows host (#28) doesn't exist yet.
+- **Decision:**
+  - **Scope:** Mac → Android in this milestone. Core and the protocol are host-agnostic, and Windows capture moves to the Windows host epic.
+  - **Content:** exactly what the pen maps to: the target display, region or window (ADR-0031, ADR-0036), sized to the phone's active area, so the image lines up 1:1 with the pen. With All displays, one capture per display is composited into the combined bounds (gaps black). The Mac cursor is included. PenBridge's own windows (tint, region editor, picker) are excluded. While mirroring, the phone hides the corner ticks and centre cross and keeps the dimmed margins.
+  - **Codec:** negotiated. The phone lists the hardware decoders it has, and the Mac picks the best one that it can also encode in hardware: HEVC, else H.264. Real-time settings: no B-frames, keyframes only on request (plus parameter sets in-band with every keyframe).
+  - **Transport (protocol 1.3, capability `ScreenMirror`):** control messages on TLS (start/stop, stream config, state, keyframe request, receiver reports). Video goes over its own UDP socket pair, separate from input: AES-256-GCM per datagram under per-direction keys derived like `K_in`, fragments ≤ 1200 B, no retransmission. A frame with a lost fragment is dropped, the phone stops decoding until the next keyframe, and it asks for one. The Mac sends video only to a phone endpoint that has proven itself with an authenticated probe. There is no video in TLS-fallback mode and never any plaintext.
+  - **QoS: input always wins.**
+    1. Wi-Fi priority: input datagrams are DSCP EF (WMM voice), video and probes DSCP AF41 (WMM video), set per socket (Android `TrafficClass`; Mac `IP_TOS` plus `SO_NET_SERVICE_TYPE`).
+    2. Thread priority: the Mac input receive/inject path stays above capture, encode and send; the Android input sender above video receive and decode.
+    3. Pacing: video fragments are paced across the frame interval, never sent in a burst.
+    4. Input guard (Core): Ping RTT, input-datagram gaps while the pen is in contact, and video loss from the phone's reports are compared with a baseline. On degradation the Mac cuts bitrate, then fps, then pauses video, and ramps back up slowly once healthy.
+  - **Settings:** Mac settings synced like ADR-0030: Mirror screen (off by default), Quality (Low / Balanced / High → bitrate) and Frame rate (30 / 60, default 60, capped by the phone). Resolution is the active area's pixel size, never above the source. The Mac has a Settings tab and a menu item; the phone has a quick toggle that writes the same setting. Turning it on the first time triggers the macOS Screen Recording prompt.
+  - **When it stops:** setting off, PenBridge paused (the phone shows a paused overlay), phone app backgrounded or screen off (the phone sends stop), TLS fallback, Screen Recording denied (the phone shows the reason). Idle Mac ≈ 0% CPU: no capture while stopped, and ScreenCaptureKit delivers no frames for a static screen.
+- **Why UDP over TLS/TCP:** TCP head-of-line blocking gives lag spikes on Wi-Fi and would stall control messages. Losing a frame and asking for a keyframe is cheaper than waiting for a retransmission.
+- **Why a separate video socket:** DSCP is set per socket, and the input socket's receive loop stays untouched.
+- **Why not throttle video during strokes:** the canvas would update slowly exactly while drawing. The input guard reacts only when input is measurably hurt.
+- **Acceptance:** with mirroring on, pen latency p95 (`scripts/latency-report.sh`) is within +2 ms of mirroring off, with no missed strokes. Video latency (capture → rendered) is ≲ 100 ms at Balanced/60 fps on home Wi-Fi. The image is within 1 phone pixel of the pen at the active-area edges.
+- **Consequences / deferred:** Windows capture (#28), iOS decode, FEC and intra-refresh, audio and phone → Mac video are out of scope. The wire contract is in `docs/specs/screen-mirroring.md`.
