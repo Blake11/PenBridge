@@ -33,7 +33,7 @@ public class SettingsMessageTests
         Assert.Equal(0x42, (int)ControlMessageType.DisplayList);
         Assert.Equal(0x43, (int)ControlMessageType.ActiveArea);
         Assert.Equal([1, 2, 3, 4, 5], Enum.GetValues<SettingType>().Select(t => (int)t));
-        Assert.Equal(new ProtocolVersion(1, 2), ProtocolVersion.Current);
+        Assert.Equal(new ProtocolVersion(1, 3), ProtocolVersion.Current);
         for (byte t = 0x40; t <= 0x43; t++)
         {
             Assert.True(ControlMessageTypes.IsKnown(t));

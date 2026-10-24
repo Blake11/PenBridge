@@ -78,7 +78,7 @@ public class ControlFrameTests
         }
 
         Assert.Equal(Enum.GetValues<ControlMessageType>().Length, known);
-        Assert.Equal(23, known);
+        Assert.Equal(29, known);
     }
 
     [Fact]

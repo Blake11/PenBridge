@@ -72,6 +72,14 @@ public enum ProtocolCapabilities : uint
     /// after each SurfaceInfo and target change; the phone marks it. Used only when both sides advertise it.
     /// </summary>
     ActiveArea = 8,
+
+    /// <summary>
+    /// Since 1.3 (ADR-0038, <c>docs/specs/screen-mirroring.md</c>). The Mac streams the mapped target to the phone as
+    /// encrypted video on its own UDP socket (MirrorStart … MirrorReport, <c>0x50–0x55</c>). Used only when both sides
+    /// advertise it; without it none of these messages is sent, and receiving one is a protocol error. The Core client
+    /// always advertises it; the server only when its head can capture and encode.
+    /// </summary>
+    ScreenMirror = 16,
 }
 
 /// <summary><c>u32</c> flags describing the phone surface in SurfaceInfo. Unknown bits are preserved and ignored.</summary>
