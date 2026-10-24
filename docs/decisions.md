@@ -430,6 +430,7 @@ Cite ADRs by number (and section) rather than reading this whole file.
 
 ## ADR-0038 — Screen mirroring: the mapped target streamed to the phone over encrypted UDP, input always first
 **Status:** accepted (2026-10-25). Follows ADR-0002 (#16).
+**Amended 2026-10-25 (#16):** frame rate follows the refresh rates (Auto) instead of a 60 fps cap; the setting is an optional limit.
 - **Context:** the phone shows a blank pad (ADR-0002), so the user draws while looking at the Mac. Mirroring has to share the Wi-Fi link with the pen without hurting it. The Windows host (#28) doesn't exist yet.
 - **Decision:**
   - **Scope:** Mac → Android in this milestone. Core and the protocol are host-agnostic, and Windows capture moves to the Windows host epic.
@@ -441,10 +442,10 @@ Cite ADRs by number (and section) rather than reading this whole file.
     2. Thread priority: the Mac input receive/inject path stays above capture, encode and send; the Android input sender above video receive and decode.
     3. Pacing: video fragments are paced across the frame interval, never sent in a burst.
     4. Input guard (Core): Ping RTT, input-datagram gaps while the pen is in contact, and video loss from the phone's reports are compared with a baseline. On degradation the Mac cuts bitrate, then fps, then pauses video, and ramps back up slowly once healthy.
-  - **Settings:** Mac settings synced like ADR-0030: Mirror screen (off by default), Quality (Low / Balanced / High → bitrate) and Frame rate (30 / 60, default 60, capped by the phone). Resolution is the active area's pixel size, never above the source. The Mac has a Settings tab and a menu item; the phone has a quick toggle that writes the same setting. Turning it on the first time triggers the macOS Screen Recording prompt.
+  - **Settings:** Mac settings synced like ADR-0030: Mirror screen (off by default), Quality (Low / Balanced / High → bitrate) and Frame rate (Auto by default: the lower of the target display's and the phone display's refresh rates, e.g. 120 on a 120 Hz Mac display with the S23; or a 30 / 60 / 120 limit). Resolution is the active area's pixel size, never above the source. The Mac has a Settings tab and a menu item; the phone has a quick toggle that writes the same setting. Turning it on the first time triggers the macOS Screen Recording prompt.
   - **When it stops:** setting off, PenBridge paused (the phone shows a paused overlay), phone app backgrounded or screen off (the phone sends stop), TLS fallback, Screen Recording denied (the phone shows the reason). Idle Mac ≈ 0% CPU: no capture while stopped, and ScreenCaptureKit delivers no frames for a static screen.
 - **Why UDP over TLS/TCP:** TCP head-of-line blocking gives lag spikes on Wi-Fi and would stall control messages. Losing a frame and asking for a keyframe is cheaper than waiting for a retransmission.
 - **Why a separate video socket:** DSCP is set per socket, and the input socket's receive loop stays untouched.
 - **Why not throttle video during strokes:** the canvas would update slowly exactly while drawing. The input guard reacts only when input is measurably hurt.
-- **Acceptance:** with mirroring on, pen latency p95 (`scripts/latency-report.sh`) is within +2 ms of mirroring off, with no missed strokes. Video latency (capture → rendered) is ≲ 100 ms at Balanced/60 fps on home Wi-Fi. The image is within 1 phone pixel of the pen at the active-area edges.
+- **Acceptance:** with mirroring on, pen latency p95 (`scripts/latency-report.sh`) is within +2 ms of mirroring off, with no missed strokes. Video latency (capture → rendered) is ≲ 100 ms at Balanced and Auto fps on home Wi-Fi. The image is within 1 phone pixel of the pen at the active-area edges.
 - **Consequences / deferred:** Windows capture (#28), iOS decode, FEC and intra-refresh, audio and phone → Mac video are out of scope. The wire contract is in `docs/specs/screen-mirroring.md`.
