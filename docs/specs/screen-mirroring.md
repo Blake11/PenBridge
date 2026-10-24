@@ -94,7 +94,7 @@ New folder `src/PenBridge.Core/Mirror/` (namespace `PenBridge.Core.Mirror`), plu
   - `PenBridgeServer.KeyframeRequested` event.
   - `PenBridgeServer.SetMirrorState(MirrorState, MirrorReason)`.
   - `PenBridgeServer.SendVideoFrame(ReadOnlySpan<byte> accessUnit, bool keyframe, long captureTimeUs)`: thread-safe and non-blocking. It fragments, encrypts and paces on a Core-owned send thread below input priority, and drops the frame when the previous one hasn't finished sending.
-  - Core runs the input guard and the planner and raises MirrorConfigChanged itself; the head only reports capability: `SetMirrorEncoders(codecs)` and the source pixel size of the current target.
+  - Core runs the input guard and the planner and raises MirrorConfigChanged itself; the head only reports capability: `SetMirrorEncoders(codecs)` and `SetMirrorSource(pixelSize, refreshHz)` for the current target.
 - **Client (phone):**
   - `PenBridgeClient.StartMirror(MirrorRequest)` / `StopMirror()`.
   - Events: `MirrorConfigReceived(MirrorStreamConfig)`, `MirrorStateChanged(MirrorState, MirrorReason)`, `VideoFrameReady(VideoFrame)`. A `VideoFrame` is pooled; the head must `Dispose` it after queueing it to the decoder. The client sends Probes, KeyframeRequests and MirrorReports itself; the head reports renders via `ReportFrameRendered(frameNumber, renderedAtUs)`.
