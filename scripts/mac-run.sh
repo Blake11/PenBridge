@@ -4,7 +4,8 @@
 # Usage: scripts/mac-run.sh [--release] [--no-build] [--reset-tcc] [--reset-keychain] [--reset-dev-secrets] [--logs] [-- <dotnet build/publish args>]
 #   --release         publish Release (NativeAOT, universal) instead of building Debug (JIT)
 #   --no-build        launch the last build
-#   --reset-tcc       tccutil reset Accessibility com.blake11.penbridge (re-prompts for permission)
+#   --reset-tcc       tccutil reset Accessibility and ScreenCapture (screen mirroring) for com.blake11.penbridge
+#                     (re-prompts for permission)
 #   --reset-keychain  delete every Keychain item of service com.blake11.penbridge (server identity
 #                     and paired devices of Release builds: phones must pair again); asks for confirmation
 #   --reset-dev-secrets  delete the Debug build's file secret store
@@ -12,7 +13,7 @@
 #   --logs            after launching, stream unified logs: log stream --predicate 'process == "PenBridge"'
 #
 # The build itself signs (src/PenBridge.Mac/PenBridge.Mac.csproj): with the "PenBridge Dev" identity
-# if present (scripts/mac-dev-cert.sh), so the Accessibility grant survives rebuilds; otherwise ad-hoc
+# if present (scripts/mac-dev-cert.sh), so the Accessibility and Screen Recording grants survive rebuilds; otherwise ad-hoc
 # (grant lost on every rebuild). Debug builds store secrets in files, Release builds in the Keychain
 # (expect one Keychain prompt per new Release build, ADR-0017). --release runs `dotnet publish`: the
 # NativeAOT app (issue #42); `-- <args>` go to dotnet build or publish.
@@ -42,8 +43,9 @@ PROJ_DIR="$(dirname "$MAC_PROJECT")"
 [[ -d "$PROJ_DIR" ]] || die "project not found: $PROJ_DIR"
 
 if [[ $RESET_TCC -eq 1 ]]; then
-  step "Resetting Accessibility permission for $APP_ID"
-  tccutil reset Accessibility "$APP_ID" && ok "reset — macOS will ask again on next injection"
+  step "Resetting Accessibility and Screen Recording permissions for $APP_ID"
+  tccutil reset Accessibility "$APP_ID" && ok "Accessibility reset — macOS will ask again on next injection"
+  tccutil reset ScreenCapture "$APP_ID" && ok "Screen Recording reset — macOS will ask again when mirroring starts"
 fi
 
 if pgrep -x PenBridge >/dev/null; then
