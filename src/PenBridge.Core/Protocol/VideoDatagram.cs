@@ -161,8 +161,8 @@ public static class VideoDatagram
     public const uint FirstFrameNumber = 1;
 
     /// <summary>
-    /// After a new MirrorConfig the Mac holds the epoch's video until an authenticated Probe carrying that epoch
-    /// arrives, at most this long; then it sends anyway.
+    /// After a new MirrorConfig the Mac holds the epoch's video, starting from its first keyframe (frame 1, never
+    /// dropped), until an authenticated Probe carrying that epoch arrives, at most this long; then it sends anyway.
     /// </summary>
     public static readonly TimeSpan EpochProbeWait = TimeSpan.FromMilliseconds(250);
 
