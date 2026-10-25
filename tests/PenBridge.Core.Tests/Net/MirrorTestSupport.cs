@@ -85,7 +85,8 @@ internal sealed class MirrorRig : IAsyncDisposable
     public static async Task<MirrorRig> CreateAsync(
         Func<PenBridgeServerOptions, PenBridgeServerOptions>? server = null,
         Func<PenBridgeClientOptions, PenBridgeClientOptions>? phone = null,
-        bool ready = true)
+        bool ready = true,
+        bool logFrames = true)
     {
         var rig = new MirrorRig(new NetHarness(server ?? (o => ServerOptions(o))));
         PenBridgeServer s = rig.Server;
@@ -98,7 +99,7 @@ internal sealed class MirrorRig : IAsyncDisposable
             rig.MakeHeadReady();
         }
 
-        rig.Client = await rig.H.ConnectPairedAsync(configure: phone, subscribe: rig.Subscribe);
+        rig.Client = await rig.H.ConnectPairedAsync(configure: phone, subscribe: c => rig.Subscribe(c, logFrames));
         return rig;
     }
 
@@ -109,10 +110,15 @@ internal sealed class MirrorRig : IAsyncDisposable
         Server.SetMirrorState(MirrorState.Streaming);
     }
 
-    public void Subscribe(PenBridgeClient client)
+    public void Subscribe(PenBridgeClient client, bool logFrames = true)
     {
         client.MirrorConfigReceived += (_, c) => ClientConfigs.Add(c);
         client.MirrorStateChanged += (_, e) => ClientStates.Add((e.State, e.Reason));
+        if (!logFrames)
+        {
+            return; // Core disposes frames nobody takes
+        }
+
         client.VideoFrameReady += (_, f) =>
         {
             Frames.Add(new ReceivedFrame(f.Epoch, f.FrameNumber, f.IsKeyframe, f.CaptureTimeUs, f.Span.ToArray()));

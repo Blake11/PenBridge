@@ -239,6 +239,32 @@ internal sealed class ServerMirror : IDisposable
         }
     }
 
+    /// <summary>
+    /// UDP input works again after a fallback (input path: only posts). A late TLS frame read after the phone's UDP
+    /// probe can flip the session back to fallback for a moment; this undoes that, and a request still standing
+    /// streams again (the head is asked again, a new epoch starts).
+    /// </summary>
+    public void OnUdpRestored() =>
+        ThreadPool.UnsafeQueueUserWorkItem(static mirror => mirror.RestoreUdp(), this, preferLocal: false);
+
+    private void RestoreUdp()
+    {
+        lock (_lock)
+        {
+            if (_disposed || !_tlsFallback)
+            {
+                return;
+            }
+
+            _tlsFallback = false;
+            if (_request is { } request)
+            {
+                _server.MirrorEvents.Requested(request);
+                EvaluateLocked(newEpoch: true);
+            }
+        }
+    }
+
     /// <summary>A SurfaceInfo: the phone's surface in pixels.</summary>
     public void OnSurface(ushort widthPx, ushort heightPx)
     {

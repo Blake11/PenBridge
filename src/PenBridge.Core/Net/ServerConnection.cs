@@ -487,6 +487,7 @@ internal sealed class ServerConnection
                     KeySchedule.DeriveVideoKey(deviceKey, auth.ClientNonce.Span, serverNonce, sessionId, VideoKeyDirection.ClientToServer, videoKeys[KeySchedule.KeyLength..]);
                     var mirror = new ServerMirror(this, _server, input, videoKeys[..KeySchedule.KeyLength], videoKeys[KeySchedule.KeyLength..], sessionId, _epoch);
                     input.ActiveAreaChanged += mirror.OnActiveArea; // replans; raises nothing on this thread
+                    input.UdpRestored += mirror.OnUdpRestored; // posts to the thread pool
                     Mirror = mirror;
                 }
                 finally

@@ -149,6 +149,12 @@ internal sealed class SessionInput : IDisposable
     /// <summary>Raised (under the input lock) the first time the forged-datagram budget runs out.</summary>
     public event Action? ForgedDatagramFlood;
 
+    /// <summary>
+    /// Raised outside the input lock, on the UDP receive path, when a UDP datagram is accepted after input had moved to
+    /// TLS fallback (the phone's path works again). Handlers must only post work.
+    /// </summary>
+    public event Action? UdpRestored;
+
     public uint SessionId => _cipher.SessionId;
 
     /// <summary>The transport of the last accepted frame.</summary>
@@ -373,6 +379,7 @@ internal sealed class SessionInput : IDisposable
         Exception? fault = null;
         bool raise;
         bool wake;
+        bool restored;
         NormalizedRect area;
         long version;
         lock (_lock)
@@ -435,8 +442,15 @@ internal sealed class SessionInput : IDisposable
                 _ackTimer.Change(AckInterval - sinceAck, Timeout.InfiniteTimeSpan);
             }
 
+            bool wasTls = _transport == InputTransport.Tls;
             fault = HandlePayloadLocked(datagram.Slice(InputDatagramHeader.Size, payloadLength), InputTransport.Udp, received, header.Sequence, out wake);
+            restored = wasTls && _transport == InputTransport.Udp;
             raise = TryTakeModeSwitchLocked(out area, out version);
+        }
+
+        if (restored)
+        {
+            UdpRestored?.Invoke();
         }
 
         if (ack)
