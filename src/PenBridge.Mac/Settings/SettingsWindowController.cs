@@ -3,6 +3,7 @@ using AppKit;
 using CoreGraphics;
 using Foundation;
 using PenBridge.Core.Input;
+using PenBridge.Core.Mirror;
 using PenBridge.Core.Settings;
 using PenBridge.Mac.Input;
 using PenBridge.Mac.Services;
@@ -12,7 +13,8 @@ using ServiceManagement;
 namespace PenBridge.Mac.Settings;
 
 /// <summary>
-/// The Settings… (⌘,) window (ADR-0030–0033): Display, Pen, Gestures and General tabs over <see cref="SettingsStore"/>.
+/// The Settings… (⌘,) window (ADR-0030–0033, ADR-0038): Display, Pen, Gestures, Mirroring and General tabs over
+/// <see cref="SettingsStore"/>.
 /// </summary>
 /// <remarks>
 /// <para>Main thread only. The window is built on <see cref="Show"/> and released when it closes; while closed nothing
@@ -30,6 +32,7 @@ public sealed class SettingsWindowController : IDisposable
     private const double SliderWidth = 220;
     private static readonly string[] SideButtonTitles = ["Right click", "Middle click", "Eraser while held", "Double click", "None"];
     private static readonly string[] SmartZoomTitles = ["Follow macOS", "On", "Off"];
+    private static readonly string[] MirrorQualityTitles = ["Low", "Balanced", "High"];
 
     private readonly SettingsStore _store;
     private readonly DisplayTargetResolver _resolver;
@@ -37,7 +40,9 @@ public sealed class SettingsWindowController : IDisposable
     private readonly CGEventTabletInjector _injector;
     private readonly RegionPicker _picker;
     private readonly WindowTarget _windowTarget;
+    private readonly MirrorHost _mirror;
     private readonly List<string> _targetValues = [];
+    private readonly IReadOnlyList<int> _mirrorFpsValues = MacSettings.Get(MacSettingKey.MirrorFps).IntValues;
 
     private SettingsWindow? _window;
     private WindowDelegate? _windowDelegate;
@@ -74,6 +79,14 @@ public sealed class SettingsWindowController : IDisposable
     private NSButton _threeFingerDrag = null!;
     private NSButton _fourFingerGestures = null!;
 
+    // Mirroring
+    private NSSwitch _mirrorEnabled = null!;
+    private NSTextField _mirrorStatus = null!;
+    private NSPopUpButton _mirrorQuality = null!;
+    private NSPopUpButton _mirrorFps = null!;
+    private NSTextField _screenRecording = null!;
+    private NSButton _screenRecordingButton = null!;
+
     // General
     private NSButton _runAtStartup = null!;
     private NSButton _allowTakeover = null!;
@@ -84,8 +97,10 @@ public sealed class SettingsWindowController : IDisposable
     /// <param name="injector">Its Accessibility changes re-enable or disable the Window… choice.</param>
     /// <param name="picker">The one region overlay, shared with the menu's Display ▸ Region….</param>
     /// <param name="windowTarget">The window target (ADR-0036), one of the three area choices.</param>
-    public SettingsWindowController(SettingsStore store, DisplayTargetResolver resolver, ServerHost host, CGEventTabletInjector injector, RegionPicker picker, WindowTarget windowTarget)
+    /// <param name="mirror">Screen mirroring (ADR-0038): its status and the Screen Recording permission.</param>
+    public SettingsWindowController(SettingsStore store, DisplayTargetResolver resolver, ServerHost host, CGEventTabletInjector injector, RegionPicker picker, WindowTarget windowTarget, MirrorHost mirror)
     {
+        ArgumentNullException.ThrowIfNull(mirror);
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(resolver);
         ArgumentNullException.ThrowIfNull(host);
@@ -98,6 +113,7 @@ public sealed class SettingsWindowController : IDisposable
         _injector = injector;
         _picker = picker;
         _windowTarget = windowTarget;
+        _mirror = mirror;
     }
 
     /// <summary>Opens the window (or brings it to the front), activating the accessory app.</summary>
@@ -118,6 +134,8 @@ public sealed class SettingsWindowController : IDisposable
             _windowTarget.Changed += OnDisplaysChanged;
             _windowTarget.FrameChanged += OnWindowFrameChanged;
             _injector.AccessibilityChanged += OnDisplaysChanged; // Window… needs the grant
+            _mirror.StatusChanged += OnMirrorStatusChanged;
+            _mirror.RefreshPermission();
             Refresh();
             _window!.Center();
         }
@@ -147,8 +165,8 @@ public sealed class SettingsWindowController : IDisposable
     private void Build()
     {
         var tabs = new NSTabView { TranslatesAutoresizingMaskIntoConstraints = false };
-        NSView[] pages = [BuildDisplayTab(), BuildPenTab(), BuildGesturesTab(), BuildGeneralTab()];
-        string[] titles = ["Display", "Pen", "Gestures", "General"];
+        NSView[] pages = [BuildDisplayTab(), BuildPenTab(), BuildGesturesTab(), BuildMirroringTab(), BuildGeneralTab()];
+        string[] titles = ["Display", "Pen", "Gestures", "Mirroring", "General"];
         for (int i = 0; i < pages.Length; i++)
         {
             tabs.Add(new NSTabViewItem { Label = titles[i], View = Page(pages[i]) });
@@ -329,6 +347,45 @@ public sealed class SettingsWindowController : IDisposable
             [Empty(), _fourFingerGestures]);
     }
 
+    private NSGridView BuildMirroringTab()
+    {
+        _mirrorEnabled = new NSSwitch { ControlSize = NSControlSize.Small };
+        _mirrorEnabled.Activated += (_, _) =>
+        {
+            if (!_refreshing)
+            {
+                _mirror.SetEnabled(_mirrorEnabled.State == (nint)(long)NSCellStateValue.On);
+            }
+        };
+        _mirrorEnabled.ToolTip = "Show what the pen maps to on the phone, under the drawing surface.";
+        _mirrorStatus = NSTextField.CreateLabel(string.Empty);
+        _mirrorStatus.TextColor = NSColor.SecondaryLabel;
+
+        _mirrorQuality = Popup(() => _store.MirrorQuality = (MirrorQuality)(int)_mirrorQuality.IndexOfSelectedItem, MirrorQualityTitles);
+        _mirrorQuality.ToolTip = "Higher quality uses more Wi-Fi bandwidth. The pen always has priority: the video steps down when input needs the link.";
+        string[] fpsTitles = new string[_mirrorFpsValues.Count];
+        for (int i = 0; i < fpsTitles.Length; i++)
+        {
+            int fps = _mirrorFpsValues[i];
+            fpsTitles[i] = fps == MacSettings.MirrorFpsAuto ? "Auto" : fps.ToString(CultureInfo.CurrentCulture) + " fps";
+        }
+
+        _mirrorFps = Popup(OnMirrorFpsChosen, fpsTitles);
+        _mirrorFps.ToolTip = "Auto follows the Mac display's and the phone's refresh rates; a number is an upper limit.";
+
+        _screenRecording = NSTextField.CreateLabel(string.Empty);
+        _screenRecordingButton = NSButton.CreateButton("Grant…", () => _mirror.RequestPermission());
+        _screenRecordingButton.ControlSize = NSControlSize.Small;
+        _screenRecordingButton.ToolTip = "PenBridge needs Screen Recording to capture the screen for the phone.";
+
+        return Grid(
+            [Label("Mirror screen:"), Row(_mirrorEnabled, _mirrorStatus)],
+            [Label("Quality:"), _mirrorQuality],
+            [Label("Frame rate:"), _mirrorFps],
+            [Label("Screen Recording:"), Row(_screenRecording, _screenRecordingButton)],
+            [Empty(), Note("The phone shows the display, region or window the pen maps to. PenBridge's own windows are left out; the cursor is included. Mirroring pauses while PenBridge is paused.")]);
+    }
+
     private NSGridView BuildGeneralTab()
     {
         _runAtStartup = Checkbox("Run at startup", _ =>
@@ -388,6 +445,7 @@ public sealed class SettingsWindowController : IDisposable
             SetCheck(_threeFingerDrag, _store.ThreeFingerDrag);
             SetCheck(_fourFingerGestures, _store.FourFingerGestures);
 
+            RefreshMirroring();
             RefreshGeneral();
         }
         finally
@@ -481,6 +539,58 @@ public sealed class SettingsWindowController : IDisposable
         if (_window is not null)
         {
             RefreshRegionText(null, NormalizedRect.Full, all: false);
+        }
+    }
+
+    private void RefreshMirroring()
+    {
+        bool enabled = _store.MirrorEnabled;
+        _mirrorEnabled.State = (nint)(long)(enabled ? NSCellStateValue.On : NSCellStateValue.Off);
+        _mirrorQuality.SelectItem((nint)(int)_store.MirrorQuality);
+        int fps = _store.MirrorFps;
+        for (int i = 0; i < _mirrorFpsValues.Count; i++)
+        {
+            if (_mirrorFpsValues[i] == fps)
+            {
+                _mirrorFps.SelectItem(i);
+                break;
+            }
+        }
+
+        _mirrorQuality.Enabled = enabled;
+        _mirrorFps.Enabled = enabled;
+        bool granted = _mirror.IsPermissionGranted;
+        _screenRecording.StringValue = granted ? "Granted" : "Not granted";
+        _screenRecording.TextColor = granted ? NSColor.Label : NSColor.SystemOrange;
+        _screenRecordingButton.Hidden = granted;
+        _screenRecordingButton.Title = StatusItemController.ScreenRecordingActionTitle;
+        _mirrorStatus.StringValue = StatusItemController.MirrorStatusText(_mirror.Status, _host.State.ConnectedDeviceName);
+    }
+
+    private void OnMirrorStatusChanged(object? sender, EventArgs e)
+    {
+        if (_window is null)
+        {
+            return;
+        }
+
+        _refreshing = true;
+        try
+        {
+            RefreshMirroring();
+        }
+        finally
+        {
+            _refreshing = false;
+        }
+    }
+
+    private void OnMirrorFpsChosen()
+    {
+        int index = (int)_mirrorFps.IndexOfSelectedItem;
+        if (index >= 0 && index < _mirrorFpsValues.Count)
+        {
+            _store.MirrorFps = _mirrorFpsValues[index]; // the value (0, 30, 60, 120), not the list position
         }
     }
 
@@ -580,6 +690,7 @@ public sealed class SettingsWindowController : IDisposable
         _windowTarget.Changed -= OnDisplaysChanged;
         _windowTarget.FrameChanged -= OnWindowFrameChanged;
         _injector.AccessibilityChanged -= OnDisplaysChanged;
+        _mirror.StatusChanged -= OnMirrorStatusChanged;
         _pad.PressureSampled -= OnPadSampled;
 
         SettingsWindow? window = _window;
@@ -600,8 +711,13 @@ public sealed class SettingsWindowController : IDisposable
         });
     }
 
-    // Run at startup can change in System Settings while the window is open; pull it when the user comes back.
-    private void OnWindowBecameKey() => RefreshGeneralOnly();
+    // Run at startup and Screen Recording can change in System Settings while the window is open; pull them when the
+    // user comes back.
+    private void OnWindowBecameKey()
+    {
+        _mirror.RefreshPermission(); // raises StatusChanged when it changed
+        RefreshGeneralOnly();
+    }
 
     private void RefreshGeneralOnly()
     {

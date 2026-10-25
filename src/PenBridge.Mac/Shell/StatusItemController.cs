@@ -44,6 +44,7 @@ public sealed partial class StatusItemController : IDisposable
     private readonly SettingsWindowController _settingsWindow;
     private readonly RegionPicker _regionPicker;
     private readonly WindowTarget _windowTarget;
+    private readonly MirrorHost _mirror;
     private readonly ILogger _log;
     private readonly NSStatusItem _item;
     private readonly NSMenu _menu;
@@ -65,8 +66,10 @@ public sealed partial class StatusItemController : IDisposable
         SettingsWindowController settingsWindow,
         RegionPicker regionPicker,
         WindowTarget windowTarget,
+        MirrorHost mirror,
         ILogger<StatusItemController> log)
     {
+        ArgumentNullException.ThrowIfNull(mirror);
         ArgumentNullException.ThrowIfNull(host);
         ArgumentNullException.ThrowIfNull(injector);
         ArgumentNullException.ThrowIfNull(resolver);
@@ -86,6 +89,7 @@ public sealed partial class StatusItemController : IDisposable
         _settingsWindow = settingsWindow;
         _regionPicker = regionPicker;
         _windowTarget = windowTarget;
+        _mirror = mirror;
         _log = log;
 
         _item = NSStatusBar.SystemStatusBar.CreateStatusItem(NSStatusItemLength.Variable);
@@ -98,6 +102,7 @@ public sealed partial class StatusItemController : IDisposable
         _resolver.TargetChanged += OnDisplaysChanged;
         _resolver.DisplaysChanged += OnDisplaysChanged;
         _windowTarget.Changed += OnDisplaysChanged;
+        _mirror.StatusChanged += OnDisplaysChanged; // the Mirror screen item, while the menu is open
 
         BuildMenu();
         UpdateIcon();
@@ -147,6 +152,7 @@ public sealed partial class StatusItemController : IDisposable
         _resolver.TargetChanged -= OnDisplaysChanged;
         _resolver.DisplaysChanged -= OnDisplaysChanged;
         _windowTarget.Changed -= OnDisplaysChanged;
+        _mirror.StatusChanged -= OnDisplaysChanged;
         _item.Menu = null;
         NSStatusBar.SystemStatusBar.RemoveStatusItem(_item);
         _menu.Dispose();
@@ -197,6 +203,7 @@ public sealed partial class StatusItemController : IDisposable
         _menuOpen = true;
         _injector.RefreshAccessibility();
         _host.RefreshAccessibility();
+        _mirror.RefreshPermission();
         BuildMenu();
         UpdateIcon();
     }
@@ -363,6 +370,27 @@ public sealed partial class StatusItemController : IDisposable
         mouseMode.ToolTip = "The hovering pen moves the cursor from where it is, like a mouse.";
         _menu.AddItem(mouseMode);
         _menu.AddItem(NSMenuItem.SeparatorItem);
+
+        // Mirror screen (ADR-0038), with its status and the Screen Recording grant while it is missing.
+        bool mirroring = _settings.MirrorEnabled;
+        NSMenuItem mirror = Action("Mirror screen", () => _mirror.SetEnabled(!_settings.MirrorEnabled));
+        mirror.State = mirroring ? NSCellStateValue.On : NSCellStateValue.Off;
+        mirror.ToolTip = "Show what the pen maps to on the phone, under the drawing surface.";
+        _menu.AddItem(mirror);
+        if (mirroring)
+        {
+            NSMenuItem status = Disabled(MirrorStatusText(_mirror.Status, state.ConnectedDeviceName));
+            status.IndentationLevel = 1;
+            _menu.AddItem(status);
+            if (!_mirror.IsPermissionGranted)
+            {
+                NSMenuItem grant = Action("⚠️ " + ScreenRecordingActionTitle, () => _mirror.RequestPermission());
+                grant.IndentationLevel = 1;
+                _menu.AddItem(grant);
+            }
+        }
+
+        _menu.AddItem(NSMenuItem.SeparatorItem);
         NSMenuItem takeover = Action("Allow takeover", () => _host.SetAllowTakeover(!_host.State.AllowTakeover));
         takeover.State = state.AllowTakeover ? NSCellStateValue.On : NSCellStateValue.Off;
         takeover.ToolTip = "A newly connecting paired device replaces the active one instead of being refused.";
@@ -490,6 +518,20 @@ public sealed partial class StatusItemController : IDisposable
     }
 
     private void TogglePause() => _host.SetPaused(!_host.State.Paused);
+
+    /// <summary>The Screen Recording button and menu item title.</summary>
+    internal static string ScreenRecordingActionTitle => "Grant Screen Recording…";
+
+    /// <summary>One line on what mirroring does (menu, Settings ▸ Mirroring). <paramref name="phone"/> is sanitized.</summary>
+    internal static string MirrorStatusText(MirrorHostStatus status, string? phone) => status switch
+    {
+        MirrorHostStatus.Off => "Off",
+        MirrorHostStatus.Paused => "Paused with PenBridge",
+        MirrorHostStatus.PermissionNeeded => "Needs the Screen Recording permission",
+        MirrorHostStatus.Failed => "Capture failed; see the logs",
+        MirrorHostStatus.Streaming => phone is null ? "Mirroring to the phone" : "Mirroring to " + phone,
+        _ => phone is null ? "Waiting for a phone" : "Waiting for " + phone,
+    };
 
     private void GrantAccessibility()
     {
