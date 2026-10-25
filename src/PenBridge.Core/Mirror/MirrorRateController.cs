@@ -62,7 +62,15 @@ public sealed class MirrorRateController
     /// <summary>Halving never takes the fps below this.</summary>
     public const int MinHalvedFps = 30;
 
-    private const int RttCapacity = 64;
+    /// <summary>
+    /// RTT samples closer than this to the first sample of the newest slot share that slot (their minimum, aged by the
+    /// newest), so the history covers the whole window at any ping rate: exact up to 10 pings/s, at most this much too
+    /// long (a lower baseline) above.
+    /// </summary>
+    public static readonly TimeSpan RttBucket = TimeSpan.FromMilliseconds(100);
+
+    // One slot per bucket over the window, plus the partial ones at both ends.
+    private const int RttCapacity = 128;
 
     // "Never happened": far enough from long.MinValue that now - Never can't overflow.
     private const long Never = long.MinValue / 2;
@@ -70,8 +78,10 @@ public sealed class MirrorRateController
     private readonly TimeProvider _time;
     private readonly Lock _lock = new();
     private readonly long[] _rttAt = new long[RttCapacity];
+    private readonly long[] _rttFirstAt = new long[RttCapacity];
     private readonly long[] _rttTicks = new long[RttCapacity];
     private readonly long _gapTicks;
+    private readonly long _bucketTicks;
     private int _rttStart;
     private int _rttCount;
     private int _highRtt;
@@ -114,6 +124,7 @@ public sealed class MirrorRateController
         _time = time;
         _gapTicks = ToTicks(InputGap);
         _stepTicks = ToTicks(StepInterval);
+        _bucketTicks = ToTicks(RttBucket);
     }
 
     /// <summary>The current level; the plan's target, fps and not paused right after <see cref="Start"/>. Default before it.</summary>
@@ -525,6 +536,17 @@ public sealed class MirrorRateController
 
     private void AddRtt(long at, long ticks)
     {
+        if (_rttCount > 0)
+        {
+            int last = (_rttStart + _rttCount - 1) % RttCapacity;
+            if (at - _rttFirstAt[last] < _bucketTicks)
+            {
+                _rttAt[last] = at;
+                _rttTicks[last] = Math.Min(_rttTicks[last], ticks);
+                return;
+            }
+        }
+
         int index = (_rttStart + _rttCount) % RttCapacity;
         if (_rttCount == RttCapacity)
         {
@@ -536,6 +558,7 @@ public sealed class MirrorRateController
         }
 
         _rttAt[index] = at;
+        _rttFirstAt[index] = at;
         _rttTicks[index] = ticks;
     }
 

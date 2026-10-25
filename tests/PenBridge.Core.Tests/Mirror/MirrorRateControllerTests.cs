@@ -294,6 +294,30 @@ public class MirrorRateControllerTests
         Assert.True(_guard.IsDegraded);
     }
 
+    [Theory]
+    [InlineData(4, 10_000)]  // exact: one slot per sample
+    [InlineData(10, 10_000)]
+    [InlineData(50, 10_080)] // bucketed: the 0 ms minimum shares its slot with the samples up to 80 ms
+    public void The_rtt_baseline_covers_10_s_at_any_ping_rate(int pingsPerSecond, int lastInMs)
+    {
+        var interval = TimeSpan.FromTicks(TimeSpan.TicksPerSecond / pingsPerSecond);
+        var start = _time.GetUtcNow();
+        Rtt(5);
+        for (int i = 1; i < 10 * pingsPerSecond; i++)
+        {
+            _time.Advance(interval);
+            Rtt(20);
+        }
+
+        _time.Advance(start + TimeSpan.FromMilliseconds(lastInMs) - _time.GetUtcNow());
+        Assert.Equal(TimeSpan.FromMilliseconds(5), _guard.RttBaseline);
+        Assert.True(_guard.IsDegraded); // 20 ms against the 5 ms baseline
+        _time.Advance(TimeSpan.FromMilliseconds(1));
+        Assert.Equal(TimeSpan.FromMilliseconds(20), _guard.RttBaseline);
+        Rtt(20);
+        Assert.False(_guard.IsDegraded);
+    }
+
     [Fact]
     public void Paused_while_the_rtt_stays_high_waits_for_a_sample()
     {
