@@ -1,6 +1,7 @@
 using Android.Content;
 using Android.Graphics;
 using Android.Views;
+using PenBridge.Android.Mirror;
 using PenBridge.Core.Input;
 using Path = Android.Graphics.Path;
 
@@ -10,7 +11,9 @@ namespace PenBridge.Android.Pad;
 /// The pad's background layer (ADR-0031 "Phone surface"): the active area in the background colour, the margins
 /// outside it dimmed, L-shaped ticks at its corners and an optional centre cross. Everything is derived from one
 /// <see cref="NormalizedRect"/> (<see cref="SetActiveArea"/>); without the Mac's ActiveArea it is the whole surface.
-/// Sits under the input surface and takes no input.
+/// Sits under the input surface and takes no input. While mirroring (<see cref="SetMirroring"/>, ADR-0038) only the
+/// dimmed margins are drawn: the active area stays transparent over the video surface below, and the ticks and cross
+/// are hidden.
 /// </summary>
 /// <remarks>
 /// Geometry is rebuilt into cached <see cref="Path"/>/<see cref="RectF"/>s only when the size, the area or the look
@@ -30,10 +33,12 @@ internal sealed class SurfaceLookView : View
     private readonly Path _ticks = new();
     private readonly Path _cross = new();
     private readonly RectF _active = new();
+    private readonly Rect _activePx = new();
     private SurfaceLook _look = new();
     private NormalizedRect _area = NormalizedRect.Full;
     private Color _marginColor;
     private bool _isFull = true;
+    private bool _mirroring;
 
     public SurfaceLookView(Context context)
         : base(context)
@@ -86,6 +91,21 @@ internal sealed class SurfaceLookView : View
         Invalidate();
     }
 
+    /// <summary>
+    /// Mirroring on: draw only the margins, cut out at the video's pixel rect (<see cref="MirrorGeometry"/>), so the video
+    /// below shows through. Off: the normal look.
+    /// </summary>
+    public void SetMirroring(bool mirroring)
+    {
+        if (mirroring == _mirroring)
+        {
+            return;
+        }
+
+        _mirroring = mirroring;
+        Invalidate();
+    }
+
     protected override void OnSizeChanged(int w, int h, int oldw, int oldh)
     {
         base.OnSizeChanged(w, h, oldw, oldh);
@@ -95,6 +115,19 @@ internal sealed class SurfaceLookView : View
     protected override void OnDraw(Canvas canvas)
     {
         base.OnDraw(canvas);
+        if (_mirroring)
+        {
+            if (!_isFull)
+            {
+                canvas.Save();
+                canvas.ClipOutRect(_activePx);
+                canvas.DrawColor(_marginColor);
+                canvas.Restore();
+            }
+
+            return;
+        }
+
         if (_isFull)
         {
             canvas.DrawColor(_look.ActiveColor);
@@ -122,6 +155,7 @@ internal sealed class SurfaceLookView : View
             _ticks.Dispose();
             _cross.Dispose();
             _active.Dispose();
+            _activePx.Dispose();
         }
 
         base.Dispose(disposing);
@@ -172,6 +206,8 @@ internal sealed class SurfaceLookView : View
         float bottom = (float)((_area.Y + _area.Height) * h);
         _active.Set(left, top, right, bottom);
         _isFull = left <= 0.5f && top <= 0.5f && right >= w - 0.5f && bottom >= h - 0.5f;
+        (int pl, int pt, int pr, int pb) = MirrorGeometry.ActivePixels(_area, w, h);
+        _activePx.Set(pl, pt, pr, pb);
 
         // Ticks inside the area, inset by half the stroke so the full-surface ticks aren't clipped at the screen edge.
         float inset = _tickPaint.StrokeWidth / 2f;

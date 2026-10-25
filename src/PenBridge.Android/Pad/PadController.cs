@@ -2,6 +2,7 @@ using Android.Content.PM;
 using Android.OS;
 using Android.Views;
 using Android.Widget;
+using PenBridge.Android.Mirror;
 using PenBridge.Core.Input;
 using PenBridge.Core.Net;
 using PenBridge.Core.Protocol;
@@ -30,6 +31,7 @@ public sealed class PadController : IDisposable
     private const int MenuSettings = 8;
 #if DEBUG
     private const int MenuDebugArea = 9;
+    private const int MenuDebugMirrorBase = 100;
 #endif
     private const int OrientationGroup = 1;
 
@@ -40,6 +42,7 @@ public sealed class PadController : IDisposable
     private readonly SurfaceLookView _look;
     private readonly DrawSurfaceView _surface;
     private readonly InkEchoView? _ink;
+    private readonly MirrorView _mirror;
     private readonly StatusDotView _dot;
     private readonly Java.Lang.Runnable _stateRunnable;
 
@@ -57,6 +60,7 @@ public sealed class PadController : IDisposable
     private NormalizedRect _activeArea = NormalizedRect.Full;
 #if DEBUG
     private bool _debugArea;
+    private readonly MirrorDebugMenu _mirrorDebug;
 #endif
     private ScreenOrientation _hostOrientation;
     private bool _started;
@@ -85,6 +89,10 @@ public sealed class PadController : IDisposable
             SurfaceSizeChanged = OnSurfaceSizeChanged,
             WindowFocusRegained = OnWindowFocusRegained,
         };
+        _mirror = new MirrorView(activity) { ShownChanged = _look.SetMirroring };
+#if DEBUG
+        _mirrorDebug = new MirrorDebugMenu(activity, _mirror, MenuDebugMirrorBase, DebugActivePixels);
+#endif
         _dot = new StatusDotView(activity, _surface);
         _dot.Tapped += OnDotActivated;
 
@@ -94,7 +102,9 @@ public sealed class PadController : IDisposable
         _root.SetBackgroundColor(global::Android.Graphics.Color.Black);
         var match = ViewGroup.LayoutParams.MatchParent;
 
-        // Background, margins and markers under the (transparent) input surface; it takes no input.
+        // Mirror video (ADR-0038) at the bottom: shown through the active area, which the look leaves transparent while
+        // mirroring. Then background, margins and markers under the (transparent) input surface; neither takes input.
+        _root.AddView(_mirror.VideoLayer, new FrameLayout.LayoutParams(match, match));
         _root.AddView(_look, new FrameLayout.LayoutParams(match, match));
         _root.AddView(_surface, new FrameLayout.LayoutParams(match, match));
         if (_ink is not null)
@@ -103,6 +113,8 @@ public sealed class PadController : IDisposable
             _root.AddView(_ink, new FrameLayout.LayoutParams(match, match));
         }
 
+        // Mirror state overlay (Paused / Unavailable): drawing only, like the ink layer.
+        _root.AddView(_mirror.Overlay, new FrameLayout.LayoutParams(match, match));
         if (options.ShowTouchSize)
         {
             AttachReadout();
@@ -124,6 +136,9 @@ public sealed class PadController : IDisposable
 
     /// <summary>The surface last reported via <see cref="IPadOutput.UpdateSurface"/>, or null before the first layout.</summary>
     public SurfaceInfoMessage? Surface { get; private set; }
+
+    /// <summary>Screen mirroring: video under the pad and its state overlay (SM-F wires it to the session). UI thread.</summary>
+    internal MirrorView Mirror => _mirror;
 
     /// <summary>Current orientation setting (a pending change applies when input is idle).</summary>
     public PadOrientationMode OrientationMode => _pendingOrientation ?? _orientation;
@@ -186,6 +201,10 @@ public sealed class PadController : IDisposable
         _started = false;
         _surface.ReleaseAll();
         _queue.Stop();
+#if DEBUG
+        _mirrorDebug.StopPlayer();
+#endif
+        _mirror.Hide(); // the display mode and surface frame rate never outlive the pad
         ExitImmersive();
         _activity.RequestedOrientation = _hostOrientation;
     }
@@ -213,7 +232,14 @@ public sealed class PadController : IDisposable
             return;
         }
 #endif
+        ShowArea(area);
+    }
+
+    /// <summary>Applies the area to everything drawn on it: the look (markers, margins) and the mirror video.</summary>
+    private void ShowArea(NormalizedRect area)
+    {
         _look.SetActiveArea(area);
+        _mirror.SetActiveArea(_look.ActiveArea);
     }
 
     /// <summary>Applies the surface look: background, marker opacity, centre marker, and matching ink and dot colours.</summary>
@@ -271,6 +297,10 @@ public sealed class PadController : IDisposable
 
         _dot.Tapped -= OnDotActivated;
         _handler.RemoveCallbacks(_stateRunnable); // nothing can post it any more (see _postLock)
+#if DEBUG
+        _mirrorDebug.Dispose();
+#endif
+        _mirror.Dispose();
         _queue.Dispose();
         _stateRunnable.Dispose();
         _handler.Dispose();
@@ -408,7 +438,7 @@ public sealed class PadController : IDisposable
 #if DEBUG
         if (_debugArea)
         {
-            _look.SetActiveArea(DebugSampleArea(width, height));
+            ShowArea(DebugSampleArea(width, height));
         }
 #endif
     }
@@ -441,7 +471,13 @@ public sealed class PadController : IDisposable
     private void ToggleDebugArea()
     {
         _debugArea = !_debugArea;
-        _look.SetActiveArea(_debugArea ? DebugSampleArea(_surface.Width, _surface.Height) : _activeArea);
+        ShowArea(_debugArea ? DebugSampleArea(_surface.Width, _surface.Height) : _activeArea);
+    }
+
+    private (int Width, int Height) DebugActivePixels()
+    {
+        (int l, int t, int r, int b) = MirrorGeometry.ActivePixels(_look.ActiveArea, _surface.Width, _surface.Height);
+        return (r - l, b - t);
     }
 #endif
 
@@ -555,6 +591,7 @@ public sealed class PadController : IDisposable
         IMenuItem? debugArea = menu.Add(0, MenuDebugArea, 6, "Debug: sample active area");
         debugArea?.SetCheckable(true);
         debugArea?.SetChecked(_debugArea);
+        _mirrorDebug.AddTo(menu, 7);
 #endif
         popup.MenuItemClick += OnMenuItemClick;
         popup.DismissEvent += (_, _) => popup.MenuItemClick -= OnMenuItemClick;
@@ -580,6 +617,8 @@ public sealed class PadController : IDisposable
 #if DEBUG
             case MenuDebugArea:
                 ToggleDebugArea();
+                break;
+            case var id when _mirrorDebug.Handle(id):
                 break;
 #endif
             case MenuDisconnect:
