@@ -82,6 +82,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
     private (int Width, int Height, int RefreshHz)? _source;
     private MirrorHostStatus _status = MirrorHostStatus.Off;
     private bool _disposed;
+    private bool _detecting;
 
     // Under _lock (any thread).
     private PenBridgeServer? _server;
@@ -239,7 +240,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
         }
         else
         {
-            _ = Task.Run(DetectEncoders); // a few test sessions; once per process
+            DetectEncodersIfEnabled();
         }
 
         _source = null; // pushed again to the new server
@@ -547,6 +548,27 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
         });
     }
 
+    // A few VideoToolbox test sessions, once per process, and only once mirroring is on: until then VideoToolbox stays
+    // unloaded (idle memory), and the phone doesn't ask for video. Core waits (Starting) until the encoders are known.
+    private void DetectEncodersIfEnabled()
+    {
+        if (!_store.MirrorEnabled || _detecting)
+        {
+            return;
+        }
+
+        lock (_lock)
+        {
+            if (_hardware is not null)
+            {
+                return;
+            }
+        }
+
+        _detecting = true;
+        _ = Task.Run(DetectEncoders);
+    }
+
     private void DetectEncoders()
     {
         MirrorCodecs codecs;
@@ -584,6 +606,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
 
         bool enabled = _store.MirrorEnabled;
         Log.EnabledChanged(_log, enabled);
+        DetectEncodersIfEnabled();
         _failure = null;
         _permissionGranted = ScreenCapturePermission.IsGranted;
         if (enabled && !_permissionGranted && !NSUserDefaults.StandardUserDefaults.BoolForKey(ScreenRecordingPromptedKey))
