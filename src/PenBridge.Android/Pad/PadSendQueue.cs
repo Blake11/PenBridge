@@ -64,9 +64,28 @@ internal sealed class PadSendQueue : IDisposable
         {
             IsBackground = true,
             Name = "PenBridge.PadSender",
-            Priority = ThreadPriority.AboveNormal,
         };
         _thread.Start();
+    }
+
+    /// <summary>
+    /// Sets this thread's Linux nice to <see cref="global::Android.OS.ThreadPriority.UrgentDisplay"/> (-8). Managed
+    /// <see cref="Thread.Priority"/> is a no-op on Android (a thread just inherits its starter's nice), so the nice must
+    /// be set from inside the thread (#311). -8 keeps the input sender above everything screen mirroring runs (Core's
+    /// video receive thread and the decoder, both at 0) and the app's other work, and just below the top-app UI and
+    /// render threads (-10), which sample the pen and draw the ink echo and must not wait for the sender. A failure
+    /// leaves the inherited nice.
+    /// </summary>
+    private static void SetSenderPriority()
+    {
+        try
+        {
+            global::Android.OS.Process.SetThreadPriority(global::Android.OS.ThreadPriority.UrgentDisplay);
+        }
+        catch (Java.Lang.Exception)
+        {
+            // SecurityException/IllegalArgumentException: keep the inherited priority.
+        }
     }
 
     /// <summary>Stops the sender after it sent everything already queued (bounded wait).</summary>
@@ -139,6 +158,7 @@ internal sealed class PadSendQueue : IDisposable
 
     private void Run(int generation)
     {
+        SetSenderPriority();
         while (true)
         {
             _signal.WaitOne();
