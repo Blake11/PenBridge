@@ -515,6 +515,8 @@ public sealed class FrameReassembler
             return ReassemblyResult.NoBuffer;
         }
 
+        // A held frame keeps only its bytes: the slack reserved for a short or unfilled last fragment goes back.
+        _rangeLength[slot.Range] = written;
         int generation = free.Lease(_pool, _rangeOffset[slot.Range], slot.Range);
         frame = new VideoFrame(free, generation, written, _epoch, number, slot.Keyframe, slot.CaptureTimeUs, now);
         slot.InUse = false;

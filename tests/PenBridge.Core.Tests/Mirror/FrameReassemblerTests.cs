@@ -355,6 +355,19 @@ public sealed class FrameReassemblerTests : IDisposable
     }
 
     [Fact]
+    public void A_held_frame_keeps_only_its_bytes_so_two_large_keyframes_fit()
+    {
+        // 904 fragments reserve 1 048 632 B in flight; two reservations would exceed the 2 MiB pool by 112 B.
+        const int length = 1_048_000;
+        VideoFrame held = DeliverAll(Frame(1, true, length));
+        VideoFrame second = DeliverAll(Frame(2, true, length));
+        Assert.Equal(VideoLink.AccessUnit(length, 1), held.Span.ToArray());
+        Assert.Equal(VideoLink.AccessUnit(length, 2), second.Span.ToArray());
+        held.Dispose();
+        second.Dispose();
+    }
+
+    [Fact]
     public void Invalid_fragments_are_rejected()
     {
         OpenedFragment first = Frame(1, true, 3000)[0];
