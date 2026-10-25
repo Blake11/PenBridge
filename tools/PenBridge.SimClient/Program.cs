@@ -3,6 +3,7 @@ using System.Text;
 using Microsoft.Extensions.Logging;
 using PenBridge.Core;
 using PenBridge.Core.Input;
+using PenBridge.Core.Mirror;
 using PenBridge.Core.Net;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
@@ -31,17 +32,31 @@ internal static class Program
                                                                           Print the Mac's settings and displays (protocol
                                                                           1.2) and optionally change some, e.g.
                                                                           --set StylusMode=Mouse --set MouseSpeed=1.5
+          penbridge-sim mirror [--seconds <n>] [--out <file.h264|file.hevc>] [--codecs h264,hevc]
+                               [--draw <script>] [--host <host>] [--port <port>]
+                                                                          Ask the last paired Mac for its screen
+                                                                          (protocol 1.3) for n seconds (default 10),
+                                                                          write the Annex-B stream to --out, and print
+                                                                          frames, drops, keyframe requests and latency.
+                                                                          --draw loops a draw script meanwhile, to
+                                                                          check the input path while video streams
           penbridge-sim serve [--port <port>]                             Run a server here that prints its input
           penbridge-sim scripts                                           List the draw scripts
 
         Options:
-          --in-process-server   pair/draw against a server started in this process (no Mac app needed)
+          --in-process-server   pair/draw/settings/mirror against a server started in this process (no Mac app
+                                needed). Its synthetic encoder sends fake (undecodable) access units at the
+                                planned fps and bitrate, and it prints pen and video latency at the end
           --finger-touches      the in-process/serve server offers FingerTouches (ADR-0026: one finger is a
                                 relative cursor; try the one-finger script)
           --settings            draw: print the settings, displays and active area the Mac sends
           --verbose             debug logging
 
-        PENBRIDGE_LATENCY_LOG=1 turns on the in-process/serve server's latency capture (dumped as
+        Pen latency with vs without video, in-process: compare 'draw circle --repeat 20' with
+        'mirror --draw circle --seconds 10' (both print pen send->inject p50/p95; video needs mirror).
+        Against a real Mac the latency is in the Mac's latency log (scripts/latency-report.sh).
+
+        PENBRIDGE_LATENCY_LOG=1 also dumps the in-process/serve server's latency capture (as
         latency-sim-*.tsv next to the Mac app's dumps; scripts/latency-report.sh prints them). Pings run every
         2 s, so draw for a few seconds (--repeat) to get a clock-offset estimate.
 
@@ -52,6 +67,10 @@ internal static class Program
                  back/forward), one-finger (relative cursor: move, click, double click, tap-and-a-half drag;
                  needs a server offering FingerTouches), packet-loss (a circle with 20% of datagrams dropped)
         """;
+
+    // What the SimClient's "decoder" accepts (MirrorStart limits): a 4K-class decoder on a 120 Hz panel.
+    private const int MirrorMaxSize = 4096;
+    private const int MirrorMaxFps = 120;
 
     private static readonly SurfaceInfoMessage Surface = new(1440, 3088, 500f, 500f, SurfaceOrientation.Portrait, SurfaceCapabilities.FingerFallback);
 
@@ -80,6 +99,7 @@ internal static class Program
                 "pair" => await PairAsync(parsed, loggers, cts.Token),
                 "draw" => await DrawAsync(parsed, loggers, cts.Token),
                 "settings" => await SettingsAsync(parsed, loggers, cts.Token),
+                "mirror" => await MirrorAsync(parsed, loggers, cts.Token),
                 "serve" => await ServeAsync(parsed, loggers, cts.Token),
                 "scripts" => ListScripts(),
                 _ => Fail("Unknown command '" + parsed.Command + "'.\n\n" + Usage),
@@ -199,19 +219,10 @@ internal static class Program
             await using (client)
             {
                 Console.WriteLine($"Drawing '{script}' to '{PeerText.Sanitize(client.ServerName)}' (negotiated: {client.NegotiatedCapabilities})...");
-                int sent = 0;
-                for (int pass = 0; pass < repeat; pass++)
+                int sent = await DrawLoopAsync(client, frames, repeat, ct);
+                if (sent < 0)
                 {
-                    foreach (ScriptFrame frame in frames)
-                    {
-                        if (!client.SendState(frame.Pen, frame.Touches, frame.History))
-                        {
-                            return Fail("The connection closed while drawing.");
-                        }
-
-                        sent++;
-                        await Task.Delay(frame.Delay, ct);
-                    }
+                    return Fail("The connection closed while drawing.");
                 }
 
                 await Task.Delay(TimeSpan.FromMilliseconds(300), ct); // let release repeats and the server catch up
@@ -220,6 +231,7 @@ internal static class Program
                 {
                     PenBridgeServerStats stats = local.Server.GetStats();
                     Console.WriteLine($"Server: transport {stats.Transport}, {stats.Counters}, {local.Sink.PenEvents} pen / {local.Sink.GestureEvents} gesture events.");
+                    Console.WriteLine(local.Latency.Summarize());
                 }
 
                 await client.DisconnectAsync();
@@ -234,6 +246,158 @@ internal static class Program
                 await local.DisposeAsync();
             }
         }
+    }
+
+    /// <summary>
+    /// Sends the script's frames <paramref name="repeat"/> times (0: until <paramref name="ct"/> is cancelled, which then
+    /// ends the loop normally). Returns the frames sent, or -1 when the connection closed.
+    /// </summary>
+    private static async Task<int> DrawLoopAsync(PenBridgeClient client, IEnumerable<ScriptFrame> frames, int repeat, CancellationToken ct)
+    {
+        int sent = 0;
+        try
+        {
+            for (int pass = 0; repeat == 0 || pass < repeat; pass++)
+            {
+                foreach (ScriptFrame frame in frames)
+                {
+                    if (!client.SendState(frame.Pen, frame.Touches, frame.History))
+                    {
+                        return -1;
+                    }
+
+                    sent++;
+                    await Task.Delay(frame.Delay, ct);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (repeat == 0)
+        {
+            client.SendState(null, [], []); // lift the pen if the time ran out mid-stroke
+        }
+
+        return sent;
+    }
+
+    private static async Task<int> MirrorAsync(Args args, ILoggerFactory loggers, CancellationToken ct)
+    {
+        int seconds = args.Value("--seconds") is { } sv
+            ? int.TryParse(sv, NumberStyles.None, CultureInfo.InvariantCulture, out int n) && n is > 0 and <= 3600
+                ? n
+                : throw new ArgumentException("--seconds must be 1-3600.")
+            : 10;
+        MirrorCodecs codecs = ParseCodecs(args.Value("--codecs"));
+        IEnumerable<ScriptFrame>? frames = null;
+        string? script = args.Value("--draw");
+        if (script is not null && !DrawScripts.TryGet(script, out frames))
+        {
+            return Fail("--draw needs a script: " + string.Join(", ", DrawScripts.Names));
+        }
+
+        DatagramFilter? filter = script == DrawScripts.PacketLoss ? static _ => Random.Shared.NextDouble() >= 0.2 : null;
+        await using var receiver = new MirrorReceiver(args.Value("--out"));
+        InProcessServer? local = null;
+        try
+        {
+            (PenBridgeClient? client, local, string? error) = await OpenSessionAsync(args, loggers, filter, receiver.Attach, ct);
+            if (client is null)
+            {
+                return Fail(error!);
+            }
+
+            await using (client)
+            {
+                if ((client.NegotiatedCapabilities & ProtocolCapabilities.ScreenMirror) == 0)
+                {
+                    return Fail($"'{PeerText.Sanitize(client.ServerName)}' doesn't offer screen mirroring (negotiated: {client.NegotiatedCapabilities}).");
+                }
+
+                Console.WriteLine($"Mirroring '{PeerText.Sanitize(client.ServerName)}' for {seconds} s (codecs {codecs}){(script is null ? string.Empty : ", drawing '" + script + "'")}...");
+                if (!client.StartMirror(new MirrorRequest(codecs, MirrorMaxSize, MirrorMaxSize, MirrorMaxFps)))
+                {
+                    return Fail("The connection closed before mirroring started.");
+                }
+
+                int sent = 0;
+                using (var window = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                {
+                    window.CancelAfter(TimeSpan.FromSeconds(seconds));
+                    if (frames is not null)
+                    {
+                        sent = await DrawLoopAsync(client, frames, repeat: 0, window.Token);
+                        if (sent < 0)
+                        {
+                            return Fail("The connection closed while drawing.");
+                        }
+                    }
+                    else
+                    {
+                        try
+                        {
+                            await Task.Delay(Timeout.Infinite, window.Token);
+                        }
+                        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                        {
+                        }
+                    }
+                }
+
+                ct.ThrowIfCancellationRequested();
+                await Task.Delay(TimeSpan.FromMilliseconds(600), ct); // the last MirrorReport, and the server catching up
+                client.StopMirror();
+                MirrorClientStats stats = client.MirrorStats;
+                Console.WriteLine(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"Phone: {receiver.Frames} frames ({receiver.Keyframes} keyframes, {receiver.Bytes / 1024} KiB), {receiver.Gaps} frame-number gaps; {stats.FramesDropped} dropped, {stats.FragmentsLost} fragments lost, {stats.KeyframeRequestsSent} keyframe requests, {stats.ProbesSent} probes, {stats.ReportsSent} reports, {stats.Epochs} epochs, {stats.AuthFailures} auth failures."));
+                if (frames is not null)
+                {
+                    Console.WriteLine($"Sent {sent} input frames over {client.Transport}; RTT {client.RoundTripTime?.TotalMilliseconds.ToString("F1", CultureInfo.InvariantCulture) ?? "n/a"} ms.");
+                }
+
+                if (local is not null)
+                {
+                    SyntheticEncoder encoder = local.Encoder;
+                    Console.WriteLine($"Server: {encoder.FramesSubmitted} access units submitted ({encoder.KeyframesSubmitted} keyframes), {encoder.KeyframeRequests} keyframe requests raised, {encoder.Configs} configs; {local.Sink.PenEvents} pen events.");
+                    Console.WriteLine(local.Latency.Summarize());
+                }
+                else
+                {
+                    Console.WriteLine("Mac-side counters and latency: the Mac's log and latency dump (scripts/latency-report.sh).");
+                }
+
+                await client.DisconnectAsync();
+            }
+
+            return 0;
+        }
+        finally
+        {
+            if (local is not null)
+            {
+                await local.DisposeAsync();
+            }
+        }
+    }
+
+    private static MirrorCodecs ParseCodecs(string? value)
+    {
+        if (value is null)
+        {
+            return MirrorCodecs.H264 | MirrorCodecs.Hevc;
+        }
+
+        MirrorCodecs codecs = MirrorCodecs.None;
+        foreach (string part in value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            codecs |= part.ToUpperInvariant() switch
+            {
+                "H264" => MirrorCodecs.H264,
+                "HEVC" or "H265" => MirrorCodecs.Hevc,
+                _ => throw new ArgumentException($"Unknown codec '{part}': use h264, hevc."),
+            };
+        }
+
+        return codecs == MirrorCodecs.None ? throw new ArgumentException("--codecs needs h264 and/or hevc.") : codecs;
     }
 
     /// <summary>
@@ -402,23 +566,24 @@ internal static class Program
     {
         private readonly ServerIdentity _identity;
 
-        private readonly LatencyCapture? _latency;
-
-        private InProcessServer(ServerIdentity identity, PenBridgeServer server, LoggingInputSink sink, LatencyCapture? latency)
+        private InProcessServer(ServerIdentity identity, PenBridgeServer server, LoggingInputSink sink, LatencyCapture latency, SyntheticEncoder encoder)
         {
             _identity = identity;
             Server = server;
             Sink = sink;
-            _latency = latency;
-            if (latency is not null)
-            {
-                server.SessionEnded += (_, _) => latency.Dump("session end");
-            }
+            Latency = latency;
+            Encoder = encoder;
+            server.SessionEnded += (_, _) => latency.Dump("session end");
         }
 
         public PenBridgeServer Server { get; }
 
         public LoggingInputSink Sink { get; }
+
+        public LatencyCapture Latency { get; }
+
+        /// <summary>Stands in for capture and encoding when the phone mirrors (protocol 1.3).</summary>
+        public SyntheticEncoder Encoder { get; }
 
         public static InProcessServer Start(ILoggerFactory loggers, int? port, bool persistent = false, bool fingerTouches = false)
         {
@@ -427,7 +592,7 @@ internal static class Program
                 : new InMemorySecretStore();
             ServerIdentity identity = ServerIdentity.LoadOrCreate(store);
             var sink = new LoggingInputSink(Console.Out);
-            LatencyCapture? latency = LatencyCapture.CreateIfEnabled();
+            LatencyCapture latency = LatencyCapture.Create();
             var server = new PenBridgeServer(new PenBridgeServerOptions
             {
                 Identity = identity,
@@ -437,30 +602,33 @@ internal static class Program
                 Port = port ?? ProtocolInfo.DefaultPort,
                 TargetDisplay = new DisplayRect(0, 0, 1512, 982),
                 LoggerFactory = loggers,
-                LatencyRecorder = latency?.Recorder,
+                LatencyRecorder = latency.Recorder,
                 FingerTouches = fingerTouches,
                 RemoteSettings = true,
                 ActiveArea = true,
+                ScreenMirror = !persistent, // serve hosts real phones: fake video would only feed their decoders garbage
             });
             SimSettings.Attach(server);
+            var encoder = new SyntheticEncoder(server);
             server.Start();
             if (!persistent)
             {
                 server.OpenPairingWindow();
             }
 
-            return new InProcessServer(identity, server, sink, latency);
+            return new InProcessServer(identity, server, sink, latency, encoder);
         }
 
         public async ValueTask DisposeAsync()
         {
+            Encoder.Dispose();
             await Server.DisposeAsync();
-            _latency?.Dump("server stopped");
+            Latency.Dump("server stopped");
             _identity.Dispose();
         }
     }
 
-    /// <summary>The in-process server's Mac settings: in memory, validated like the Mac app, two fake displays.</summary>
+    /// <summary>The in-process server's Mac settings: in memory, validated like the Mac app, two fake displays, mirroring on.</summary>
     private static class SimSettings
     {
         private static readonly DisplayListEntry[] Displays =
@@ -486,6 +654,11 @@ internal static class Program
         public static void Attach(PenBridgeServer server)
         {
             var values = new MacSettingValues();
+            if (!MacSettings.TryParseAssignment("MirrorEnabled=true", out SettingEntry mirrorOn) || !values.TryApply(mirrorOn, Displays))
+            {
+                throw new InvalidOperationException("MirrorEnabled must be a settable Mac setting.");
+            }
+
             _ = server.SendDisplayListAsync(Displays);
             _ = server.SendSettingsSnapshotAsync(values.ToEntries());
             server.SettingsUpdateRequested += (_, e) =>
