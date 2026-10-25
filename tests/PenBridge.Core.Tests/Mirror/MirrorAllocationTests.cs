@@ -100,7 +100,7 @@ public sealed class MirrorAllocationTests : IDisposable
         {
             time.Advance(TimeSpan.FromMilliseconds(i % 50 == 0 ? 60 : 4));
             timeUs += 4_000;
-            guard.OnInputDatagram(i % 20 != 0, timeUs);
+            guard.OnInputDatagram((ulong)i + (ulong)(i / 40), i % 20 != 0, timeUs); // a lost datagram every 40
             if (i % 30 == 0)
             {
                 pacer.BeginFrame(12 * 1200, i % 60 == 0);

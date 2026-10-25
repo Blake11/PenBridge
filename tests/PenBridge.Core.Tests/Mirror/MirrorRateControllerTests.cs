@@ -144,20 +144,21 @@ public class MirrorRateControllerTests
     public void An_input_gap_during_contact_degrades_for_one_step()
     {
         uint t = 1_000_000;
-        _guard.OnInputDatagram(true, t);
+        ulong seq = 1;
+        Assert.False(_guard.OnInputDatagram(seq, true, t));
         for (int i = 0; i < 10; i++)
         {
             _time.Advance(TimeSpan.FromMilliseconds(40)); // a still pen: 40 ms contact keepalives
-            _guard.OnInputDatagram(true, t += 40_000);
+            Assert.False(_guard.OnInputDatagram(++seq, true, t += 40_000));
         }
 
         Assert.False(_guard.IsDegraded);
         _time.Advance(TimeSpan.FromMilliseconds(70)); // 30 ms late: not yet a gap
-        _guard.OnInputDatagram(true, t += 40_000);
+        Assert.False(_guard.OnInputDatagram(++seq, true, t += 40_000));
         Assert.False(_guard.IsDegraded);
 
-        _time.Advance(TimeSpan.FromMilliseconds(71)); // 31 ms late
-        _guard.OnInputDatagram(true, t += 40_000);
+        _time.Advance(TimeSpan.FromMilliseconds(71)); // 31 ms late: a new degradation
+        Assert.True(_guard.OnInputDatagram(++seq, true, t += 40_000));
         Assert.True(_guard.IsDegraded);
         Assert.True(_guard.Update());
         Assert.Equal(14000, _guard.Level.BitrateKbps);
@@ -170,27 +171,71 @@ public class MirrorRateControllerTests
     }
 
     [Fact]
-    public void Gaps_count_only_while_in_contact_and_in_order()
+    public void Gaps_count_only_while_in_contact()
     {
-        _guard.OnInputDatagram(false, 0);
+        Assert.False(_guard.OnInputDatagram(1, false, 0));
         _time.Advance(TimeSpan.FromMilliseconds(500)); // hover pause
-        _guard.OnInputDatagram(true, 10_000);           // pen down: the previous wasn't in contact
+        Assert.False(_guard.OnInputDatagram(2, true, 10_000)); // pen down: the previous wasn't in contact
         Assert.False(_guard.IsDegraded);
 
         _time.Advance(TimeSpan.FromMilliseconds(100));
-        _guard.OnInputDatagram(true, 5_000);            // reordered: ignored
+        Assert.False(_guard.OnInputDatagram(3, true, 5_000)); // timeUs backwards: no lateness check
         Assert.False(_guard.IsDegraded);
 
         _time.Advance(TimeSpan.FromMilliseconds(10));
-        _guard.OnInputDatagram(false, 120_000);         // the lift arrives in step with its time
+        Assert.False(_guard.OnInputDatagram(4, false, 15_000)); // the lift arrives in step with its time
         Assert.False(_guard.IsDegraded);
         _time.Advance(TimeSpan.FromMilliseconds(500));
-        _guard.OnInputDatagram(true, 130_000);          // after a lift nothing is late
+        Assert.False(_guard.OnInputDatagram(5, true, 25_000)); // after a lift nothing is late
         Assert.False(_guard.IsDegraded);
 
         _time.Advance(TimeSpan.FromMilliseconds(100));
-        _guard.OnInputDatagram(false, 130_000);         // a resend (same time) 100 ms later: a gap
+        Assert.True(_guard.OnInputDatagram(6, false, 25_000)); // a resend (same time) 100 ms later: a gap
         Assert.True(_guard.IsDegraded);
+    }
+
+    [Theory]
+    [InlineData(true, true, true)]
+    [InlineData(true, false, true)]   // lost before a lift
+    [InlineData(false, true, true)]   // the pen-down may be among the lost
+    [InlineData(false, false, false)] // hover only
+    public void Lost_input_datagrams_around_a_contact_degrade(bool before, bool after, bool degraded)
+    {
+        Assert.False(_guard.OnInputDatagram(10, before, 1_000));
+        _time.Advance(TimeSpan.FromMilliseconds(8)); // in step with timeUs: only the sequence gap counts
+        Assert.Equal(degraded, _guard.OnInputDatagram(12, after, 9_000));
+        Assert.Equal(degraded, _guard.IsDegraded);
+        if (degraded)
+        {
+            Assert.True(_guard.Update());
+            Assert.Equal(14000, _guard.Level.BitrateKbps); // the same ladder
+        }
+    }
+
+    [Fact]
+    public void Only_the_start_of_an_input_degradation_returns_true()
+    {
+        ulong seq = 1;
+        Assert.False(_guard.OnInputDatagram(seq, true, 0));
+        Assert.True(_guard.OnInputDatagram(seq += 2, true, 0));
+        _time.Advance(TimeSpan.FromMilliseconds(400));
+        Assert.False(_guard.OnInputDatagram(seq += 2, true, 400_000)); // extends the active signal
+        _time.Advance(TimeSpan.FromMilliseconds(499));
+        Assert.True(_guard.IsDegraded);                                 // extended to 900 ms
+        _time.Advance(TimeSpan.FromMilliseconds(1));
+        Assert.False(_guard.IsDegraded);
+        Assert.True(_guard.OnInputDatagram(seq += 2, true, 900_000));  // over: a new degradation
+    }
+
+    [Fact]
+    public void A_sequence_that_starts_over_resets_without_a_signal()
+    {
+        Assert.False(_guard.OnInputDatagram(500, true, 0));
+        _time.Advance(TimeSpan.FromMilliseconds(4));
+        Assert.False(_guard.OnInputDatagram(1, true, 4_000)); // a new session's sequence space
+        _time.Advance(TimeSpan.FromMilliseconds(4));
+        Assert.False(_guard.OnInputDatagram(2, true, 8_000));
+        Assert.False(_guard.IsDegraded);
     }
 
     [Fact]

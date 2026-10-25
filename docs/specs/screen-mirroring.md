@@ -67,9 +67,9 @@ Same validation and snapshot rules as the 1.2 keys (`MacSettings`, `SettingsWrit
 - **Threads:** the Mac input receive → inject path runs at the highest priority (user-interactive QoS). Capture callbacks, encode and the video send loop run below it (user-initiated or lower). On Android, `PadSendQueue` stays above the video receive and decode threads.
 - **Pacing (Mac):** a frame's fragments go out spread over at most half the frame interval, through a token bucket at 1.5 × the target bitrate. A keyframe may take up to one full interval.
 - **Input guard (Core `MirrorRateController`):**
-  - Inputs: the server's Ping RTT samples; gaps between input datagrams while the pen or a touch is in contact, measured against the phone's own spacing (arrival interval minus the `timeUs` interval), so a still pen's 40 ms contact keepalives are no gap; video loss from MirrorReport.
+  - Inputs: the server's Ping RTT samples; gaps between input datagrams while the pen or a touch is in contact, measured against the phone's own spacing (arrival interval minus the `timeUs` interval), so a still pen's 40 ms contact keepalives are no gap; lost input datagrams (a sequence gap between two authenticated datagrams while the earlier or the later one is in contact, so a lost pen-down counts too); video loss from MirrorReport.
   - Baseline: the minimum RTT over the last 10 s.
-  - Degraded: RTT > baseline + 8 ms over 2 consecutive samples, an input datagram during contact arriving > 30 ms later than its `timeUs` spacing says, or fragment loss > 2 % over a report.
+  - Degraded: RTT > baseline + 8 ms over 2 consecutive samples, an input datagram during contact arriving > 30 ms later than its `timeUs` spacing says, a lost input datagram around a contact (as above; both input signals last 500 ms), or fragment loss > 2 % over a report.
   - Ladder, one step per 500 ms while degraded: bitrate × 0.7 down to the preset floor, then fps halves (e.g. 120 → 60 → 30, never below 30), then pause video (`Throttled`).
   - Recovery: after 2 s healthy, one step back up every 1 s (fps first back up to the planned rate, then bitrate × 1.15 up to the preset).
   - Pure logic with an injected `TimeProvider`; each step yields a new MirrorConfig.

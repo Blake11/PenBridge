@@ -9,8 +9,9 @@ namespace PenBridge.Core.Mirror;
 /// <remarks>
 /// <para><b>Signals.</b> Degraded when the Ping RTT exceeds the baseline (minimum over the last 10 s) by more than 8 ms
 /// in 2 consecutive samples (until a sample is healthy again), when an input datagram during contact arrives more than
-/// 30 ms later than the phone's own spacing says (<see cref="OnInputDatagram"/>), or when a MirrorReport shows more than
-/// 2 % fragment loss; the last two keep the guard degraded for <see cref="StepInterval"/>.</para>
+/// 30 ms later than the phone's own spacing says or input datagrams around a contact were lost (a sequence gap,
+/// <see cref="OnInputDatagram"/>), or when a MirrorReport shows more than 2 % fragment loss; the last two keep the guard
+/// degraded for <see cref="StepInterval"/>.</para>
 /// <para><b>Ladder</b>, one step per <see cref="StepInterval"/> while degraded: bitrate × 0.7 down to the plan's floor,
 /// then the fps halves (120 → 60 → 30, never below 30 by halving), then the video pauses
 /// (<see cref="MirrorGuardLevel.Paused"/>, MirrorState Throttled). <b>Recovery</b>: after <see cref="HealthyBeforeRecovery"/>
@@ -18,9 +19,13 @@ namespace PenBridge.Core.Mirror;
 /// up to the target.</para>
 /// <para><b>Driving it.</b> Feed the signals, then call <see cref="Update"/>; it returns true when <see cref="Level"/>
 /// changed (send a new MirrorConfig, or Throttled when paused). Nothing runs on its own: after each call arm a one-shot
-/// timer for <see cref="NextUpdateIn"/> (null = nothing pending) so recovery happens without new input.</para>
+/// timer for <see cref="NextUpdateIn"/> (null = nothing pending) so recovery happens without new input. Input datagrams
+/// are the exception: call <see cref="OnInputDatagram"/> for every one, and only when it returns true (a new input
+/// degradation) wake the guard off the input thread (e.g. fire its timer now); the armed timer carries the later steps.
+/// RTT samples and reports come at most a few per second: call <see cref="Update"/> after each.</para>
 /// <para><b>Threads.</b> <see cref="OnInputDatagram"/> is lock-free and allocation-free and must be called from one
 /// thread (the input receive thread). Every other member is thread-safe (one internal lock).</para>
+/// <para><b>Lifetime.</b> One guard per session: input sequences restart with a session.</para>
 /// </remarks>
 public sealed class MirrorRateController
 {
@@ -75,7 +80,7 @@ public sealed class MirrorRateController
     private long _signalUntil = Never;
     private long _lastDownAt = Never;
     private long _lastUpAt = Never;
-    private long _consumedGapAt;
+    private long _consumedGapAt = Never;
 
     // Plan and position.
     private bool _active;
@@ -93,11 +98,14 @@ public sealed class MirrorRateController
     private ulong _reportSent;
 
     // Input thread only (OnInputDatagram), except _gapAt, which is published.
+    private readonly long _stepTicks;
     private bool _haveInput;
     private bool _inContact;
     private long _lastInputAt;
     private uint _lastInputTimeUs;
-    private long _gapAt;
+    private ulong _lastInputSequence;
+    private long _inputSignalUntil = Never;
+    private long _gapAt = Never;
 
     /// <summary>Creates the guard; <paramref name="time"/> drives every timestamp (inject a fake in tests).</summary>
     public MirrorRateController(TimeProvider time)
@@ -105,6 +113,7 @@ public sealed class MirrorRateController
         ArgumentNullException.ThrowIfNull(time);
         _time = time;
         _gapTicks = ToTicks(InputGap);
+        _stepTicks = ToTicks(StepInterval);
     }
 
     /// <summary>The current level; the plan's target, fps and not paused right after <see cref="Start"/>. Default before it.</summary>
@@ -236,27 +245,36 @@ public sealed class MirrorRateController
     }
 
     /// <summary>
-    /// One accepted input datagram: whether the pen or a touch is in contact in it and its <c>timeUs</c> (phone clock).
-    /// While the previous datagram was in contact, the arrival spacing beyond the phone's own spacing is the gap; more
-    /// than <see cref="InputGap"/> is a degraded signal. Comparing with the phone's spacing keeps a still pen (40 ms
-    /// contact keepalives) from reading as a gap. A datagram whose <c>timeUs</c> goes backwards (reordered) is ignored.
+    /// One authenticated input datagram (every one, empty probes and keepalives too): its <paramref name="sequence"/>,
+    /// whether the pen or a touch is in contact in it, and its <c>timeUs</c> (phone clock). Two input signals, each a
+    /// degraded signal for <see cref="StepInterval"/>:
+    /// <list type="bullet">
+    /// <item>Late: while the previous datagram was in contact, the arrival spacing beyond the phone's own spacing is more
+    /// than <see cref="InputGap"/>. Comparing with the phone's spacing keeps a still pen (40 ms contact keepalives) from
+    /// reading as a gap; a <c>timeUs</c> that goes backwards skips this check.</item>
+    /// <item>Lost: the sequence skips numbers while the previous or this datagram is in contact (the lost ones may have
+    /// carried the contact, e.g. a pen-down).</item>
+    /// </list>
+    /// A sequence at or below the previous one starts over without a signal (the receive path already drops replays, so
+    /// this is a new sequence space). Returns true when this datagram starts a new input degradation (no input signal was
+    /// active): wake the guard then (see the class remarks); false otherwise, also while a signal is extended.
     /// Call from the input receive thread only; lock-free and allocation-free.
     /// </summary>
-    public void OnInputDatagram(bool inContact, uint timeUs)
+    public bool OnInputDatagram(ulong sequence, bool inContact, uint timeUs)
     {
         long now = _time.GetTimestamp();
-        if (_haveInput && _inContact)
+        bool gap = false;
+        if (_haveInput && sequence > _lastInputSequence)
         {
-            int sentUs = unchecked((int)(timeUs - _lastInputTimeUs));
-            if (sentUs < 0)
+            gap = sequence - _lastInputSequence > 1 && (_inContact || inContact);
+            if (!gap && _inContact)
             {
-                return;
-            }
-
-            long sentTicks = (long)(sentUs * (double)_time.TimestampFrequency / 1_000_000);
-            if (now - _lastInputAt - sentTicks > _gapTicks)
-            {
-                Volatile.Write(ref _gapAt, now);
+                int sentUs = unchecked((int)(timeUs - _lastInputTimeUs));
+                if (sentUs >= 0)
+                {
+                    long sentTicks = (long)(sentUs * (double)_time.TimestampFrequency / 1_000_000);
+                    gap = now - _lastInputAt - sentTicks > _gapTicks;
+                }
             }
         }
 
@@ -264,6 +282,16 @@ public sealed class MirrorRateController
         _inContact = inContact;
         _lastInputAt = now;
         _lastInputTimeUs = timeUs;
+        _lastInputSequence = sequence;
+        if (!gap)
+        {
+            return false;
+        }
+
+        bool started = now >= _inputSignalUntil;
+        _inputSignalUntil = now + _stepTicks;
+        Volatile.Write(ref _gapAt, now);
+        return started;
     }
 
     /// <summary>Fragment loss over one report: <paramref name="lost"/> of <paramref name="sent"/> fragments. More than 2 % is a degraded signal.</summary>
@@ -488,7 +516,7 @@ public sealed class MirrorRateController
     private void FoldInputGap()
     {
         long gapAt = Volatile.Read(ref _gapAt);
-        if (gapAt != 0 && gapAt != _consumedGapAt)
+        if (gapAt != _consumedGapAt)
         {
             _consumedGapAt = gapAt;
             Signal(gapAt);
