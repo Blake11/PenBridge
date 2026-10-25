@@ -511,7 +511,8 @@ public sealed class MirrorController : IDisposable
 
         // Several displays each deliver up to fps frames: composite at most once per frame interval, and catch up
         // with a one-shot timer for the last change.
-        long intervalUs = 1_000_000 / _settings.Fps;
+        // The fps comes from the queue-owned encoder (set before capture starts), never from the control-side settings.
+        long intervalUs = 1_000_000 / _encoder!.Settings.Fps;
         long now = MirrorClock.NowUs();
         if (now - _lastComposeUs < intervalUs * 3 / 4)
         {
