@@ -120,9 +120,9 @@ public sealed class FrameReassemblerTests : IDisposable
         Assert.Equal(ReassemblyResult.Buffered, Accept(f2[3]));
         Assert.Equal(ReassemblyResult.Buffered, Accept(f3[0]));
         Assert.Equal(ReassemblyResult.Buffered, Accept(f2[2]));
-        Assert.Equal(ReassemblyResult.FrameReady, Accept(f2[1], out VideoFrame? frame2));
+        Assert.Equal(ReassemblyResult.FrameReady, Accept(f2[1], out VideoFrame frame2));
         Assert.Equal(au2, frame2!.Span.ToArray());
-        Assert.Equal(ReassemblyResult.FrameReady, Accept(f3[2], out VideoFrame? frame3));
+        Assert.Equal(ReassemblyResult.FrameReady, Accept(f3[2], out VideoFrame frame3));
         Assert.Equal(au3, frame3!.Span.ToArray());
         Assert.Equal((3u, 0u, 0u), (_r.FramesComplete, _r.FramesDropped, _r.FragmentsLost));
     }
@@ -135,8 +135,8 @@ public sealed class FrameReassemblerTests : IDisposable
         Assert.Equal(ReassemblyResult.Duplicate, Accept(f[0]));
         Assert.Equal(ReassemblyResult.Buffered, Accept(f[2]));
         Assert.Equal(ReassemblyResult.Duplicate, Accept(f[2]));
-        Assert.Equal(ReassemblyResult.FrameReady, Accept(f[1], out VideoFrame? frame));
-        frame!.Dispose();
+        Assert.Equal(ReassemblyResult.FrameReady, Accept(f[1], out VideoFrame frame));
+        frame.Dispose();
         Assert.Equal(ReassemblyResult.Stale, Accept(f[1]));
         Assert.Equal(ReassemblyResult.Stale, Accept(f[0]));
         Assert.Equal(4UL, _r.DatagramsRejected);
@@ -281,6 +281,41 @@ public sealed class FrameReassemblerTests : IDisposable
     }
 
     [Fact]
+    public void A_repeated_dispose_after_reuse_leaves_the_new_frame_alone()
+    {
+        Assert.False(default(VideoFrame).IsValid);
+        default(VideoFrame).Dispose(); // nothing to return
+
+        var held = new List<VideoFrame>();
+        for (uint n = 1; n <= FrameReassembler.MaxFramesHeld; n++)
+        {
+            held.Add(DeliverAll(Frame(n, true)));
+        }
+
+        VideoFrame first = held[0];
+        VideoFrame copy = first;
+        first.Dispose();
+        Assert.False(copy.IsValid);
+        VideoFrame reused = DeliverAll(Frame(5, true)); // takes the lease the first frame had
+        first.Dispose();                               // late repeats, also through a copy
+        copy.Dispose();
+        Assert.True(reused.IsValid);
+        Assert.Equal(VideoLink.AccessUnit(1000, 5), reused.Span.ToArray());
+        Assert.Equal(0, first.Length);
+        Assert.True(first.Data.IsEmpty);
+
+        // The pool still counts four frames held: the repeats freed nothing.
+        Assert.Equal(ReassemblyResult.NoBuffer, AcceptAll(Frame(6, true)));
+        reused.Dispose();
+        for (int i = 1; i < held.Count; i++)
+        {
+            held[i].Dispose();
+        }
+
+        DeliverAll(Frame(7, true)).Dispose();
+    }
+
+    [Fact]
     public void A_fifth_frame_in_flight_drops_the_oldest()
     {
         DeliverAll(Frame(1, true)).Dispose();
@@ -356,8 +391,8 @@ public sealed class FrameReassemblerTests : IDisposable
         VideoDatagramHeader h = VideoDatagramHeader.Fragment(Epoch, true, VideoLink.Session, 1, 1, 0, 3);
         Assert.Equal(ReassemblyResult.Buffered, _r.Accept(h with { FragmentIndex = 2 }, au.AsSpan(300, 50), out _));
         Assert.Equal(ReassemblyResult.Buffered, _r.Accept(h, Prefix(350, au[..100]), out _));
-        Assert.Equal(ReassemblyResult.FrameReady, _r.Accept(h with { FragmentIndex = 1 }, au.AsSpan(100, 200), out VideoFrame? frame));
-        Assert.Equal(au, frame!.Span.ToArray());
+        Assert.Equal(ReassemblyResult.FrameReady, _r.Accept(h with { FragmentIndex = 1 }, au.AsSpan(100, 200), out VideoFrame frame));
+        Assert.Equal(au, frame.Span.ToArray());
         frame.Dispose();
     }
 
@@ -423,9 +458,9 @@ public sealed class FrameReassemblerTests : IDisposable
         foreach (OpenedFragment f in arrivals)
         {
             _time.Advance(TimeSpan.FromMilliseconds(0.2));
-            if (_r.Accept(f.Header, f.Payload, out VideoFrame? frame) == ReassemblyResult.FrameReady)
+            if (_r.Accept(f.Header, f.Payload, out VideoFrame frame) == ReassemblyResult.FrameReady)
             {
-                Assert.Equal(originals[frame!.FrameNumber], frame.Span.ToArray());
+                Assert.Equal(originals[frame.FrameNumber], frame.Span.ToArray());
                 Assert.True(frame.FrameNumber > last);
                 Assert.True(!needKey || frame.IsKeyframe, "after a loss the decoder gets a keyframe first");
                 needKey = false;
@@ -458,17 +493,17 @@ public sealed class FrameReassemblerTests : IDisposable
 
     private ReassemblyResult Accept(OpenedFragment f) => _r.Accept(f.Header, f.Payload, out _);
 
-    private ReassemblyResult Accept(OpenedFragment f, out VideoFrame? frame) => _r.Accept(f.Header, f.Payload, out frame);
+    private ReassemblyResult Accept(OpenedFragment f, out VideoFrame frame) => _r.Accept(f.Header, f.Payload, out frame);
 
     private ReassemblyResult AcceptAll(IEnumerable<OpenedFragment> fragments, bool dispose = false)
     {
         ReassemblyResult result = ReassemblyResult.Inactive;
         foreach (OpenedFragment f in fragments)
         {
-            result = _r.Accept(f.Header, f.Payload, out VideoFrame? frame);
+            result = _r.Accept(f.Header, f.Payload, out VideoFrame frame);
             if (dispose)
             {
-                frame?.Dispose();
+                frame.Dispose();
             }
         }
 
@@ -477,17 +512,18 @@ public sealed class FrameReassemblerTests : IDisposable
 
     private VideoFrame DeliverAll(IEnumerable<OpenedFragment> fragments)
     {
-        VideoFrame? ready = null;
+        VideoFrame ready = default;
         foreach (OpenedFragment f in fragments)
         {
-            ReassemblyResult result = _r.Accept(f.Header, f.Payload, out VideoFrame? frame);
-            if (frame is not null)
+            ReassemblyResult result = _r.Accept(f.Header, f.Payload, out VideoFrame frame);
+            if (frame.IsValid)
             {
                 Assert.Equal(ReassemblyResult.FrameReady, result);
                 ready = frame;
             }
         }
 
-        return Assert.IsType<VideoFrame>(ready);
+        Assert.True(ready.IsValid, "no frame was handed out");
+        return ready;
     }
 }

@@ -80,7 +80,7 @@ public sealed class FrameReassembler
     private readonly Lock _lock = new();
     private readonly byte[] _pool = new byte[PoolBytes];
     private readonly Slot[] _slots = new Slot[MaxFramesInFlight];
-    private readonly VideoFrame[] _frames = new VideoFrame[MaxFramesHeld];
+    private readonly FrameLease[] _frames = new FrameLease[MaxFramesHeld];
     private readonly int[] _rangeOffset = new int[RangeCount];
     private readonly int[] _rangeLength = new int[RangeCount];
     private readonly bool[] _rangeUsed = new bool[RangeCount];
@@ -117,7 +117,7 @@ public sealed class FrameReassembler
 
         for (int i = 0; i < _frames.Length; i++)
         {
-            _frames[i] = new VideoFrame(this);
+            _frames[i] = new FrameLease(this);
         }
     }
 
@@ -256,11 +256,12 @@ public sealed class FrameReassembler
 
     /// <summary>
     /// Takes one authenticated datagram: its header and decrypted payload (<see cref="VideoDatagram"/> layout).
-    /// <paramref name="frame"/> is set only for <see cref="ReassemblyResult.FrameReady"/>. Never throws for bad input.
+    /// <paramref name="frame"/> is set only for <see cref="ReassemblyResult.FrameReady"/> (else <c>default</c>). Never
+    /// throws for bad input.
     /// </summary>
-    public ReassemblyResult Accept(in VideoDatagramHeader header, ReadOnlySpan<byte> payload, out VideoFrame? frame)
+    public ReassemblyResult Accept(in VideoDatagramHeader header, ReadOnlySpan<byte> payload, out VideoFrame frame)
     {
-        frame = null;
+        frame = default;
         lock (_lock)
         {
             if (!_active)
@@ -425,17 +426,17 @@ public sealed class FrameReassembler
         }
     }
 
-    internal void Release(VideoFrame frame)
+    internal void Release(FrameLease lease, int generation)
     {
         lock (_lock)
         {
-            if (!frame.Leased)
+            if (!lease.Leased || lease.Generation != generation)
             {
                 return;
             }
 
-            _rangeUsed[frame.Range] = false;
-            frame.Return();
+            _rangeUsed[lease.Range] = false;
+            lease.Return();
         }
     }
 
@@ -447,9 +448,9 @@ public sealed class FrameReassembler
         return result;
     }
 
-    private ReassemblyResult Complete(Slot slot, long now, out VideoFrame? frame)
+    private ReassemblyResult Complete(Slot slot, long now, out VideoFrame frame)
     {
-        frame = null;
+        frame = default;
         uint number = slot.Frame;
         int written = Compact(slot);
         if (written != slot.FrameLength)
@@ -496,8 +497,8 @@ public sealed class FrameReassembler
             return ReassemblyResult.Gated;
         }
 
-        VideoFrame? free = null;
-        foreach (VideoFrame candidate in _frames)
+        FrameLease? free = null;
+        foreach (FrameLease candidate in _frames)
         {
             if (!candidate.Leased)
             {
@@ -514,7 +515,8 @@ public sealed class FrameReassembler
             return ReassemblyResult.NoBuffer;
         }
 
-        free.Lease(_pool, _rangeOffset[slot.Range], written, slot.Range, _epoch, number, slot.Keyframe, slot.CaptureTimeUs, now);
+        int generation = free.Lease(_pool, _rangeOffset[slot.Range], slot.Range);
+        frame = new VideoFrame(free, generation, written, _epoch, number, slot.Keyframe, slot.CaptureTimeUs, now);
         slot.InUse = false;
         slot.Range = -1;
         _gated = false;
@@ -523,7 +525,6 @@ public sealed class FrameReassembler
         _framesComplete = unchecked(_framesComplete + 1);
         _haveDelivered = true;
         _lastDelivered = number;
-        frame = free;
         return ReassemblyResult.FrameReady;
     }
 

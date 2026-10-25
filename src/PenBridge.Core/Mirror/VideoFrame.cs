@@ -1,69 +1,95 @@
 namespace PenBridge.Core.Mirror;
 
 /// <summary>
-/// One reassembled access unit (Annex-B), leased from the <see cref="FrameReassembler"/>'s pool. The head queues
-/// <see cref="Data"/> to its decoder and then must <see cref="Dispose"/> the frame, which returns its memory; after
-/// that the data is reused. Until disposed the frame holds pool memory, and with every frame held the reassembler
-/// drops new frames. Dispose is thread-safe. The object itself is reused for a later frame: dispose it exactly once and
-/// drop the reference (a repeated Dispose before it is handed out again is ignored).
+/// One reassembled access unit (Annex-B), a handle to memory leased from the <see cref="FrameReassembler"/>'s pool. The
+/// head queues <see cref="Data"/> to its decoder and then must <see cref="Dispose"/> the frame, which returns its memory;
+/// after that the data is reused. Until disposed the frame holds pool memory, and with every frame held the reassembler
+/// drops new frames. Dispose is thread-safe and idempotent: each lease has its own generation, so a repeated Dispose
+/// (also through a copy of the handle, also after the memory went to a later frame) is ignored. <c>default</c> is an
+/// empty frame.
 /// </summary>
-public sealed class VideoFrame : IDisposable
+public readonly struct VideoFrame : IDisposable
 {
-    private readonly FrameReassembler _owner;
-    private byte[] _buffer = [];
-    private int _offset;
+    private readonly FrameLease? _lease;
+    private readonly int _generation;
+    private readonly int _length;
 
-    internal VideoFrame(FrameReassembler owner) => _owner = owner;
-
-    /// <summary>The MirrorConfig epoch the frame belongs to.</summary>
-    public byte Epoch { get; private set; }
-
-    public uint FrameNumber { get; private set; }
-
-    /// <summary>The frame is a keyframe (starts with its parameter sets).</summary>
-    public bool IsKeyframe { get; private set; }
-
-    /// <summary>Capture time on the Mac's session clock, µs (wraps).</summary>
-    public uint CaptureTimeUs { get; private set; }
-
-    /// <summary>When the last fragment arrived (<see cref="TimeProvider.GetTimestamp"/> of the reassembler's clock).</summary>
-    public long CompletedTimestamp { get; private set; }
-
-    /// <summary>Length of the access unit in bytes.</summary>
-    public int Length { get; private set; }
-
-    /// <summary>The access unit; empty after <see cref="Dispose"/>.</summary>
-    public ReadOnlyMemory<byte> Data => new(_buffer, _offset, Length);
-
-    /// <summary>The access unit as a span; empty after <see cref="Dispose"/>.</summary>
-    public ReadOnlySpan<byte> Span => new(_buffer, _offset, Length);
-
-    internal int Range { get; private set; } = -1;
-
-    internal bool Leased { get; private set; }
-
-    /// <summary>Returns the frame's memory to the pool.</summary>
-    public void Dispose() => _owner.Release(this);
-
-    internal void Lease(byte[] buffer, int offset, int length, int range, byte epoch, uint frameNumber, bool keyframe, uint captureTimeUs, long completedAt)
+    internal VideoFrame(FrameLease lease, int generation, int length, byte epoch, uint frameNumber, bool keyframe, uint captureTimeUs, long completedAt)
     {
-        _buffer = buffer;
-        _offset = offset;
-        Length = length;
-        Range = range;
+        _lease = lease;
+        _generation = generation;
+        _length = length;
         Epoch = epoch;
         FrameNumber = frameNumber;
         IsKeyframe = keyframe;
         CaptureTimeUs = captureTimeUs;
         CompletedTimestamp = completedAt;
-        Leased = true;
     }
 
-    internal void Return()
+    /// <summary>The MirrorConfig epoch the frame belongs to.</summary>
+    public byte Epoch { get; }
+
+    public uint FrameNumber { get; }
+
+    /// <summary>The frame is a keyframe (starts with its parameter sets).</summary>
+    public bool IsKeyframe { get; }
+
+    /// <summary>Capture time on the Mac's session clock, µs (wraps).</summary>
+    public uint CaptureTimeUs { get; }
+
+    /// <summary>When the last fragment arrived (<see cref="TimeProvider.GetTimestamp"/> of the reassembler's clock).</summary>
+    public long CompletedTimestamp { get; }
+
+    /// <summary>True until the frame is disposed (false for <c>default</c>).</summary>
+    public bool IsValid => _lease is { } lease && lease.IsCurrent(_generation);
+
+    /// <summary>Length of the access unit in bytes; 0 after <see cref="Dispose"/>.</summary>
+    public int Length => IsValid ? _length : 0;
+
+    /// <summary>The access unit; empty after <see cref="Dispose"/>.</summary>
+    public ReadOnlyMemory<byte> Data => _lease is { } lease && lease.IsCurrent(_generation) ? new(lease.Buffer, lease.Offset, _length) : default;
+
+    /// <summary>The access unit as a span; empty after <see cref="Dispose"/>.</summary>
+    public ReadOnlySpan<byte> Span => _lease is { } lease && lease.IsCurrent(_generation) ? new(lease.Buffer, lease.Offset, _length) : default;
+
+    /// <summary>Returns the frame's memory to the pool (once; later calls are ignored).</summary>
+    public void Dispose() => _lease?.Owner.Release(_lease, _generation);
+}
+
+/// <summary>A reusable lease of one pool range; its generation changes on every return, invalidating old handles.</summary>
+internal sealed class FrameLease(FrameReassembler owner)
+{
+    private int _generation;
+
+    public FrameReassembler Owner { get; } = owner;
+
+    public byte[] Buffer { get; private set; } = [];
+
+    public int Offset { get; private set; }
+
+    public int Range { get; private set; } = -1;
+
+    public bool Leased { get; private set; }
+
+    public int Generation => Volatile.Read(ref _generation);
+
+    public bool IsCurrent(int generation) => Volatile.Read(ref _generation) == generation;
+
+    /// <summary>Leases the range; returns the generation the handle carries.</summary>
+    public int Lease(byte[] buffer, int offset, int range)
     {
-        _buffer = [];
-        _offset = 0;
-        Length = 0;
+        Buffer = buffer;
+        Offset = offset;
+        Range = range;
+        Leased = true;
+        return Generation;
+    }
+
+    public void Return()
+    {
+        Volatile.Write(ref _generation, unchecked(_generation + 1));
+        Buffer = [];
+        Offset = 0;
         Range = -1;
         Leased = false;
     }

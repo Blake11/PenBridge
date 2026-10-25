@@ -97,7 +97,7 @@ New folder `src/PenBridge.Core/Mirror/` (namespace `PenBridge.Core.Mirror`), plu
   - Core runs the input guard and the planner and raises MirrorConfigChanged itself; the head only reports capability: `SetMirrorEncoders(codecs)` and `SetMirrorSource(pixelSize, refreshHz)` for the current target.
 - **Client (phone):**
   - `PenBridgeClient.StartMirror(MirrorRequest)` / `StopMirror()`.
-  - Events: `MirrorConfigReceived(MirrorStreamConfig)`, `MirrorStateChanged(MirrorState, MirrorReason)`, `VideoFrameReady(VideoFrame)`. A `VideoFrame` is pooled; the head must `Dispose` it after queueing it to the decoder. The client sends Probes, KeyframeRequests and MirrorReports itself; the head reports renders via `ReportFrameRendered(frameNumber, renderedAtUs)`.
+  - Events: `MirrorConfigReceived(MirrorStreamConfig)`, `MirrorStateChanged(MirrorState, MirrorReason)`, `VideoFrameReady(VideoFrame)`. A `VideoFrame` is a handle to pooled memory; the head must `Dispose` it after queueing it to the decoder (a repeated Dispose is ignored, each lease has its own generation). The client sends Probes, KeyframeRequests and MirrorReports itself; the head reports renders via `ReportFrameRendered(frameNumber, renderedAtUs)`.
   - `PenBridgeClient.NowUs`: the client's Ping clock (µs), the clock `renderedAtUs` uses.
 - **Thread hooks (both sides):** every thread Core starts for mirroring (video receive/send) calls an optional `Action<MirrorThreadRole>` from the server/client options on that thread when it starts, so a head can set its priority with platform APIs (Android `Process.SetThreadPriority`, the Mac's QoS class). `Thread.Priority` is not enough: it has no effect on Android. Core also sets `Thread.Priority` below normal on these threads as a portable default.
 

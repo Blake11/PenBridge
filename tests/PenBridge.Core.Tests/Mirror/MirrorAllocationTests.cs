@@ -44,11 +44,11 @@ public sealed class MirrorAllocationTests : IDisposable
                     continue;
                 }
 
-                switch (reassembler.Accept(header, datagram.AsSpan(VideoDatagramHeader.Size, payload), out VideoFrame? done))
+                switch (reassembler.Accept(header, datagram.AsSpan(VideoDatagramHeader.Size, payload), out VideoFrame done))
                 {
                     case ReassemblyResult.FrameReady:
                         ready++;
-                        done!.Dispose();
+                        done.Dispose();
                         break;
                     case ReassemblyResult.Gated:
                         gated++;
