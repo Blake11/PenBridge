@@ -1,23 +1,8 @@
 using PenBridge.Core.Input;
+using PenBridge.Core.Protocol;
 using PenBridge.Mac.Input;
 
 namespace PenBridge.Mac.Mirror;
-
-/// <summary>A video codec of the mirror stream; the values are the wire values of MirrorConfig.codec (ADR-0038).</summary>
-public enum MirrorCodec : byte
-{
-    H264 = 1,
-    Hevc = 2,
-}
-
-/// <summary>A set of codecs; the bits are the wire bits of MirrorStart.codecs (bit 0 H.264, bit 1 HEVC).</summary>
-[Flags]
-public enum MirrorCodecs : byte
-{
-    None = 0,
-    H264 = 1,
-    Hevc = 2,
-}
 
 /// <summary>Why mirroring could not start or stopped by itself.</summary>
 public enum MirrorFailure

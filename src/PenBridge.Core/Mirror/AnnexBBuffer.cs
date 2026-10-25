@@ -1,19 +1,24 @@
-namespace PenBridge.Mac.Mirror;
+namespace PenBridge.Core.Mirror;
 
 /// <summary>
 /// Builds one Annex-B access unit in a reused buffer: parameter sets and the encoder's length-prefixed (AVCC/HVCC) NAL
 /// units, each behind a 4-byte start code. Grows only when a frame is larger than any before, so steady state allocates
 /// nothing.
 /// </summary>
-/// <remarks>Not thread-safe; one per encoder session, used from its output callback.</remarks>
-internal sealed class AnnexBBuffer
+/// <remarks>Not thread-safe; one per encoder session (the Mac head uses it from the VideoToolbox output callback).</remarks>
+public sealed class AnnexBBuffer
 {
     private static ReadOnlySpan<byte> StartCode => [0, 0, 0, 1];
 
     private byte[] _buffer;
     private int _length;
 
-    public AnnexBBuffer(int initialCapacity = 256 * 1024) => _buffer = new byte[initialCapacity];
+    /// <param name="initialCapacity">Bytes to reserve up front (at least 1).</param>
+    public AnnexBBuffer(int initialCapacity = 256 * 1024)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(initialCapacity, 1);
+        _buffer = new byte[initialCapacity];
+    }
 
     /// <summary>The access unit built since <see cref="Reset"/>.</summary>
     public ReadOnlySpan<byte> Written => _buffer.AsSpan(0, _length);
@@ -74,10 +79,17 @@ internal sealed class AnnexBBuffer
 
     private void Ensure(int extra)
     {
-        int needed = _length + extra;
-        if (needed > _buffer.Length)
+        long needed = (long)_length + extra;
+        if (needed <= _buffer.Length)
         {
-            Array.Resize(ref _buffer, Math.Max(needed, _buffer.Length * 2));
+            return;
         }
+
+        if (needed > Array.MaxLength)
+        {
+            throw new InvalidOperationException("The access unit is too large.");
+        }
+
+        Array.Resize(ref _buffer, (int)Math.Min(Math.Max(needed, 2L * _buffer.Length), Array.MaxLength));
     }
 }

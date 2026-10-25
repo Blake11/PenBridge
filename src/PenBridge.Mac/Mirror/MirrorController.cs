@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using PenBridge.Core.Input;
 using ScreenCaptureKit;
+using PenBridge.Core.Protocol;
 
 namespace PenBridge.Mac.Mirror;
 
