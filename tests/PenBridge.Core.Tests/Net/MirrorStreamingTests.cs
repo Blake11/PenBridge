@@ -92,7 +92,10 @@ public class MirrorStreamingTests
         await using MirrorRig rig = await MirrorRig.CreateAsync(o => MirrorRig.ServerOptions(o, videoFilter: filter));
         Assert.Equal(default, rig.Client.MirrorStats);
         await rig.StartAsync();
-        await rig.SendAsync(MirrorRig.AccessUnit(5000, 1, true), true);
+
+        // A keyframe of about 100 fragments keeps the one lost fragment under the guard's 2 % loss threshold, so the
+        // MirrorReport below doesn't step the guard down (its own epoch would race the SetMirrorSource epoch).
+        await rig.SendAsync(MirrorRig.AccessUnit(120_000, 1, true), true);
         await rig.Frames.WaitFor(0, 1, "the keyframe");
 
         int keyframes = rig.Keyframes.Mark();
@@ -108,8 +111,11 @@ public class MirrorStreamingTests
         Assert.True(stats.DatagramsReceived >= 2);
         Assert.Equal(0, stats.ReportsSent);
 
+        MirrorGuardLevel level = rig.Mirror.Guard.Level;
         rig.H.Time.Advance(ClientMirror.ReportInterval);
         await Wait.Until(() => rig.Client.MirrorStats.ReportsSent == 1, "a MirrorReport counted");
+        await rig.H.SettleAsync();
+        Assert.Equal(level, rig.Mirror.Guard.Level); // the report's loss stayed under the threshold: no guard epoch
 
         // A new epoch restarts the reassembler's counters; the stats keep the totals.
         int configs = rig.ClientConfigs.Mark();
