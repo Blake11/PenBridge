@@ -58,6 +58,15 @@ public static class LatencyDump
         lines.Add(Line("contact_to_inject", report.InjectContact));
         lines.Add(Line("send_to_inject", report.Inject));
         lines.Add(Line("send_to_receive", report.Receive));
+        if (report.Video.Count > 0 || report.UnmeasuredVideo > 0)
+        {
+            lines.Add(Line("video_capture_to_render", report.Video));
+        }
+
+        if (report.UnmeasuredVideo > 0)
+        {
+            lines.Add(FormattableString.Invariant($"unmeasured_video={report.UnmeasuredVideo} (sessions without a client Ping: no clock offset)"));
+        }
         if (report.UnmeasuredInputs > 0)
         {
             lines.Add(FormattableString.Invariant($"unmeasured_inputs={report.UnmeasuredInputs} (sessions without a client Ping: no clock offset)"));
@@ -81,6 +90,7 @@ public static class LatencyDump
         LatencyRecordKind.Input => "input",
         LatencyRecordKind.ClientPing => "client_ping",
         LatencyRecordKind.ServerRtt => "server_rtt",
+        LatencyRecordKind.Video => "video",
         _ => "unknown",
     };
 }

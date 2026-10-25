@@ -21,6 +21,13 @@ public enum LatencyRecordKind : byte
     /// <see cref="LatencyRecord.ServerEnd"/> when the Pong was read (a round trip, server clock only).
     /// </summary>
     ServerRtt = 3,
+
+    /// <summary>
+    /// A rendered video frame (screen mirroring, from a MirrorReport): <see cref="LatencyRecord.ClientUs"/> is when the
+    /// phone rendered it (client clock, the Ping clock, no wrap), <see cref="LatencyRecord.Server"/> when the Mac
+    /// captured it and <see cref="LatencyRecord.ServerEnd"/> when the report arrived (server clock).
+    /// </summary>
+    Video = 4,
 }
 
 /// <summary>Input-frame details kept with a <see cref="LatencyRecordKind.Input"/> record.</summary>

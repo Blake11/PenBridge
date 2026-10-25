@@ -70,6 +70,10 @@ public sealed class LatencyRecorder
     public void RecordServerRtt(uint sessionId, long sent, long received) =>
         Add(new LatencyRecord(LatencyRecordKind.ServerRtt, LatencyFrameInfo.None, sessionId, 0, sent, received));
 
+    /// <summary>A video frame the phone rendered at <paramref name="renderedAtUs"/> (client clock), captured at <paramref name="captured"/> (server clock); <paramref name="reported"/> is when its MirrorReport arrived.</summary>
+    public void RecordVideo(uint sessionId, ulong renderedAtUs, long captured, long reported) =>
+        Add(new LatencyRecord(LatencyRecordKind.Video, LatencyFrameInfo.None, sessionId, renderedAtUs, captured, reported));
+
     /// <summary>Records that may arrive between sizing a snapshot and copying it.</summary>
     private const int SnapshotSlack = 4096;
 
