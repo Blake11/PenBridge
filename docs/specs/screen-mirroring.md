@@ -59,7 +59,7 @@ Same validation and snapshot rules as the 1.2 keys (`MacSettings`, `SettingsWrit
 - The Mac sends video only to the source endpoint of the latest authenticated Probe of this session, and only while the phone asked for video. Before the first Probe nothing is sent. After a new MirrorConfig the Mac holds that epoch's video until an authenticated Probe carrying the new epoch arrives (the phone has reconfigured and accepts it), so the epoch's first keyframe isn't dropped as wrong-epoch; if none arrives within 250 ms it sends anyway (to the pinned endpoint). Re-pinning follows the input rule (a new source whose Probe authenticates and carries a higher sequence). Forged datagrams count against the existing forged-datagram budget (skill `net-engine`).
 - The phone accepts video only from the Mac's address and `videoUdpPort` in the MirrorConfig.
 
-**Reassembly (phone):** at most 4 frames in flight, a 2 MiB pool in total, no per-datagram allocation. A frame is dropped when a newer frame completes before it, or 100 ms after its first fragment. After a dropped or out-of-order frame the phone feeds the decoder nothing until the next keyframe, and sends a KeyframeRequest (repeated every 250 ms until a keyframe arrives).
+**Reassembly (phone):** at most 4 frames in flight, a pool of 2 MiB + 2 × 1160 B in total (two 1 MiB frames always fit), no per-datagram allocation. A frame is dropped when a newer frame completes before it, or 100 ms after its first fragment. After a dropped or out-of-order frame the phone feeds the decoder nothing until the next keyframe, and sends a KeyframeRequest (repeated every 250 ms until a keyframe arrives).
 
 ## QoS (ADR-0038 "input always wins")
 

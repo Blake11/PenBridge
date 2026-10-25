@@ -341,17 +341,22 @@ public sealed class FrameReassemblerTests : IDisposable
     {
         List<OpenedFragment> big1 = Frame(1, true, VideoDatagram.MaxFrameLength);
         List<OpenedFragment> big2 = Frame(2, true, VideoDatagram.MaxFrameLength);
+        List<OpenedFragment> big3 = Frame(3, true, VideoDatagram.MaxFrameLength);
         Assert.Equal(ReassemblyResult.Buffered, Accept(big1[0]));
-        Assert.Equal(ReassemblyResult.Buffered, Accept(big2[0])); // two don't fit: frame 1 goes
+        Assert.Equal(ReassemblyResult.Buffered, Accept(big2[0])); // two of the largest fit in flight
+        Assert.Equal(0u, _r.FramesDropped);
+        Assert.Equal(ReassemblyResult.Buffered, Accept(big3[0])); // a third doesn't: frame 1 goes
         Assert.Equal((1u, 903u), (_r.FramesDropped, _r.FragmentsLost));
         Assert.Equal(ReassemblyResult.Stale, Accept(big1[1]));
-        VideoFrame frame = DeliverAll(big2.Skip(1));
-        Assert.Equal(VideoDatagram.MaxFrameLength, frame.Length);
+        VideoFrame second = DeliverAll(big2.Skip(1));     // completing 2 doesn't drop 3 (newer)
+        VideoFrame third = DeliverAll(big3.Skip(1));
+        Assert.Equal((VideoDatagram.MaxFrameLength, VideoDatagram.MaxFrameLength), (second.Length, third.Length));
 
-        // While the decoder holds it, another frame that size has no room and nothing older to evict.
-        Assert.Equal(ReassemblyResult.NoBuffer, Accept(Frame(3, true, VideoDatagram.MaxFrameLength)[0]));
-        frame.Dispose();
-        Assert.Equal(ReassemblyResult.FrameReady, AcceptAll(Frame(4, true, VideoDatagram.MaxFrameLength), dispose: true));
+        // While the decoder holds both, another frame that size has no room and nothing older to evict.
+        Assert.Equal(ReassemblyResult.NoBuffer, Accept(Frame(4, true, VideoDatagram.MaxFrameLength)[0]));
+        second.Dispose();
+        third.Dispose();
+        Assert.Equal(ReassemblyResult.FrameReady, AcceptAll(Frame(5, true, VideoDatagram.MaxFrameLength), dispose: true));
     }
 
     [Theory]
@@ -401,16 +406,24 @@ public sealed class FrameReassemblerTests : IDisposable
     }
 
     [Fact]
-    public void A_held_frame_keeps_only_its_bytes_so_two_large_keyframes_fit()
+    public void A_held_frame_keeps_only_its_bytes()
     {
-        // 904 fragments reserve 1 048 632 B in flight; two reservations would exceed the 2 MiB pool by 112 B.
-        const int length = 1_048_000;
-        VideoFrame held = DeliverAll(Frame(1, true, length));
-        VideoFrame second = DeliverAll(Frame(2, true, length));
-        Assert.Equal(VideoLink.AccessUnit(length, 1), held.Span.ToArray());
-        Assert.Equal(VideoLink.AccessUnit(length, 2), second.Span.ToArray());
-        held.Dispose();
-        second.Dispose();
+        // 524 313 B frames reserve 525 472 B in flight (1 159 B slack): four reservations exceed the pool, but three
+        // held frames trimmed to their bytes leave room for a fourth.
+        const int length = 524_313;
+        Assert.InRange(FrameReassembler.PoolBytes, (3 * length) + 525_472, (4 * 525_472) - 1);
+        var held = new List<VideoFrame>();
+        for (uint n = 1; n <= 4; n++)
+        {
+            held.Add(DeliverAll(Frame(n, true, length)));
+        }
+
+        Assert.Equal(VideoLink.AccessUnit(length, 4), held[3].Span.ToArray());
+        Assert.Equal(VideoLink.AccessUnit(length, 1), held[0].Span.ToArray());
+        foreach (VideoFrame frame in held)
+        {
+            frame.Dispose();
+        }
     }
 
     [Fact]

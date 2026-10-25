@@ -65,8 +65,11 @@ public sealed class FrameReassembler
     /// <summary>Most complete frames handed out and not yet disposed.</summary>
     public const int MaxFramesHeld = 4;
 
-    /// <summary>Memory for every frame in flight and held.</summary>
-    public const int PoolBytes = 2 * 1024 * 1024;
+    /// <summary>
+    /// Memory for every frame in flight and held: 2 MiB plus two fragments, so two frames of the largest size always fit
+    /// (a frame in flight reserves up to one fragment beyond its length).
+    /// </summary>
+    public const int PoolBytes = (2 * VideoDatagram.MaxFrameLength) + (2 * VideoDatagram.MaxPayloadSize);
 
     /// <summary>A frame not complete this long after its first fragment is dropped.</summary>
     public static readonly TimeSpan FrameTimeout = TimeSpan.FromMilliseconds(100);
