@@ -1,6 +1,7 @@
 using System.Text;
 using Foundation;
 using PenBridge.Core.Input;
+using PenBridge.Core.Mirror;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Settings;
 
@@ -53,6 +54,9 @@ public sealed class SettingsStore
         public const string Rotate = "Rotate";
         public const string ThreeFingerDrag = "ThreeFingerDrag";
         public const string FourFingerGestures = "FourFingerGestures";
+        public const string MirrorEnabled = "MirrorEnabled";
+        public const string MirrorQuality = "MirrorQuality";
+        public const string MirrorFps = "MirrorFps";
         public const string AllowTakeover = "AllowTakeover";
         public const string Paused = "Paused";
         public const string RunAtStartup = "RunAtStartup";
@@ -200,8 +204,8 @@ public sealed class SettingsStore
     /// <summary>Pen or Mouse mode. Default Pen.</summary>
     public StylusMode StylusMode
     {
-        get => (StylusMode)GetEnum(MacSettingKey.StylusMode);
-        set => SetEnum(MacSettingKey.StylusMode, (int)value, (int)StylusMode);
+        get => (StylusMode)GetInt(MacSettingKey.StylusMode);
+        set => SetInt(MacSettingKey.StylusMode, (int)value, (int)StylusMode);
     }
 
     /// <summary>Mouse-mode speed, 0.25..4. Default 1.</summary>
@@ -221,8 +225,8 @@ public sealed class SettingsStore
     /// <summary>Side-button action. Default Right click.</summary>
     public SideButtonAction SideButton
     {
-        get => (SideButtonAction)GetEnum(MacSettingKey.SideButton);
-        set => SetEnum(MacSettingKey.SideButton, (int)value, (int)SideButton);
+        get => (SideButtonAction)GetInt(MacSettingKey.SideButton);
+        set => SetInt(MacSettingKey.SideButton, (int)value, (int)SideButton);
     }
 
     /// <summary>Tip feel, −1 (soft) .. +1 (firm). Default 0 (linear).</summary>
@@ -287,8 +291,8 @@ public sealed class SettingsStore
     /// <summary>Smart Zoom: follow macOS, on, off. Default follow macOS.</summary>
     public SmartZoomMode SmartZoom
     {
-        get => (SmartZoomMode)GetEnum(MacSettingKey.SmartZoom);
-        set => SetEnum(MacSettingKey.SmartZoom, (int)value, (int)SmartZoom);
+        get => (SmartZoomMode)GetInt(MacSettingKey.SmartZoom);
+        set => SetInt(MacSettingKey.SmartZoom, (int)value, (int)SmartZoom);
     }
 
     /// <summary>Finger pointer speed (one-finger cursor, three-finger drag), 0.25..4. Default 1.</summary>
@@ -333,6 +337,29 @@ public sealed class SettingsStore
         set => SetBool(Keys.FourFingerGestures, value, FourFingerGestures);
     }
 
+    // ---- Screen mirroring (ADR-0038) ----
+
+    /// <summary>Mirror the target to the phone. Default false.</summary>
+    public bool MirrorEnabled
+    {
+        get => GetBool(MacSettingKey.MirrorEnabled);
+        set => SetBool(Keys.MirrorEnabled, value, MirrorEnabled);
+    }
+
+    /// <summary>Bitrate preset. Default Balanced.</summary>
+    public MirrorQuality MirrorQuality
+    {
+        get => (MirrorQuality)GetInt(MacSettingKey.MirrorQuality);
+        set => SetInt(MacSettingKey.MirrorQuality, (int)value, (int)MirrorQuality);
+    }
+
+    /// <summary>Frame-rate limit: <see cref="MacSettings.MirrorFpsAuto"/> (0, follow the refresh rates) or 30, 60, 120. Default Auto.</summary>
+    public int MirrorFps
+    {
+        get => GetInt(MacSettingKey.MirrorFps);
+        set => SetInt(MacSettingKey.MirrorFps, value, MirrorFps);
+    }
+
     // ---- Key table bridge (ADR-0030) ----
 
     /// <summary>True for the names of the keys the phone sees (the Phase 5 key table), false for General ones.</summary>
@@ -366,6 +393,9 @@ public sealed class SettingsStore
             SettingEntry.Bool(MacSettingKey.Rotate, Rotate),
             SettingEntry.Bool(MacSettingKey.ThreeFingerDrag, ThreeFingerDrag),
             SettingEntry.Bool(MacSettingKey.FourFingerGestures, FourFingerGestures),
+            SettingEntry.Bool(MacSettingKey.MirrorEnabled, MirrorEnabled),
+            SettingEntry.Int(MacSettingKey.MirrorQuality, (int)MirrorQuality),
+            SettingEntry.Int(MacSettingKey.MirrorFps, MirrorFps),
         ];
     }
 
@@ -406,6 +436,9 @@ public sealed class SettingsStore
             case MacSettingKey.Rotate: Rotate = entry.BoolValue; return true;
             case MacSettingKey.ThreeFingerDrag: ThreeFingerDrag = entry.BoolValue; return true;
             case MacSettingKey.FourFingerGestures: FourFingerGestures = entry.BoolValue; return true;
+            case MacSettingKey.MirrorEnabled: MirrorEnabled = entry.BoolValue; return true;
+            case MacSettingKey.MirrorQuality: MirrorQuality = (MirrorQuality)entry.IntValue; return true;
+            case MacSettingKey.MirrorFps: MirrorFps = entry.IntValue; return true;
             default: return false;
         }
     }
@@ -453,8 +486,8 @@ public sealed class SettingsStore
         }
     }
 
-    // Int keys of the table are enums with the values 0..Values.Count-1.
-    private int GetEnum(MacSettingKey key)
+    // Int keys of the table allow the descriptor's IntValues: 0..Count-1 for an enum, a list of numbers otherwise (MirrorFps).
+    private int GetInt(MacSettingKey key)
     {
         MacSettingDescriptor d = MacSettings.Get(key);
         if (_defaults[key.ToString()] is not NSNumber number)
@@ -463,12 +496,12 @@ public sealed class SettingsStore
         }
 
         long value = number.Int64Value;
-        return value >= 0 && value < d.Values.Count ? (int)value : d.Default.IntValue;
+        return value is >= int.MinValue and <= int.MaxValue && IsAllowed(d, (int)value) ? (int)value : d.Default.IntValue;
     }
 
-    private void SetEnum(MacSettingKey key, int value, int current)
+    private void SetInt(MacSettingKey key, int value, int current)
     {
-        if (value < 0 || value >= MacSettings.Get(key).Values.Count)
+        if (!IsAllowed(MacSettings.Get(key), value))
         {
             return;
         }
@@ -479,6 +512,19 @@ public sealed class SettingsStore
         {
             Raise(key.ToString());
         }
+    }
+
+    private static bool IsAllowed(MacSettingDescriptor d, int value)
+    {
+        foreach (int allowed in d.IntValues)
+        {
+            if (allowed == value)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private float GetFloat(MacSettingKey key)
