@@ -42,6 +42,7 @@ Never: `src/PenBridge.Core/**` (request Core changes via your report), other hea
 - Spec ambiguous on anything that affects the design → report the question, don't guess.
 - Work in the worktree path you're given with absolute paths and `git -C <path>`. Never `cd` in the shared shell: it moves the session's working directory for everyone.
 - Write your state **only** to your `ws-<id>.md` (path in the prompt; skill `progress-tracking`) and include it in your report. Never edit `progress.md`.
+- **Checkpoint as you go:** a usage limit can end your run at any moment. After each logical step (a component plus its tests, a fix, a verified check), update your ws file (done, next, open questions, uncommitted files) and, when the prompt allows commits, commit that step. Never hold all the work for one commit at the end. A fresh agent resumes from your ws file and commits.
 - Bugs outside your scope: report them (or file per skill `issues`, `type: bug`); don't fix them.
 - Commit only when told: Conventional Commits, lowercase subject, no AI attribution (no `Co-Authored-By`, no "Generated with"). Never push, open PRs, or touch remotes.
 - Tests: `scripts/test.sh` (raw: `dotnet test --project tests/PenBridge.Core.Tests`) must pass before you report.
