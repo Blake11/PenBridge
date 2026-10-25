@@ -43,4 +43,10 @@ internal static partial class MirrorLog
 
     [LoggerMessage(912, LogLevel.Warning, "Mirror dump could not start: {Reason}")]
     public static partial void DumpFailed(ILogger logger, string reason);
+
+    [LoggerMessage(913, LogLevel.Warning, "ScreenCaptureKit didn't confirm the stop of display {DisplayId} within the timeout; continuing")]
+    public static partial void StopTimedOut(ILogger logger, uint displayId);
+
+    [LoggerMessage(914, LogLevel.Warning, "The {Codec} encoder drops most frames ({Dropped} of {Total} in the last second); it can't sustain {Width}x{Height} @ {Fps} fps")]
+    public static partial void EncoderOverloaded(ILogger logger, string codec, int dropped, int total, int width, int height, int fps);
 }

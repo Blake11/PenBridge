@@ -8,7 +8,7 @@ using ScreenCaptureKit;
 namespace PenBridge.Mac.Mirror;
 
 /// <summary>
-/// One ScreenCaptureKit <c>SCStream</c> of one display: NV12, queue depth 3, the cursor shown, scaled to the requested
+/// One ScreenCaptureKit <c>SCStream</c> of one display: NV12, queue depth 6, the cursor shown, scaled to the requested
 /// size, at most one frame per <c>1/fps</c> (spec "Heads → Mac → Capture"). ScreenCaptureKit delivers no frames while
 /// the captured content doesn't change, so a static screen costs nothing.
 /// </summary>
@@ -21,6 +21,19 @@ internal sealed class CaptureStream : NSObject, ISCStreamOutput, ISCStreamDelega
 {
     /// <summary>SCStreamOutputTypeScreen.</summary>
     private const nint OutputTypeScreen = 0;
+
+    /// <summary>
+    /// Surfaces in the ScreenCaptureKit pool (its maximum is 8). Held at 120 fps on the single-display path: the controller's
+    /// retained last frame (1) + frames inside the encoder (1–2 in low-latency mode) + the frame being handled in the
+    /// callback (1) + the one ScreenCaptureKit is rendering into (1) = 5, plus one of slack so a late encoder output can't
+    /// starve the pool. The All-displays path holds one surface per stream (the compositor's slot), which this covers
+    /// too. A 2160x1160 NV12 frame is about 3.8 MB (4K: 12.4 MB), so 6 surfaces are about 23 MB (4K: 75 MB) per stream (live
+    /// check: RSS, and no starvation at 120 fps).
+    /// </summary>
+    private const int QueueDepth = 6;
+
+    /// <summary>How long a stop waits for ScreenCaptureKit's completion before giving up.</summary>
+    private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(2);
 
     private SCStream? _stream;
     private volatile bool _active;
@@ -59,7 +72,7 @@ internal sealed class CaptureStream : NSObject, ISCStreamOutput, ISCStreamDelega
             PreservesAspectRatio = false,
             ShowsCursor = true,
             PixelFormat = CVPixelFormatType.CV420YpCbCr8BiPlanarVideoRange,
-            QueueDepth = 3,
+            QueueDepth = QueueDepth,
             MinimumFrameInterval = new CMTime(1, fps),
             WeakColorMatrix = CGDisplayStreamYCbCrMatrixOptionKeys.Itu_R_709_2,
             WeakColorSpaceName = CGColorSpaceNames.Srgb,
@@ -126,24 +139,29 @@ internal sealed class CaptureStream : NSObject, ISCStreamOutput, ISCStreamDelega
         return done.Task;
     }
 
-    /// <summary>Stops capturing (errors are ignored: the stream may already have stopped).</summary>
-    public Task StopAsync()
+    /// <summary>
+    /// Stops capturing, detaches the output and drains <paramref name="queue"/> so no callback can still be pending, then
+    /// releases the stream (errors are ignored: the stream may already have stopped). After this it is safe to dispose
+    /// this object: exported callback targets must outlive their queue's pending blocks.
+    /// </summary>
+    /// <returns>False when ScreenCaptureKit didn't confirm the stop within the timeout.</returns>
+    public async Task<bool> StopAsync(DispatchQueue queue)
     {
         _active = false;
         SCStream? stream = _stream;
         _stream = null;
         if (stream is null)
         {
-            return Task.CompletedTask;
+            return true;
         }
 
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        stream.StopCapture(_ =>
-        {
-            stream.Dispose();
-            done.TrySetResult();
-        });
-        return done.Task;
+        stream.StopCapture(_ => done.TrySetResult());
+        bool confirmed = await Task.WhenAny(done.Task, Task.Delay(StopTimeout)).ConfigureAwait(false) == done.Task;
+        _ = stream.RemoveStreamOutput(this, SCStreamOutputType.Screen, out _);
+        queue.DispatchSync(static () => { }); // pending frame blocks (they see _active == false) have run
+        stream.Dispose();
+        return confirmed;
     }
 
     [Export("stream:didOutputSampleBuffer:ofType:")]

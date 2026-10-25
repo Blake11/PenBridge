@@ -46,6 +46,12 @@ internal sealed unsafe class HardwareEncoder : IDisposable
     private int _droppedFrames;
     private bool _disposed;
 
+    // Sustained-drop detection (under _outputLock).
+    private long _windowStart;
+    private int _windowTotal;
+    private int _windowBad;
+    private bool _overloadReported;
+
     private HardwareEncoder(MirrorStreamSettings settings, IMirrorFrameSink sink, ILogger logger)
     {
         Settings = settings;
@@ -55,6 +61,19 @@ internal sealed unsafe class HardwareEncoder : IDisposable
 
     /// <summary>The size, fps, bitrate and codec in effect.</summary>
     public MirrorStreamSettings Settings { get; private set; }
+
+    /// <summary>
+    /// Raised once (VideoToolbox thread) when the encoder drops or fails more than half of its frames over a window of at
+    /// least <see cref="OverloadWindowSeconds"/> second(s) holding at least <see cref="OverloadMinFrames"/> frames: it can't
+    /// sustain the size and fps (arguments: bad frames, frames in the window). Don't dispose the encoder from the handler.
+    /// </summary>
+    public Action<HardwareEncoder, int, int>? Overloaded { get; set; }
+
+    /// <summary>The length of the window sustained drops are judged over, in seconds.</summary>
+    public const int OverloadWindowSeconds = 1;
+
+    /// <summary>Fewest frames a window needs before it can count as overloaded.</summary>
+    public const int OverloadMinFrames = 20;
 
     /// <summary>True when the session runs with low-latency rate control.</summary>
     public bool LowLatency { get; private set; }
@@ -218,6 +237,11 @@ internal sealed unsafe class HardwareEncoder : IDisposable
                 $"No hardware {Settings.Codec} encoder for {Settings.Width}x{Settings.Height} (OSStatus {status}).");
         }
 
+        // Tag the stream BT.709 like the capture's colour matrix. The range follows the NV12 420v input buffers (video
+        // range, limited): VideoToolbox has no range property and writes video_full_range_flag = 0 for them.
+        SetConstant("kVTCompressionPropertyKey_ColorPrimaries", "kCMFormatDescriptionColorPrimaries_ITU_R_709_2");
+        SetConstant("kVTCompressionPropertyKey_TransferFunction", "kCMFormatDescriptionTransferFunction_ITU_R_709_2");
+        SetConstant("kVTCompressionPropertyKey_YCbCrMatrix", "kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2");
         SetBool(VTCompressionPropertyKey.RealTime, true);
         SetBool(VTCompressionPropertyKey.AllowFrameReordering, false);
         SetBool(VTCompressionPropertyKey.PrioritizeEncodingSpeedOverQuality, true);
@@ -276,6 +300,23 @@ internal sealed unsafe class HardwareEncoder : IDisposable
         Set(VTCompressionPropertyKey.DataRateLimits, limits.Handle);
     }
 
+    private void SetConstant(string keyName, string valueName)
+    {
+        IntPtr key = MirrorNative.VideoToolboxConstant(keyName);
+        IntPtr value = MirrorNative.CoreMediaConstant(valueName);
+        if (key == IntPtr.Zero || value == IntPtr.Zero)
+        {
+            MirrorLog.PropertyRefused(_logger, keyName, -12902);
+            return;
+        }
+
+        int status = MirrorNative.VTSessionSetProperty(_session, key, value);
+        if (status != 0)
+        {
+            MirrorLog.PropertyRefused(_logger, keyName, status);
+        }
+    }
+
     private void SetBool(NSString key, bool value) => Set(key, value ? MirrorNative.True : MirrorNative.False);
 
     private void SetInt(NSString key, int value)
@@ -323,14 +364,18 @@ internal sealed unsafe class HardwareEncoder : IDisposable
         if (status != 0)
         {
             Interlocked.Increment(ref _outputErrors);
+            CountFrame(bad: true);
             return;
         }
 
         if (sampleBuffer == IntPtr.Zero || (infoFlags & MirrorNative.EncodeInfoFrameDropped) != 0)
         {
             Interlocked.Increment(ref _droppedFrames);
+            CountFrame(bad: true);
             return;
         }
+
+        CountFrame(bad: false);
 
         bool keyframe = IsKeyframe(sampleBuffer);
         lock (_outputLock)
@@ -385,6 +430,46 @@ internal sealed unsafe class HardwareEncoder : IDisposable
             }
 
             _sink.OnFrame(_annexB.Written, keyframe, captureTimeUs);
+        }
+    }
+
+    /// <summary>Judges the last second of output; nothing happens (and nothing is counted) while no frames come.</summary>
+    private void CountFrame(bool bad)
+    {
+        int badFrames = 0, total = 0;
+        lock (_outputLock)
+        {
+            long now = Stopwatch.GetTimestamp();
+            if (_windowTotal == 0)
+            {
+                _windowStart = now;
+            }
+
+            _windowTotal++;
+            if (bad)
+            {
+                _windowBad++;
+            }
+
+            if (now - _windowStart < OverloadWindowSeconds * Stopwatch.Frequency)
+            {
+                return;
+            }
+
+            if (_windowTotal >= OverloadMinFrames && _windowBad * 2 > _windowTotal && !_overloadReported)
+            {
+                _overloadReported = true;
+                badFrames = _windowBad;
+                total = _windowTotal;
+            }
+
+            _windowTotal = 0;
+            _windowBad = 0;
+        }
+
+        if (total != 0)
+        {
+            Overloaded?.Invoke(this, badFrames, total);
         }
     }
 

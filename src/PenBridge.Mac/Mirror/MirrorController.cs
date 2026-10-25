@@ -22,7 +22,7 @@ namespace PenBridge.Mac.Mirror;
 /// raised on a thread-pool thread, never on the capture queue.</para>
 /// <para><b>Idle.</b> Nothing runs while stopped. While running, ScreenCaptureKit delivers no frames for a static screen
 /// (frames with a status other than Complete are skipped), so nothing is encoded either. A keyframe request on a static
-/// screen re-encodes the last captured frame (kept retained: one of the three queue buffers).</para>
+/// screen (no fresh frame within one frame interval) re-encodes the last captured frame (kept retained: one of the queue's surfaces).</para>
 /// <para><b>Per frame.</b> The single-display path creates no managed objects: raw sample buffers in, raw pixel buffers
 /// to the encoder, the access unit in a reused buffer. All displays composites through Core Image
 /// (<see cref="DisplayCompositor"/>), which allocates a few wrappers per composite.</para>
@@ -32,6 +32,9 @@ namespace PenBridge.Mac.Mirror;
 /// </remarks>
 public sealed class MirrorController : IDisposable
 {
+    private const int MaxStillRetries = 4;
+    private const long StillRetryNs = 250_000_000;
+
     private static readonly Lock CodecsLock = new();
     private static MirrorCodecs? _hardwareCodecs;
 
@@ -39,7 +42,7 @@ public sealed class MirrorController : IDisposable
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _control = new(1, 1);
     private readonly DispatchQueue _queue;
-    private readonly Action _encodeStillAction;
+    private readonly Action _scheduleStillAction;
     private readonly IntPtr _statusKey = SCStreamFrameInfoKeys.Status.Handle;
 
     // Control side (under _control).
@@ -48,6 +51,7 @@ public sealed class MirrorController : IDisposable
     private MirrorStreamSettings _settings;
     private bool _running;
     private bool _disposed;
+    private int _disposedFlag;
 
     // Capture queue only.
     private HardwareEncoder? _encoder;
@@ -70,7 +74,7 @@ public sealed class MirrorController : IDisposable
             "com.blake11.penbridge.mirror",
             new DispatchQueue.Attributes { QualityOfService = DispatchQualityOfService.UserInitiated },
             null);
-        _encodeStillAction = EncodeStillIfRequested;
+        _scheduleStillAction = () => ScheduleStill(0);
     }
 
     /// <summary>Raised (thread pool) when capture or encode stopped by itself; the stream is dead until restarted.</summary>
@@ -162,7 +166,8 @@ public sealed class MirrorController : IDisposable
     }
 
     /// <summary>
-    /// Encodes the next frame as a keyframe; on a static screen, re-encodes the last frame now. Rate limiting and epoch
+    /// Encodes the next frame as a keyframe; when no fresh frame arrives within one frame interval (static screen),
+    /// re-encodes the last frame instead. Rate limiting and epoch
     /// checks are the caller's (Core). Any thread, non-blocking.
     /// </summary>
     public void RequestKeyframe()
@@ -170,7 +175,7 @@ public sealed class MirrorController : IDisposable
         Interlocked.Exchange(ref _keyframeRequested, 1);
         if (IsRunning)
         {
-            _queue.DispatchAsync(_encodeStillAction);
+            _queue.DispatchAsync(_scheduleStillAction);
         }
     }
 
@@ -188,23 +193,32 @@ public sealed class MirrorController : IDisposable
         }
     }
 
-    /// <summary>Stops without waiting for ScreenCaptureKit (best effort; prefer <see cref="StopAsync"/>).</summary>
+    /// <summary>
+    /// Stops, serialized with the other control calls (it waits for a start or reconfigure in progress, at most 10 s).
+    /// Prefer <see cref="StopAsync"/>; this blocks the calling thread, so call it off the capture queue.
+    /// </summary>
     public void Dispose()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposedFlag, 1) == 1)
         {
             return;
         }
 
-        _disposed = true;
-        foreach (CaptureStream s in _streams)
+        // Runs on the thread pool: the continuations inside never need the caller's (main-thread) context.
+        Task.Run(async () =>
         {
-            _ = s.StopAsync();
-        }
-
-        _streams = [];
-        Volatile.Write(ref _running, false);
-        _queue.DispatchAsync(ReleaseQueueState);
+            await _control.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                _disposed = true; // later control calls throw ObjectDisposedException
+                await StopCoreAsync().ConfigureAwait(false);
+                _queue.DispatchSync(ReleaseQueueState);
+            }
+            finally
+            {
+                _control.Release();
+            }
+        }).Wait(TimeSpan.FromSeconds(10));
     }
 
     private async Task StartCoreAsync(MirrorTarget target, MirrorStreamSettings settings)
@@ -217,7 +231,7 @@ public sealed class MirrorController : IDisposable
         SCShareableContent content;
         try
         {
-            content = await SCShareableContent.GetShareableContentAsync(false, true).ConfigureAwait(false);
+            content = await SCShareableContent.GetShareableContentAsync(false, false).ConfigureAwait(false);
         }
         catch (NSErrorException ex)
         {
@@ -235,16 +249,28 @@ public sealed class MirrorController : IDisposable
             }
 
             SCRunningApplication[] own = OwnApplication(content);
-            HardwareEncoder encoder = HardwareEncoder.Create(settings, _sink, _logger);
-            DisplayCompositor? compositor = target.IsAllDisplays ? CreateCompositor(target, settings) : null;
-            _queue.DispatchSync(() =>
+            HardwareEncoder encoder = CreateEncoder(settings);
+            DisplayCompositor? compositor = null;
+            try
             {
-                _encoder = encoder;
-                _compositor = compositor;
-                _recreatedAfterFailure = false;
-                _lastComposeUs = 0;
-                _composePending = false;
-            });
+                compositor = target.IsAllDisplays ? CreateCompositor(target, settings) : null;
+                _queue.DispatchSync(() =>
+                {
+                    _encoder = encoder;
+                    _compositor = compositor;
+                    _recreatedAfterFailure = false;
+                    _lastComposeUs = 0;
+                    _composePending = false;
+                });
+            }
+            catch
+            {
+                // Not handed to the queue yet (or the hand-over itself failed): nobody else owns them.
+                compositor?.Dispose();
+                encoder.Dispose();
+                _queue.DispatchSync(ReleaseQueueState);
+                throw;
+            }
 
             var streams = new CaptureStream[displays.Length];
             try
@@ -261,19 +287,23 @@ public sealed class MirrorController : IDisposable
                     await streams[i].StartAsync(filter, config, _queue).ConfigureAwait(false);
                 }
             }
-            catch (Exception ex) when (ex is NSErrorException or MirrorException)
+            catch (Exception ex)
             {
                 foreach (CaptureStream? s in streams)
                 {
                     if (s is not null)
                     {
-                        await s.StopAsync().ConfigureAwait(false);
-                        s.Dispose();
+                        await StopStreamAsync(s).ConfigureAwait(false);
                     }
                 }
 
                 _queue.DispatchSync(ReleaseQueueState);
-                throw ex is NSErrorException ns ? CaptureError(ns, "Starting the capture stream failed") : ex;
+                if (ex is NSErrorException ns)
+                {
+                    throw CaptureError(ns, "Starting the capture stream failed");
+                }
+
+                throw;
             }
 
             _streams = streams;
@@ -326,8 +356,18 @@ public sealed class MirrorController : IDisposable
         bool newEncoder = old.Width != settings.Width || old.Height != settings.Height || old.Codec != settings.Codec;
         if (newEncoder)
         {
-            HardwareEncoder encoder = HardwareEncoder.Create(settings, _sink, _logger);
-            DisplayCompositor? compositor = compositeTarget is null ? null : CreateCompositor(compositeTarget, settings);
+            HardwareEncoder encoder = CreateEncoder(settings);
+            DisplayCompositor? compositor;
+            try
+            {
+                compositor = compositeTarget is null ? null : CreateCompositor(compositeTarget, settings);
+            }
+            catch
+            {
+                encoder.Dispose();
+                throw;
+            }
+
             _queue.DispatchSync(() =>
             {
                 HardwareEncoder? previous = _encoder;
@@ -356,6 +396,17 @@ public sealed class MirrorController : IDisposable
         }
     }
 
+    /// <summary>Stops a stream, drains the capture queue, then disposes it (so no queued callback hits a freed target).</summary>
+    private async Task StopStreamAsync(CaptureStream stream)
+    {
+        if (!await stream.StopAsync(_queue).ConfigureAwait(false))
+        {
+            MirrorLog.StopTimedOut(_logger, stream.DisplayId);
+        }
+
+        stream.Dispose();
+    }
+
     private async Task StopCoreAsync()
     {
         if (!_running)
@@ -366,8 +417,7 @@ public sealed class MirrorController : IDisposable
         Volatile.Write(ref _running, false);
         foreach (CaptureStream s in _streams)
         {
-            await s.StopAsync().ConfigureAwait(false);
-            s.Dispose();
+            await StopStreamAsync(s).ConfigureAwait(false);
         }
 
 #if DEBUG
@@ -403,7 +453,7 @@ public sealed class MirrorController : IDisposable
                 throw new InvalidOperationException("Mirroring is already running.");
             }
 
-            HardwareEncoder encoder = HardwareEncoder.Create(settings, _sink, _logger);
+            HardwareEncoder encoder = CreateEncoder(settings);
             _queue.DispatchSync(() =>
             {
                 _encoder = encoder;
@@ -460,6 +510,31 @@ public sealed class MirrorController : IDisposable
         }
     });
 #endif
+
+    /// <summary>A hardware encoder whose sustained overload ends the stream with <see cref="MirrorFailure.EncoderFailed"/>.</summary>
+    private HardwareEncoder CreateEncoder(MirrorStreamSettings settings)
+    {
+        HardwareEncoder encoder = HardwareEncoder.Create(settings, _sink, _logger);
+        encoder.Overloaded = OnEncoderOverloaded;
+        return encoder;
+    }
+
+    // VideoToolbox thread: report, then retire the encoder on the capture queue (never dispose it from its own callback).
+    private void OnEncoderOverloaded(HardwareEncoder encoder, int bad, int total)
+    {
+        MirrorStreamSettings s = encoder.Settings;
+        MirrorLog.EncoderOverloaded(_logger, s.Codec.ToString(), bad, total, s.Width, s.Height, s.Fps);
+        _queue.DispatchAsync(() =>
+        {
+            if (ReferenceEquals(_encoder, encoder))
+            {
+                _encoder = null;
+                encoder.Dispose();
+            }
+        });
+        RaiseFailed(MirrorFailure.EncoderFailed,
+            $"The {s.Codec} encoder can't sustain {s.Width}x{s.Height} @ {s.Fps} fps ({bad} of {total} frames dropped in the last second).");
+    }
 
     private void ReleaseQueueState()
     {
@@ -592,7 +667,7 @@ public sealed class MirrorController : IDisposable
             _recreatedAfterFailure = true;
             try
             {
-                _encoder = HardwareEncoder.Create(s, _sink, _logger);
+                _encoder = CreateEncoder(s);
                 return;
             }
             catch (MirrorException)
@@ -604,10 +679,38 @@ public sealed class MirrorController : IDisposable
         RaiseFailed(MirrorFailure.EncoderFailed, $"The {s.Codec} encoder failed (OSStatus {status}).");
     }
 
-    private void EncodeStillIfRequested()
+    // Capture queue. A keyframe request first gives a fresh frame one frame interval to arrive (it carries the keyframe
+    // itself: Submit consumes the request); only when none came is the screen static and the last frame re-encoded.
+    private void ScheduleStill(int attempt)
     {
-        if (Volatile.Read(ref _keyframeRequested) == 0 || _lastFrame == IntPtr.Zero || _encoder is null)
+        HardwareEncoder? encoder = _encoder;
+        if (encoder is null)
         {
+            return;
+        }
+
+        long delayNs = attempt == 0 ? (1_000_000L / encoder.Settings.Fps + 2_000) * 1000 : StillRetryNs;
+        _queue.DispatchAfter(new DispatchTime(DispatchTime.Now, delayNs), () => EncodeStillIfRequested(attempt));
+    }
+
+    private void EncodeStillIfRequested(int attempt)
+    {
+        HardwareEncoder? encoder = _encoder;
+        if (Volatile.Read(ref _keyframeRequested) == 0 || _lastFrame == IntPtr.Zero || encoder is null)
+        {
+            return;
+        }
+
+        MirrorStreamSettings s = encoder.Settings;
+        if ((int)MirrorNative.CVPixelBufferGetWidth(_lastFrame) != s.Width || (int)MirrorNative.CVPixelBufferGetHeight(_lastFrame) != s.Height)
+        {
+            // After a resize the last frame still has the old size and ScreenCaptureKit may have nothing new to say about a
+            // static screen: look again a few times (bounded), the first new-size frame carries the keyframe by itself.
+            if (attempt < MaxStillRetries)
+            {
+                ScheduleStill(attempt + 1);
+            }
+
             return;
         }
 

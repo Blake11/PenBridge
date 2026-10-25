@@ -41,7 +41,9 @@ public interface IMirrorFrameSink
     /// <summary>
     /// One Annex-B access unit. Keyframes start with the parameter sets (VPS/SPS/PPS for HEVC, SPS/PPS for H.264). The
     /// span is only valid during the call (the buffer is reused for the next frame): copy or send it before returning,
-    /// and don't block.
+    /// and don't block. Don't call any <see cref="MirrorController"/> control method (start, reconfigure, stop, dispose)
+    /// from here: they wait for the encoder to drain, which is waiting for this call, so they deadlock. <c>RequestKeyframe</c>
+    /// is safe (it only queues work).
     /// </summary>
     /// <param name="accessUnit">The access unit, start codes included.</param>
     /// <param name="keyframe">True for an IDR/IRAP frame.</param>
