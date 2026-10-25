@@ -438,6 +438,45 @@ public class MirrorSessionTests
     }
 
     [Fact]
+    public async Task A_render_of_an_older_epoch_never_meets_the_new_epochs_capture_times()
+    {
+        var latency = new LatencyRecorder(4096);
+        await using MirrorRig rig = await MirrorRig.CreateAsync(o => MirrorRig.ServerOptions(o, latency: latency));
+        MirrorStreamConfig first = await rig.StartAsync();
+        await rig.SendAsync(MirrorRig.AccessUnit(3000, 1, true), true);
+        await rig.SendAsync(MirrorRig.AccessUnit(800, 2, false), false);
+        await rig.Frames.WaitFor(0, 2, "the first epoch's frames");
+        rig.Client.ReportFrameRendered(first.Epoch, 2, rig.Client.NowUs);
+
+        // A new epoch (a guard step or a new source) restarts the numbers before the next report.
+        int configs = rig.ClientConfigs.Mark();
+        rig.Server.SetMirrorSource(1000, 1500, 60);
+        MirrorStreamConfig second = (await rig.ClientConfigs.WaitFor(configs, 1, "the second epoch"))[0];
+        await rig.WaitReleasedAsync();
+        await rig.SendAsync(MirrorRig.AccessUnit(3000, 3, true), true);
+        await rig.SendAsync(MirrorRig.AccessUnit(800, 4, false), false);
+        await rig.Frames.WaitFor(2, 2, "the second epoch's frames 1 and 2");
+        rig.Client.ReportFrameRendered(5, rig.Client.NowUs); // current epoch, but not handed out yet
+        rig.Client.ReportFrameRendered(first.Epoch, 2, rig.Client.NowUs); // late, from the old epoch (the latest call)
+
+        long reports = rig.Client.MirrorStats.ReportsSent;
+        rig.H.Time.Advance(ClientMirror.ReportInterval);
+        await Wait.Until(() => rig.Client.MirrorStats.ReportsSent > reports, "a MirrorReport");
+        await rig.H.SettleAsync();
+        Assert.DoesNotContain(latency.Snapshot(), r => r.Kind == LatencyRecordKind.Video);
+
+        // A render of this epoch counts, also for a number the old epoch already reported.
+        ulong rendered = rig.Client.NowUs;
+        rig.Client.ReportFrameRendered(second.Epoch, 2, rendered);
+        rig.H.Time.Advance(ClientMirror.ReportInterval);
+        LatencyRecord row = (await Wait.Until(
+            () => latency.Snapshot().Where(r => r.Kind == LatencyRecordKind.Video).ToArray(),
+            got => got.Length == 1,
+            "the current epoch's render produced a row"))[0];
+        Assert.Equal(rendered, row.ClientUs);
+    }
+
+    [Fact]
     public async Task Video_streams_while_input_flows_without_reordering_or_loss()
     {
         await using MirrorRig rig = await MirrorRig.CreateAsync();

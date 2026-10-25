@@ -154,8 +154,17 @@ public sealed class PenBridgeClient : IAsyncDisposable
     public void StopMirror() => Volatile.Read(ref _connection)?.Mirror?.Stop();
 
     /// <summary>
-    /// The head rendered frame <paramref name="frameNumber"/> at <paramref name="renderedAtUs"/> (<see cref="NowUs"/>);
-    /// reported to the Mac in the next MirrorReport (video latency). Thread-safe, cheap.
+    /// The head rendered frame <paramref name="frameNumber"/> of epoch <paramref name="epoch"/>
+    /// (<see cref="VideoFrame.Epoch"/>) at <paramref name="renderedAtUs"/> (<see cref="NowUs"/>); reported to the Mac in
+    /// the next MirrorReport (video latency). A frame of another epoch than the current one is ignored, and a new epoch
+    /// forgets the previous render, so a frame number never meets the wrong epoch's capture time. Thread-safe, cheap.
+    /// </summary>
+    public void ReportFrameRendered(byte epoch, uint frameNumber, ulong renderedAtUs) =>
+        Volatile.Read(ref _connection)?.Mirror?.ReportFrameRendered(epoch, frameNumber, renderedAtUs);
+
+    /// <summary>
+    /// <see cref="ReportFrameRendered(byte, uint, ulong)"/> for the current epoch. A number above the last frame handed
+    /// out in that epoch is ignored; prefer the epoch overload, which also catches a late render of an older epoch.
     /// </summary>
     public void ReportFrameRendered(uint frameNumber, ulong renderedAtUs) =>
         Volatile.Read(ref _connection)?.Mirror?.ReportFrameRendered(frameNumber, renderedAtUs);

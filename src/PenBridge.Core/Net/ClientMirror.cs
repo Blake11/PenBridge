@@ -76,6 +76,7 @@ internal sealed class ClientMirror : IDisposable
 
     private SocketAddress? _source; // the Mac's video endpoint; read by the receive thread
     private long _armedDue = long.MaxValue; // tick due (timestamp), read without the lock to skip re-arms
+    private byte _renderedEpoch; // the render fields: under _renderLock; _lastRendered 0 = none
     private uint _lastRendered;
     private ulong _lastRenderedAt;
 
@@ -237,14 +238,35 @@ internal sealed class ClientMirror : IDisposable
         }
     }
 
-    /// <summary>The head rendered <paramref name="frameNumber"/> at <paramref name="renderedAtUs"/> (client Ping clock); goes into the next MirrorReport.</summary>
-    public void ReportFrameRendered(uint frameNumber, ulong renderedAtUs)
+    /// <summary>
+    /// The head rendered <paramref name="frameNumber"/> of <paramref name="epoch"/> at <paramref name="renderedAtUs"/>
+    /// (client Ping clock); goes into the next MirrorReport of that epoch only.
+    /// </summary>
+    public void ReportFrameRendered(byte epoch, uint frameNumber, ulong renderedAtUs)
     {
         lock (_renderLock)
         {
+            _renderedEpoch = epoch;
             _lastRendered = frameNumber;
             _lastRenderedAt = renderedAtUs;
         }
+    }
+
+    /// <summary>The same for the current epoch (none: ignored).</summary>
+    public void ReportFrameRendered(uint frameNumber, ulong renderedAtUs)
+    {
+        byte epoch;
+        lock (_lock)
+        {
+            if (_config is not { } config)
+            {
+                return;
+            }
+
+            epoch = config.Epoch;
+        }
+
+        ReportFrameRendered(epoch, frameNumber, renderedAtUs);
     }
 
     /// <summary>
@@ -286,6 +308,11 @@ internal sealed class ClientMirror : IDisposable
             }
 
             _config = config;
+            lock (_renderLock)
+            {
+                _lastRendered = 0; // a frame number of the previous epoch means nothing in this one
+            }
+
             FoldEpochLocked();
             _epochs++;
             _reassembler.Start(config.Epoch);
@@ -610,12 +637,17 @@ internal sealed class ClientMirror : IDisposable
 
                 if (now >= _nextReport)
                 {
-                    uint rendered;
-                    ulong renderedAt;
+                    // Only a render of this epoch, of a frame this epoch handed out (not a late one of an older epoch).
+                    uint delivered = _reassembler.LastCompleteFrame;
+                    uint rendered = 0;
+                    ulong renderedAt = 0;
                     lock (_renderLock)
                     {
-                        rendered = _lastRendered;
-                        renderedAt = _lastRenderedAt;
+                        if (_renderedEpoch == config.Epoch && _lastRendered != 0 && _lastRendered <= delivered)
+                        {
+                            rendered = _lastRendered;
+                            renderedAt = _lastRenderedAt;
+                        }
                     }
 
                     _reportOut = _reassembler.CreateReport(rendered, renderedAt);

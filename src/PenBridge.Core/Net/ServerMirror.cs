@@ -83,6 +83,7 @@ internal sealed class ServerMirror : IDisposable
     private bool _keyframePending;
     private bool _fastPing;
     private uint _lastLatencyFrame;
+    private byte _lastLatencyEpoch;
     private bool _started; // a MirrorStart arrived in this session: from then on the phone gets every state change
     private bool _disposed;
     private int _qosWarned;
@@ -793,7 +794,8 @@ internal sealed class ServerMirror : IDisposable
 
     private void RecordVideoLatencyLocked(in MirrorReportMessage report, VideoSender sender, byte epoch)
     {
-        if (_options.LatencyRecorder is not { } latency || report.LastRenderedFrame == 0 || report.LastRenderedFrame == _lastLatencyFrame)
+        if (_options.LatencyRecorder is not { } latency || report.LastRenderedFrame == 0
+            || (report.LastRenderedFrame == _lastLatencyFrame && epoch == _lastLatencyEpoch))
         {
             return;
         }
@@ -801,6 +803,7 @@ internal sealed class ServerMirror : IDisposable
         if (sender.TryGetCaptureTimestamp(epoch, report.LastRenderedFrame, out long captured))
         {
             _lastLatencyFrame = report.LastRenderedFrame;
+            _lastLatencyEpoch = epoch;
             latency.RecordVideo(_sessionId, report.LastRenderedAtUs, captured, _time.GetTimestamp());
         }
     }
