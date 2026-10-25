@@ -35,6 +35,7 @@ internal sealed class ServerConnection
     internal const int PushDisplays = 1;
     internal const int PushSnapshot = 2;
     internal const int PushActiveArea = 4;
+    internal const int PushMirror = 8; // MirrorConfig then MirrorState (ScreenMirror)
 
     private readonly PenBridgeServer _server;
     private readonly PenBridgeServerOptions _options;
@@ -92,6 +93,12 @@ internal sealed class ServerConnection
     public string DeviceName { get; private set; } = string.Empty;
 
     public SessionInput? Input { get; private set; }
+
+    /// <summary>Screen mirroring of this session, or null when <see cref="ProtocolCapabilities.ScreenMirror"/> wasn't negotiated.</summary>
+    public ServerMirror? Mirror { get; private set; }
+
+    /// <summary>The session (Ping) clock's origin: a <see cref="TimeProvider.GetTimestamp"/> value.</summary>
+    internal long SessionEpoch => _epoch;
 
     /// <summary>SettingsUpdate messages dropped by the per-session rate cap.</summary>
     internal long SettingsUpdatesDropped => Interlocked.Read(ref _settingsUpdatesDropped);
@@ -170,8 +177,9 @@ internal sealed class ServerConnection
     {
         if (Interlocked.CompareExchange(ref _requestedReason, (int)reason + 1, 0) == 0)
         {
-            // Release the input first so the next session starts from a clean state.
+            // Release the input first so the next session starts from a clean state; video stops with it.
             Input?.Shutdown();
+            Mirror?.Dispose();
             _pushes.Stop();
 
             // No more pings: a write after the half-close would fail and abort, cutting the linger short.
@@ -257,6 +265,7 @@ internal sealed class ServerConnection
             }
 
             Input?.Shutdown();
+            Mirror?.Dispose();
             _pushes.Stop();
             if (!_authenticated)
             {
@@ -469,11 +478,29 @@ internal sealed class ServerConnection
                 _negotiated);
             input.ForgedDatagramFlood += OnForgedFlood;
             input.ActiveAreaChanged += SendActiveArea; // only marks the push dirty (any thread, no _gate)
+            if ((_negotiated & ProtocolCapabilities.ScreenMirror) != 0)
+            {
+                Span<byte> videoKeys = stackalloc byte[2 * KeySchedule.KeyLength];
+                try
+                {
+                    KeySchedule.DeriveVideoKey(deviceKey, auth.ClientNonce.Span, serverNonce, sessionId, VideoKeyDirection.ServerToClient, videoKeys[..KeySchedule.KeyLength]);
+                    KeySchedule.DeriveVideoKey(deviceKey, auth.ClientNonce.Span, serverNonce, sessionId, VideoKeyDirection.ClientToServer, videoKeys[KeySchedule.KeyLength..]);
+                    var mirror = new ServerMirror(this, _server, input, videoKeys[..KeySchedule.KeyLength], videoKeys[KeySchedule.KeyLength..], sessionId, _epoch);
+                    input.ActiveAreaChanged += mirror.OnActiveArea; // replans; raises nothing on this thread
+                    Mirror = mirror;
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(videoKeys);
+                }
+            }
+
             Input = input;
             if (!_server.PublishInput(this, input) || RequestedReason is not null)
             {
                 // Taken over (or closed) while starting.
                 input.Shutdown();
+                Mirror?.Dispose();
                 _refusalReason = RequestedReason ?? SessionEndReason.TakenOver;
                 return false;
             }
@@ -527,6 +554,7 @@ internal sealed class ServerConnection
                     SurfaceInfoMessage surface = frame.Read<SurfaceInfoMessage>();
                     input.ConfigureSurface(surface.WidthPx, surface.HeightPx, surface.Capabilities, surface.XDpi, surface.YDpi);
                     _server.SetPhoneSurface(this, surface.WidthPx, surface.HeightPx);
+                    Mirror?.OnSurface(surface.WidthPx, surface.HeightPx);
                     if ((_negotiated & ProtocolCapabilities.ActiveArea) != 0)
                     {
                         // The phone resets its outline on every surface change and waits for the area, even an unchanged one.
@@ -541,6 +569,7 @@ internal sealed class ServerConnection
                     if (!wasTls && input.Transport == InputTransport.Tls)
                     {
                         NetLog.ServerTlsFallback(_log, DeviceId);
+                        Mirror?.OnTlsFallback();
                     }
 
                     break;
@@ -561,13 +590,26 @@ internal sealed class ServerConnection
                 case ControlMessageType.SettingsUpdate when (_negotiated & ProtocolCapabilities.RemoteSettings) != 0:
                     OnSettingsUpdate(frame);
                     break;
+                case ControlMessageType.MirrorStart when Mirror is not null:
+                    Mirror.OnMirrorStart(frame.Read<MirrorStartMessage>());
+                    break;
+                case ControlMessageType.MirrorStop when Mirror is not null:
+                    _ = frame.Read<MirrorStopMessage>();
+                    Mirror.OnMirrorStop();
+                    break;
+                case ControlMessageType.KeyframeRequest when Mirror is not null:
+                    Mirror.OnKeyframeRequest(frame.Read<KeyframeRequestMessage>());
+                    break;
+                case ControlMessageType.MirrorReport when Mirror is not null:
+                    Mirror.OnMirrorReport(frame.Read<MirrorReportMessage>());
+                    break;
                 case ControlMessageType.Bye:
                     return SessionEndReason.PeerClosed;
                 case ControlMessageType.Error:
                     LogPeerError(frame);
                     return SessionEndReason.PeerError;
                 default:
-                    // Includes the settings messages without their capability, and the server-to-phone ones.
+                    // Includes the settings and mirroring messages without their capability, and the server-to-phone ones.
                     throw new ProtocolException(ProtocolErrorCode.UnexpectedMessage, "Unexpected control message during a session.");
             }
         }
@@ -643,6 +685,11 @@ internal sealed class ServerConnection
         if ((_negotiated & ProtocolCapabilities.ActiveArea) == 0)
         {
             bits &= ~PushActiveArea;
+        }
+
+        if ((_negotiated & ProtocolCapabilities.ScreenMirror) == 0)
+        {
+            bits &= ~PushMirror;
         }
 
         return bits == 0 ? Task.CompletedTask : _pushes.Request(bits);
@@ -727,6 +774,20 @@ internal sealed class ServerConnection
                 }
             }
 
+            if ((bits & PushMirror) != 0 && Mirror is { } mirror)
+            {
+                mirror.TakeOutbound(out MirrorConfigMessage? config, out MirrorStateMessage? state);
+                if (config is { } c && !await TryPushAsync(c).ConfigureAwait(false))
+                {
+                    return false;
+                }
+
+                if (state is { } st && !await TryPushAsync(st).ConfigureAwait(false))
+                {
+                    return false;
+                }
+            }
+
             return true;
         }
         catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException or SocketException or InvalidOperationException or NotSupportedException)
@@ -791,6 +852,22 @@ internal sealed class ServerConnection
         }
     }
 
+    /// <summary>
+    /// Pings every <see cref="PenBridgeServerOptions.MirrorPingInterval"/> while the session streams video (a timely
+    /// RTT signal for the input guard), else every <see cref="PenBridgeServerOptions.PingInterval"/>. Only after
+    /// SessionStart, never while closing.
+    /// </summary>
+    internal void SetMirrorPing(bool fast)
+    {
+        if (RequestedReason is not null || _options.PingInterval == Timeout.InfiniteTimeSpan || Volatile.Read(ref _pingTimer) is not { } timer)
+        {
+            return;
+        }
+
+        TimeSpan interval = fast && _options.MirrorPingInterval < _options.PingInterval ? _options.MirrorPingInterval : _options.PingInterval;
+        timer.Change(interval, interval);
+    }
+
     private ulong NowUs() => (ulong)(_time.GetElapsedTime(_epoch).Ticks / TimeSpan.TicksPerMicrosecond);
 
     private void UpdateRtt(ulong sentUs, uint sessionId)
@@ -800,6 +877,7 @@ internal sealed class ServerConnection
         if (sentUs <= now)
         {
             Volatile.Write(ref _rttTicks, (long)(now - sentUs) * TimeSpan.TicksPerMicrosecond);
+            Mirror?.OnRtt(TimeSpan.FromTicks((long)(now - sentUs) * TimeSpan.TicksPerMicrosecond));
             if (_options.LatencyRecorder is { } latency)
             {
                 // The Ping went out at _epoch + sentUs (Ping timestamps are microseconds since the epoch).

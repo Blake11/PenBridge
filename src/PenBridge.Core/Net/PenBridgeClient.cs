@@ -8,6 +8,7 @@ using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using PenBridge.Core.Input;
+using PenBridge.Core.Mirror;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
 using SecretKind = PenBridge.Core.Security.PairingSecretKind;
@@ -52,6 +53,7 @@ public sealed class PenBridgeClient : IAsyncDisposable
     private readonly SemaphoreSlim _connectGate = new(1, 1);
     private Connection? _connection;
     private int _disposed;
+    private int _qosWarned;
 
     public PenBridgeClient(PenBridgeClientOptions options)
     {
@@ -83,7 +85,99 @@ public sealed class PenBridgeClient : IAsyncDisposable
     /// <summary>Raised on the read-loop thread when the Mac sends the surface's active area (<see cref="ProtocolCapabilities.ActiveArea"/>, ADR-0031).</summary>
     public event EventHandler<ActiveAreaEventArgs>? ActiveAreaReceived;
 
+    /// <summary>
+    /// Raised on the read-loop thread with every MirrorConfig (a new epoch): reconfigure the decoder for this codec and
+    /// size. Video of the epoch follows on <see cref="VideoFrameReady"/>, starting with a keyframe. Handlers must be quick.
+    /// </summary>
+    public event EventHandler<MirrorStreamConfig>? MirrorConfigReceived;
+
+    /// <summary>
+    /// Raised with the Mac's MirrorState (read-loop thread), and with Unavailable/TlsFallback when this client falls
+    /// back to TLS while mirroring (thread pool). Anything but Streaming means no video until the next MirrorConfig.
+    /// </summary>
+    public event EventHandler<MirrorStateChangedEventArgs>? MirrorStateChanged;
+
+    /// <summary>
+    /// Raised on Core's video receive thread with each reassembled access unit, in order, keyframe first after every
+    /// epoch start or loss. The frame is a handle to pooled memory: the handler owns it and must
+    /// <see cref="VideoFrame.Dispose"/> it once queued to the decoder (or copied); until then it holds reassembly memory,
+    /// and with four frames held new ones are dropped. A repeated Dispose is ignored. Without a handler, or when the
+    /// handler throws, Core disposes the frame. Handlers must not block (queue to the decoder thread).
+    /// </summary>
+    public event EventHandler<VideoFrame>? VideoFrameReady;
+
     public Guid DeviceId { get; }
+
+    /// <summary>
+    /// The client's Ping clock in microseconds since this connection's session start (0 when not connected): the clock
+    /// of <see cref="ReportFrameRendered"/>'s <c>renderedAtUs</c>, so the Mac can relate renders to its captures.
+    /// </summary>
+    public ulong NowUs => Volatile.Read(ref _connection)?.NowUs() ?? 0;
+
+    /// <summary>The mirroring configuration of the current epoch, or null.</summary>
+    public MirrorStreamConfig? MirrorConfig => Volatile.Read(ref _connection)?.Mirror?.Config;
+
+    /// <summary>Video-path counters of the current connection (tests, diagnostics).</summary>
+    internal MirrorCounters MirrorCounters => Volatile.Read(ref _connection)?.Mirror?.Counters ?? default;
+
+    /// <summary>The mirroring of the current connection (tests).</summary>
+    internal ClientMirror? Mirror => Volatile.Read(ref _connection)?.Mirror;
+
+    /// <summary>
+    /// Asks the Mac for video (MirrorStart; protocol 1.3, <see cref="ProtocolCapabilities.ScreenMirror"/>): opens a video
+    /// socket and its receive thread, then follows MirrorConfig and MirrorState on its own (Probes, KeyframeRequests,
+    /// MirrorReports). Call it again with new limits to send another MirrorStart. In TLS fallback it waits for UDP
+    /// (raising Unavailable/TlsFallback). False, without sending, when not connected or the Mac doesn't offer mirroring.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">A size or fps outside the wire range (1..65535, 1..255).</exception>
+    public bool StartMirror(MirrorRequest request)
+    {
+        _ = request.ToMessage(1);
+        if (Volatile.Read(ref _connection) is not { Closed: false, Mirror: { } mirror })
+        {
+            return false;
+        }
+
+        mirror.Start(request);
+        return true;
+    }
+
+    /// <summary>Stops asking for video (MirrorStop) and closes the video socket. No-op when not mirroring.</summary>
+    public void StopMirror() => Volatile.Read(ref _connection)?.Mirror?.Stop();
+
+    /// <summary>
+    /// The head rendered frame <paramref name="frameNumber"/> at <paramref name="renderedAtUs"/> (<see cref="NowUs"/>);
+    /// reported to the Mac in the next MirrorReport (video latency). Thread-safe, cheap.
+    /// </summary>
+    public void ReportFrameRendered(uint frameNumber, ulong renderedAtUs) =>
+        Volatile.Read(ref _connection)?.Mirror?.ReportFrameRendered(frameNumber, renderedAtUs);
+
+    internal void RaiseMirrorConfig(MirrorStreamConfig config) => RaiseRemote(MirrorConfigReceived, config);
+
+    internal void RaiseMirrorState(MirrorState state, MirrorReason reason) =>
+        RaiseRemote(MirrorStateChanged, new MirrorStateChangedEventArgs(state, reason));
+
+    /// <summary>Hands a frame to the head; disposes it when nobody takes it or the handler throws.</summary>
+    internal void RaiseVideoFrame(VideoFrame frame)
+    {
+        if (VideoFrameReady is not { } handler)
+        {
+            frame.Dispose();
+            return;
+        }
+
+        try
+        {
+            handler(this, frame);
+        }
+#pragma warning disable CA1031 // A faulty decoder handler must not stop the video thread.
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            frame.Dispose();
+            NetLog.Unexpected(_log, null, ex);
+        }
+    }
 
     public ClientCredentialStore Credentials => _credentials;
 
@@ -612,6 +706,7 @@ public sealed class PenBridgeClient : IAsyncDisposable
             NetLog.ClientTlsFallback(_log, _options.UdpAckTimeout);
             c.StartFallbackWriter();
             c.ProbeTimer.Change(_options.UdpProbeInterval, _options.UdpProbeInterval);
+            c.Mirror?.OnTransport(tls: true); // no video in fallback; only records and posts
 
             // Deliver the current state over the new path right away (a pending click frame as it was).
             uint timeUs = CurrentFrameLocked(c, out ReadOnlySpan<PenSample> history);
@@ -657,6 +752,7 @@ public sealed class PenBridgeClient : IAsyncDisposable
                 c.Transport = InputTransport.Udp;
                 c.ProbeTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
                 NetLog.ClientUdpRestored(_log);
+                c.Mirror?.OnTransport(tls: false);
             }
 
             c.UdpAcked = true;
@@ -789,10 +885,15 @@ public sealed class PenBridgeClient : IAsyncDisposable
                 SendTimeout = (int)ControlChannel.SyncSendTimeout.TotalMilliseconds,
             };
             udp.Connect(new IPEndPoint(server, start.UdpPort));
+            SocketQos.Configure(udp, SocketQos.Expedited, _options.ConfigureInputSocket, _log, ref _qosWarned);
+            ProtocolCapabilities negotiated = ack.Capabilities & _options.Capabilities;
             connection = new Connection(this, channel, udp, new InputCipher(inputKey, start.SessionId), start.SessionId, fingerprint, ack.ServerName, channel.Ssl.SslProtocol, _time, _options.FallbackQueueCapacity)
             {
                 ServerCapabilities = ack.Capabilities,
-                Negotiated = ack.Capabilities & _options.Capabilities,
+                Negotiated = negotiated,
+                Mirror = (negotiated & ProtocolCapabilities.ScreenMirror) != 0
+                    ? CreateMirror(channel, server, deviceKey, clientNonce, start)
+                    : null,
             };
 
             await channel.WriteAsync(_options.Surface).ConfigureAwait(false);
@@ -851,6 +952,21 @@ public sealed class PenBridgeClient : IAsyncDisposable
                 udp?.Dispose();
                 await channel.DisposeAsync().ConfigureAwait(false);
             }
+        }
+    }
+
+    private ClientMirror CreateMirror(ControlChannel channel, IPAddress server, byte[] deviceKey, byte[] clientNonce, SessionStartMessage start)
+    {
+        Span<byte> keys = stackalloc byte[2 * KeySchedule.KeyLength];
+        try
+        {
+            KeySchedule.DeriveVideoKey(deviceKey, clientNonce, start.ServerNonce.Span, start.SessionId, VideoKeyDirection.ServerToClient, keys[..KeySchedule.KeyLength]);
+            KeySchedule.DeriveVideoKey(deviceKey, clientNonce, start.ServerNonce.Span, start.SessionId, VideoKeyDirection.ClientToServer, keys[KeySchedule.KeyLength..]);
+            return new ClientMirror(this, channel, server, _options, _log, keys[..KeySchedule.KeyLength], keys[KeySchedule.KeyLength..], start.SessionId);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(keys);
         }
     }
 
@@ -1019,6 +1135,13 @@ public sealed class PenBridgeClient : IAsyncDisposable
                         NormalizedRect area = frame.Read<ActiveAreaMessage>().ToNormalizedRect();
                         c.Remote.ActiveArea = area;
                         RaiseRemote(ActiveAreaReceived, new ActiveAreaEventArgs(area));
+                        break;
+                    case ControlMessageType.MirrorConfig when c.Mirror is not null:
+                        c.Mirror.OnConfig(frame.Read<MirrorConfigMessage>());
+                        break;
+                    case ControlMessageType.MirrorState when c.Mirror is not null:
+                        MirrorStateMessage mirrorState = frame.Read<MirrorStateMessage>();
+                        c.Mirror.OnState(mirrorState.State, mirrorState.Reason);
                         break;
                     case ControlMessageType.Bye:
                         bye = frame.Read<ByeMessage>().Reason;
@@ -1293,6 +1416,9 @@ public sealed class PenBridgeClient : IAsyncDisposable
         /// <summary>Advertised by both sides.</summary>
         public ProtocolCapabilities Negotiated { get; init; }
 
+        /// <summary>Screen mirroring of this connection, or null when <see cref="ProtocolCapabilities.ScreenMirror"/> wasn't negotiated.</summary>
+        public ClientMirror? Mirror { get; init; }
+
 #pragma warning disable SA1401, CA1051 // Hot-path state of a private class; fields keep it simple and ref-friendly.
         public PenSample? LastPen;
         public int LastTouchCount;
@@ -1346,6 +1472,8 @@ public sealed class PenBridgeClient : IAsyncDisposable
                 Cipher.Dispose();
                 Udp.Dispose();
             }
+
+            Mirror?.Dispose();
 
             await Channel.DisposeAsync().ConfigureAwait(false);
         }

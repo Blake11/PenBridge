@@ -93,4 +93,13 @@ internal static partial class NetLog
 
     [LoggerMessage(36, LogLevel.Warning, "Device {DeviceId} sends more than {PerSecond} settings updates per second; dropping the excess ({Dropped} so far)")]
     public static partial void SettingsUpdatesThrottled(ILogger logger, Guid deviceId, int perSecond, long dropped);
+
+    [LoggerMessage(40, LogLevel.Warning, "Could not set the {What} on a socket; continuing without it")]
+    public static partial void QosUnavailable(ILogger logger, string what);
+
+    [LoggerMessage(41, LogLevel.Information, "Mirroring epoch {Epoch}: {Codec} {Width}x{Height} at {Fps} fps, {BitrateKbps} kbps")]
+    public static partial void MirrorConfig(ILogger logger, byte epoch, PenBridge.Core.Protocol.MirrorCodec codec, int width, int height, int fps, int bitrateKbps);
+
+    [LoggerMessage(42, LogLevel.Information, "Mirroring state {State} ({Reason})")]
+    public static partial void MirrorState(ILogger logger, PenBridge.Core.Protocol.MirrorState state, PenBridge.Core.Protocol.MirrorReason reason);
 }

@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 using PenBridge.Core.Diagnostics;
 using PenBridge.Core.Input;
@@ -82,15 +83,51 @@ public sealed class PenBridgeServerOptions
     public bool ActiveArea { get; init; }
 
     /// <summary>
+    /// Advertise <see cref="ProtocolCapabilities.ScreenMirror"/> (protocol 1.3, ADR-0038): the phone may ask for video
+    /// (<see cref="PenBridgeServer.MirrorRequested"/>). Off by default: turn it on once the head captures, encodes and
+    /// feeds <see cref="PenBridgeServer.SendVideoFrame"/>.
+    /// </summary>
+    public bool ScreenMirror { get; init; }
+
+    /// <summary>
+    /// Called once with the UDP input socket after it is bound, so the head can set platform socket options (the Mac's
+    /// <c>SO_NET_SERVICE_TYPE = NET_SERVICE_TYPE_VO</c>). A failure is logged once and ignored.
+    /// </summary>
+    public Action<Socket>? ConfigureInputSocket { get; init; }
+
+    /// <summary>
+    /// Called with every video socket (one per mirroring run) after Core set its TOS to AF41 (<c>0x88</c>), for
+    /// platform options (the Mac's <c>NET_SERVICE_TYPE_VI</c>). A failure is logged once and ignored.
+    /// </summary>
+    public Action<Socket>? ConfigureVideoSocket { get; init; }
+
+    /// <summary>
+    /// Called on every thread Core starts for mirroring (video send, probe receive) when it starts, so the head can
+    /// lower its priority with platform APIs (the Mac's QoS class). Core already sets <see cref="Thread.Priority"/>
+    /// below normal. Must not block; an exception is logged and ignored.
+    /// </summary>
+    public Action<MirrorThreadRole>? MirrorThreadStarted { get; init; }
+
+    /// <summary>
+    /// Heartbeat interval while a session streams video: a faster RTT signal for the input guard. Any phone that
+    /// negotiated <see cref="ProtocolCapabilities.ScreenMirror"/> answers every Ping (there is no rate limit on Pings).
+    /// </summary>
+    internal TimeSpan MirrorPingInterval { get; init; } = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>Tests only: return false to drop a sealed video datagram instead of sending it (loss injection).</summary>
+    internal DatagramFilter? VideoDatagramFilter { get; init; }
+
+    /// <summary>
     /// Capabilities sent in HelloAck: <see cref="ProtocolCapabilities.SampleDedupe"/>, plus
-    /// <see cref="ProtocolCapabilities.FingerTouches"/>, <see cref="ProtocolCapabilities.RemoteSettings"/> and
-    /// <see cref="ProtocolCapabilities.ActiveArea"/> when their options are set. Tests override it to act
-    /// as an older server.
+    /// <see cref="ProtocolCapabilities.FingerTouches"/>, <see cref="ProtocolCapabilities.RemoteSettings"/>,
+    /// <see cref="ProtocolCapabilities.ActiveArea"/> and <see cref="ProtocolCapabilities.ScreenMirror"/> when their
+    /// options are set. Tests override it to act as an older server.
     /// </summary>
     internal ProtocolCapabilities Capabilities
     {
         get => _capabilities ?? (ProtocolCapabilities.SampleDedupe | (FingerTouches ? ProtocolCapabilities.FingerTouches : ProtocolCapabilities.None)
-            | (RemoteSettings ? ProtocolCapabilities.RemoteSettings : ProtocolCapabilities.None) | (ActiveArea ? ProtocolCapabilities.ActiveArea : ProtocolCapabilities.None));
+            | (RemoteSettings ? ProtocolCapabilities.RemoteSettings : ProtocolCapabilities.None) | (ActiveArea ? ProtocolCapabilities.ActiveArea : ProtocolCapabilities.None)
+            | (ScreenMirror ? ProtocolCapabilities.ScreenMirror : ProtocolCapabilities.None));
         init => _capabilities = value;
     }
 

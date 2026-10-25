@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
@@ -63,13 +64,38 @@ public sealed class PenBridgeClientOptions
     /// <summary>
     /// Capabilities sent in Hello: everything this engine supports. Tests override it to act as an older phone.
     /// <see cref="ProtocolCapabilities.FingerTouches"/> only changes what the head sends once it configures its
-    /// <see cref="Input.InputFilter"/> from <see cref="PenBridgeClient.NegotiatedCapabilities"/>.
+    /// <see cref="Input.InputFilter"/> from <see cref="PenBridgeClient.NegotiatedCapabilities"/>;
+    /// <see cref="ProtocolCapabilities.ScreenMirror"/> only matters once the head calls <see cref="PenBridgeClient.StartMirror"/>.
     /// </summary>
     internal ProtocolCapabilities Capabilities { get; init; } =
-        ProtocolCapabilities.SampleDedupe | ProtocolCapabilities.FingerTouches | ProtocolCapabilities.RemoteSettings | ProtocolCapabilities.ActiveArea;
+        ProtocolCapabilities.SampleDedupe | ProtocolCapabilities.FingerTouches | ProtocolCapabilities.RemoteSettings | ProtocolCapabilities.ActiveArea
+        | ProtocolCapabilities.ScreenMirror;
+
+    /// <summary>
+    /// Called with every UDP input socket (one per connection) after Core set its TOS to EF (<c>0xB8</c>), for platform
+    /// socket options. A failure is logged once and ignored.
+    /// </summary>
+    public Action<Socket>? ConfigureInputSocket { get; init; }
+
+    /// <summary>
+    /// Called with every video socket (one per mirroring run) after Core set its TOS to AF41 (<c>0x88</c>). A failure
+    /// is logged once and ignored.
+    /// </summary>
+    public Action<Socket>? ConfigureVideoSocket { get; init; }
+
+    /// <summary>
+    /// Called on every thread Core starts for mirroring (the video receive thread) when it starts, so the head can set
+    /// its priority with platform APIs (Android <c>Process.SetThreadPriority</c>: <see cref="Thread.Priority"/>, which
+    /// Core sets below normal, has no effect there). Keep it below the input send path. Must not block; an exception
+    /// is logged and ignored.
+    /// </summary>
+    public Action<MirrorThreadRole>? MirrorThreadStarted { get; init; }
 
     /// <summary>Optional fault injection: return false to drop a sealed datagram instead of sending it.</summary>
     public DatagramFilter? DatagramFilter { get; init; }
+
+    /// <summary>Tests only: return false to drop a sealed Probe instead of sending it (it may be copied and replayed).</summary>
+    internal DatagramFilter? VideoDatagramFilter { get; init; }
 
     /// <summary>Tests only: a small TCP send buffer so a stalled peer blocks writes quickly.</summary>
     internal int? TcpSendBufferSize { get; init; }

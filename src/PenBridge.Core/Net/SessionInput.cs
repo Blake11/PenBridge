@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using PenBridge.Core.Diagnostics;
 using PenBridge.Core.Input;
+using PenBridge.Core.Mirror;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
 
@@ -87,6 +88,11 @@ internal sealed class SessionInput : IDisposable
 
     /// <summary>DPI assumed when SurfaceInfo carries none (Mouse mode's millimetres).</summary>
     internal const float FallbackDpi = 400;
+
+    // Screen mirroring's input guard (null while not mirroring): fed with every authenticated UDP datagram, woken when
+    // it reports a new input degradation. Both set together, read under the input lock.
+    private MirrorRateController? _guard;
+    private Action? _guardWake;
 
     private long _accepted;
     private long _stale;
@@ -366,6 +372,7 @@ internal sealed class SessionInput : IDisposable
         ulong highest = 0;
         Exception? fault = null;
         bool raise;
+        bool wake;
         NormalizedRect area;
         long version;
         lock (_lock)
@@ -428,13 +435,18 @@ internal sealed class SessionInput : IDisposable
                 _ackTimer.Change(AckInterval - sinceAck, Timeout.InfiniteTimeSpan);
             }
 
-            fault = HandlePayloadLocked(datagram.Slice(InputDatagramHeader.Size, payloadLength), InputTransport.Udp, received);
+            fault = HandlePayloadLocked(datagram.Slice(InputDatagramHeader.Size, payloadLength), InputTransport.Udp, received, header.Sequence, out wake);
             raise = TryTakeModeSwitchLocked(out area, out version);
         }
 
         if (ack)
         {
             _onAck?.Invoke(highest);
+        }
+
+        if (wake)
+        {
+            _guardWake?.Invoke();
         }
 
         if (raise)
@@ -460,7 +472,7 @@ internal sealed class SessionInput : IDisposable
                 return;
             }
 
-            fault = HandlePayloadLocked(payload, InputTransport.Tls, received);
+            fault = HandlePayloadLocked(payload, InputTransport.Tls, received, 0, out _);
             raise = TryTakeModeSwitchLocked(out area, out version);
         }
 
@@ -470,6 +482,42 @@ internal sealed class SessionInput : IDisposable
         }
 
         Report(fault);
+    }
+
+    /// <summary>
+    /// Feeds every authenticated UDP datagram of this session to <paramref name="guard"/> (screen mirroring's input
+    /// guard) from the input path; <paramref name="wake"/> runs off the lock when the guard reports a new degradation
+    /// (it must only arm a timer). Null detaches. One guard per session.
+    /// </summary>
+    internal void AttachGuard(MirrorRateController? guard, Action? wake)
+    {
+        lock (_lock)
+        {
+            _guard = guard;
+            _guardWake = guard is null ? null : wake;
+        }
+    }
+
+    /// <summary>
+    /// Takes one decryption attempt from the session's forged-datagram budget for a video datagram (the Probes share
+    /// the input's budget, so a forged flood on either socket can't buy more decryptions). False when it is exhausted
+    /// or the session ended.
+    /// </summary>
+    internal bool TryTakeAuthBudget()
+    {
+        lock (_lock)
+        {
+            return !_closed && TryTakeBudget();
+        }
+    }
+
+    /// <summary>Returns the attempt of a video datagram that authenticated (only failures consume the budget).</summary>
+    internal void RefundAuthBudget()
+    {
+        lock (_lock)
+        {
+            _budget = Math.Min(_budgetCapacity, _budget + 1);
+        }
     }
 
     /// <summary>Ends the session input: synthesizes the full release (unless faulted), stops the watchdog, drops the key.</summary>
@@ -495,6 +543,8 @@ internal sealed class SessionInput : IDisposable
             }
 
             _disposed = true;
+            _guard = null;
+            _guardWake = null;
             bool release = !_closed && _tracker.IsMapperConfigured;
             _closed = true;
             _watchdog.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
@@ -557,6 +607,24 @@ internal sealed class SessionInput : IDisposable
         return true;
     }
 
+    private static bool InContact(in InputPayload frame)
+    {
+        if (frame.Pen is { } p && (p.State & PenState.Contact) != 0)
+        {
+            return true;
+        }
+
+        foreach (ref readonly TouchSample t in frame.Touches)
+        {
+            if (t.Contact)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static bool IsInRange(in PenSample s) => (s.State & (PenState.InRange | PenState.Contact)) != 0;
 
     private static bool IsKnownTool(PenTool tool) => tool is PenTool.Pen or PenTool.Eraser or PenTool.FingerFallback;
@@ -588,12 +656,20 @@ internal sealed class SessionInput : IDisposable
         _onAck?.Invoke(highest);
     }
 
-    private Exception? HandlePayloadLocked(ReadOnlySpan<byte> payload, InputTransport transport, long received)
+    private Exception? HandlePayloadLocked(ReadOnlySpan<byte> payload, InputTransport transport, long received, ulong sequence, out bool wakeGuard)
     {
+        wakeGuard = false;
         if (!InputPayload.TryRead(payload, out InputPayload frame))
         {
             _malformed++;
             return null;
+        }
+
+        // Every authenticated UDP datagram feeds the mirroring guard (lock-free, allocation-free); a true result means
+        // a new input degradation started, and the caller wakes the guard after leaving the lock.
+        if (transport == InputTransport.Udp && _guard is { } guard)
+        {
+            wakeGuard = guard.OnInputDatagram(sequence, InContact(frame), frame.TimeUs);
         }
 
         if (!IsValid(frame))
