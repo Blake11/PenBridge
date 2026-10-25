@@ -226,9 +226,19 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
         }
     }
 
+    // Input runs at user-interactive QoS, above the mirroring threads (ADR-0038 "input always wins"); Qos.PromoteInputThread.
+    private void PromoteThread()
+    {
+        if (Qos.PromoteInputThread(out uint previous))
+        {
+            InputLog.InputThreadPromoted(_logger, Environment.CurrentManagedThreadId, Qos.Name(previous));
+        }
+    }
+
     /// <inheritdoc />
     public void OnPenEvent(in PenEvent e)
     {
+        PromoteThread();
         bool trusted = e.Kind == PenEventKind.ProximityEnter ? RefreshAccessibility() : _trusted;
         lock (_gate)
         {
@@ -303,6 +313,7 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
     /// <remarks>Posted at the current cursor by <see cref="CGEventGestureInjector"/>; dropped while no display is available.</remarks>
     public void OnGestureEvent(in GestureEvent e)
     {
+        PromoteThread();
         lock (_gate)
         {
             if (!_targetAvailable || _disposed)

@@ -101,6 +101,7 @@ public sealed partial class ServerHost : IAsyncDisposable
     private readonly TimeProvider _time;
     private readonly ISecretStore _secrets;
     private readonly LatencyLog? _latency;
+    private readonly MirrorHost? _mirror;
     private ServerIdentity? _identity;
     private PairedDeviceRegistry? _registry;
     private readonly BonjourAdvertiser _bonjour;
@@ -125,8 +126,9 @@ public sealed partial class ServerHost : IAsyncDisposable
     /// <param name="secrets">Holds the server identity and the paired-device registry (<see cref="KeychainSecretStore"/>).</param>
     /// <param name="settings">Initial paused / allow-takeover values; updated when they change here.</param>
     /// <param name="loggers">For the server and the host (<see cref="OsLogLoggerFactory"/>).</param>
+    /// <param name="mirror">Screen mirroring (ADR-0038): each server advertises it and reports to it; null = no mirroring.</param>
     /// <remarks>Cheap: the identity and registry are read from <paramref name="secrets"/> off the main thread by the first <see cref="StartAsync"/>.</remarks>
-    public ServerHost(IReleasableInputSink injector, ISecretStore secrets, SettingsStore settings, ILoggerFactory loggers, TimeProvider? timeProvider = null)
+    public ServerHost(IReleasableInputSink injector, ISecretStore secrets, SettingsStore settings, ILoggerFactory loggers, MirrorHost? mirror = null, TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(injector);
         ArgumentNullException.ThrowIfNull(secrets);
@@ -141,6 +143,8 @@ public sealed partial class ServerHost : IAsyncDisposable
         _latency = LatencyLog.CreateIfEnabled(loggers, _time);
         _bonjour = new BonjourAdvertiser(loggers.CreateLogger<BonjourAdvertiser>());
         _sink.SetPaused(settings.Paused);
+        _mirror = mirror;
+        _mirror?.SetPaused(settings.Paused);
         _accessibilityMissing = !AccessibilityStatus.IsTrusted();
         State = BuildState();
     }
@@ -204,6 +208,7 @@ public sealed partial class ServerHost : IAsyncDisposable
         }
 
         _sink.SetPaused(paused);
+        _mirror?.SetPaused(paused); // pausing stops capture (MirrorState Paused/PenBridgePaused)
         _settings.Paused = paused;
         Log.PausedChanged(_log, paused);
         PublishState();
@@ -229,6 +234,7 @@ public sealed partial class ServerHost : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(target);
         _target = target;
         _server?.SetTarget(target);
+        _mirror?.SetMapping(target); // the mirror shows what the pen maps to
     }
 
     /// <summary>The input settings (stylus mode, side button, pressure curve, gestures; ADR-0032/0033); kept across restarts.</summary>
@@ -556,6 +562,10 @@ public sealed partial class ServerHost : IAsyncDisposable
             TimeProvider = _time,
             LoggerFactory = _loggers,
             LatencyRecorder = _latency?.Recorder,
+            ScreenMirror = _mirror is not null, // ADR-0038: MirrorHost answers the mirroring events
+            ConfigureInputSocket = Qos.ConfigureInputSocket, // NET_SERVICE_TYPE_VO
+            ConfigureVideoSocket = Qos.ConfigureVideoSocket, // NET_SERVICE_TYPE_VI
+            MirrorThreadStarted = Qos.OnMirrorThreadStarted, // below the input path
             // Read live at each two-finger tap: Smart Zoom off right-clicks on the lift (ADR-0029).
             TrackerOptions = new PenStateTrackerOptions
             {
@@ -578,6 +588,7 @@ public sealed partial class ServerHost : IAsyncDisposable
         server.DevicePaired += OnDevicePaired;
         server.PairingWindowChanged += OnPairingWindowChanged;
         server.SettingsUpdateRequested += OnSettingsUpdateRequested;
+        _mirror?.Attach(server);
         try
         {
             server.Start();
@@ -585,6 +596,7 @@ public sealed partial class ServerHost : IAsyncDisposable
         catch (SocketException ex)
         {
             Unsubscribe(server);
+            _mirror?.Detach(server);
             _status = ServerHostStatus.Failed;
             _error = "No free port in 47820–47829 (" + ex.SocketErrorCode + ").";
             Log.StartFailed(_log, ex);
@@ -611,6 +623,7 @@ public sealed partial class ServerHost : IAsyncDisposable
         {
             _server = null;
             Unsubscribe(server);
+            _mirror?.Detach(server); // stops capture before the session ends
             bool hadPairingWindow = server.IsPairingWindowOpen;
             await server.DisposeAsync().ConfigureAwait(true);
             EnsureMainThread();
