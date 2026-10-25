@@ -425,6 +425,25 @@ public sealed class FrameReassembler
         }
     }
 
+    /// <summary>
+    /// The decoder lost frames on its own (its queue overflowed, it restarted): gate like a loss, so nothing but a
+    /// keyframe is handed out next, with a KeyframeRequest due at once (unless one is already pending) and then every
+    /// <see cref="KeyframeRequestInterval"/> until a keyframe arrives. Ignored when not active.
+    /// </summary>
+    public void RequestKeyframe()
+    {
+        lock (_lock)
+        {
+            if (!_active)
+            {
+                return;
+            }
+
+            _gated = true;
+            StartRequesting(_time.GetTimestamp());
+        }
+    }
+
     /// <summary>The MirrorReport of this epoch's counters with the head's last render.</summary>
     public MirrorReportMessage CreateReport(uint lastRenderedFrame, ulong lastRenderedAtUs)
     {

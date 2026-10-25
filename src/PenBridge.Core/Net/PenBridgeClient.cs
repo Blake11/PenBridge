@@ -160,6 +160,13 @@ public sealed class PenBridgeClient : IAsyncDisposable
     public void ReportFrameRendered(uint frameNumber, ulong renderedAtUs) =>
         Volatile.Read(ref _connection)?.Mirror?.ReportFrameRendered(frameNumber, renderedAtUs);
 
+    /// <summary>
+    /// Asks the Mac for a keyframe because the phone's decoder lost frames on its own (its queue overflowed, it
+    /// restarted). Like a network loss: no frame but a keyframe is handed out next, and a KeyframeRequest for the current
+    /// epoch goes out now and every 250 ms until one arrives. No-op when not mirroring. Thread-safe, non-blocking.
+    /// </summary>
+    public void RequestKeyframe() => Volatile.Read(ref _connection)?.Mirror?.RequestKeyframe();
+
     internal void RaiseMirrorConfig(MirrorStreamConfig config) => RaiseRemote(MirrorConfigReceived, config);
 
     internal void RaiseMirrorState(MirrorState state, MirrorReason reason) =>

@@ -248,6 +248,25 @@ internal sealed class ClientMirror : IDisposable
     }
 
     /// <summary>
+    /// The head's decoder needs a keyframe: the reassembler gates and requests one now and every 250 ms until it
+    /// arrives (the same path as a loss). Ignored while no epoch streams.
+    /// </summary>
+    public void RequestKeyframe()
+    {
+        lock (_lock)
+        {
+            if (_disposed || !_streaming)
+            {
+                return;
+            }
+
+            _reassembler.RequestKeyframe();
+            TakeKeyframeRequestLocked();
+            ArmLocked(_time.GetTimestamp());
+        }
+    }
+
+    /// <summary>
     /// Read loop: a MirrorConfig. Starts the epoch in the reassembler, raises MirrorConfigReceived, then sends the
     /// epoch's Probe ("I accept this epoch"). Ignored without a running request.
     /// </summary>

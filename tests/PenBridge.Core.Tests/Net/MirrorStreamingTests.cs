@@ -85,6 +85,43 @@ public class MirrorStreamingTests
     }
 
     [Fact]
+    public async Task The_heads_keyframe_request_gates_and_repeats_until_a_keyframe_arrives()
+    {
+        await using MirrorRig rig = await MirrorRig.CreateAsync();
+        rig.Client.RequestKeyframe(); // not mirroring yet: nothing
+        await rig.StartAsync();
+        await rig.SendAsync(MirrorRig.AccessUnit(3000, 1, true), true);
+        await rig.SendAsync(MirrorRig.AccessUnit(800, 2, false), false);
+        await rig.Frames.WaitFor(0, 2, "the first two frames");
+        Assert.Equal(0, rig.Client.MirrorStats.KeyframeRequestsSent);
+
+        // The phone's decoder dropped frames on its own: a request goes out at once, and followers are gated.
+        int keyframes = rig.Keyframes.Mark();
+        rig.Client.RequestKeyframe();
+        rig.Client.RequestKeyframe(); // a second call while one is pending sends nothing more
+        await rig.Keyframes.WaitFor(keyframes, 1, "the Mac's head was asked for a keyframe");
+        await rig.SendAsync(MirrorRig.AccessUnit(800, 3, false), false);
+        await Wait.Until(() => rig.Client.MirrorStats.FramesDropped == 1, "frame 3 was gated");
+        await rig.H.SettleAsync();
+        Assert.Equal(1, rig.Client.MirrorStats.KeyframeRequestsSent);
+        Assert.Equal(2, rig.Frames.Count);
+
+        // No keyframe yet: the request repeats after the interval.
+        rig.H.Time.Advance(FrameReassembler.KeyframeRequestInterval);
+        await Wait.Until(() => rig.Client.MirrorStats.KeyframeRequestsSent == 2, "the repeat");
+        await rig.Keyframes.WaitFor(keyframes, 2, "the repeat reached the head");
+
+        // The keyframe recovers the stream and ends the requests.
+        await rig.SendAsync(MirrorRig.AccessUnit(6000, 4, true), true);
+        ReceivedFrame[] frames = await rig.Frames.WaitFor(0, 3, "the keyframe");
+        Assert.Equal([1u, 2u, 4u], frames.Select(f => f.Number));
+        rig.H.Time.Advance(FrameReassembler.KeyframeRequestInterval);
+        await rig.H.SettleAsync();
+        Assert.Equal(2, rig.Client.MirrorStats.KeyframeRequestsSent);
+        Assert.Equal(2, rig.Keyframes.Count - keyframes);
+    }
+
+    [Fact]
     public async Task The_phones_mirror_stats_count_frames_drops_requests_probes_and_reports_across_epochs()
     {
         int dropFrame = 0;
