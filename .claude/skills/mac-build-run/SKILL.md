@@ -65,6 +65,7 @@ scripts/device-test-setup.sh       # device-test round: preflight, Release app, 
 - `AXIsProcessTrusted()` false → posted CGEvents are dropped silently. The app prompts and links to System Settings ▸ Privacy & Security ▸ Accessibility.
 - Granted but nothing happens: signature changed → `--reset-tcc`, trigger injection, grant again. If it ever ran unsigned, remove the old entry with `–` first.
 - The grant is per signed identity; running a build from another worktree path may need a re-grant — prefer running from the main tree.
+- **Dev build vs installed release:** both use `com.blake11.penbridge`. A dev-cert build (`mac-run.sh`, `device-test-setup.sh`) rebinds the grant to the "PenBridge Dev" certificate, so the ad-hoc `/Applications/PenBridge.app` then reports "Accessibility not granted" while System Settings shows the switch on (and vice versa). Check: `codesign -d -r- <app>` vs the stored requirement (`csreq -t` on the TCC row). Fix after switching: `tccutil reset Accessibility com.blake11.penbridge` (and `ScreenCapture`), relaunch, grant. A separate dev bundle id was declined (2026-10-25).
 
 ## Screen Recording (TCC)
 Needed only for screen mirroring (ADR-0038, opt-in); service `kTCCServiceScreenCapture`, System Settings ▸ Privacy & Security ▸ Screen & System Audio Recording.
