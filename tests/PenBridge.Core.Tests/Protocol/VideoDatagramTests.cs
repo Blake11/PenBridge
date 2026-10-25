@@ -58,6 +58,7 @@ public class VideoDatagramTests
     [InlineData("01 02 07 00 00000001 0000000000000001 00000000 0001 0000")] // probe with an index
     [InlineData("01 02 07 00 00000001 0000000000000001 00000000 0000 0001")] // probe with a count
     [InlineData("01 01 07 00 00000001 0000000000000001 00000001 0000")]      // truncated
+    [InlineData("01 01 07 00 00000001 0000000000000001 00000000 0000 0001")] // a fragment of frame 0 (none)
     public void Invalid_headers_are_dropped(string hex)
     {
         Assert.False(VideoDatagramHeader.TryRead(Hex.Bytes(hex), out VideoDatagramHeader header));
@@ -66,7 +67,7 @@ public class VideoDatagramTests
 
     [Theory]
     [InlineData("01 01 07 FE 00000001 0000000000000001 00000001 0000 0001")] // unknown flag bits are ignored
-    [InlineData("01 01 07 00 00000001 0000000000000000 00000000 03FF 0400")] // last of 1024
+    [InlineData("01 01 07 00 00000001 0000000000000000 00000001 03FF 0400")] // last of 1024
     [InlineData("01 02 07 FF 00000001 0000000000000001 00000000 0000 0000")] // probe flags ignored
     public void Valid_edge_headers_are_read(string hex) => Assert.True(VideoDatagramHeader.TryRead(Hex.Bytes(hex), out _));
 
@@ -76,6 +77,7 @@ public class VideoDatagramTests
         byte[] bytes = new byte[24];
         Assert.Throws<ArgumentException>(() => VideoDatagramHeader.Fragment(1, false, 1, 1, 1, 1, 1).Write(bytes));
         Assert.Throws<ArgumentException>(() => VideoDatagramHeader.Fragment(1, false, 1, 1, 1, 0, 1025).Write(bytes));
+        Assert.Throws<ArgumentException>(() => VideoDatagramHeader.Fragment(1, false, 1, 1, 0, 0, 1).Write(bytes));
         Assert.Throws<ArgumentException>(() => new VideoDatagramHeader(VideoDatagramKind.Probe, 1, 0, 1, 1, 1, 0, 0).Write(bytes));
         Assert.Throws<ArgumentException>(() => new VideoDatagramHeader((VideoDatagramKind)9, 1, 0, 1, 1, 0, 0, 0).Write(bytes));
         Assert.Equal("destination", Assert.Throws<ArgumentOutOfRangeException>(() => VideoDatagramHeader.Probe(1, 1, 1).Write(bytes.AsSpan(0, 23))).ParamName);

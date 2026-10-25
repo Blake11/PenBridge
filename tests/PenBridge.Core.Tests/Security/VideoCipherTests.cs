@@ -216,7 +216,7 @@ public class VideoCipherTests
         Alloc.AssertZero(2_000, i =>
         {
             int payload = i % 3 == 0 ? VideoDatagram.MaxPayloadSize : 1 + (i % 500);
-            VideoDatagramHeader.Fragment((byte)(i / 100), i % 7 == 0, Session, ++sequence, (uint)i, 0, 1).Write(d);
+            VideoDatagramHeader.Fragment((byte)(i / 100), i % 7 == 0, Session, ++sequence, (uint)i + 1, 0, 1).Write(d);
             int length = tx.Seal(d, payload);
             if (rx.TryOpen(d.AsSpan(0, length), out _, out _))
             {

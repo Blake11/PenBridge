@@ -65,12 +65,12 @@ public readonly record struct VideoDatagramHeader(
     public bool IsKeyframe => (Flags & VideoDatagramOptions.Keyframe) != 0;
 
     /// <summary>
-    /// The header rules: a known kind; a fragment has <c>fragmentCount</c> 1..<see cref="VideoDatagram.MaxFragments"/>
+    /// The header rules: a known kind; a fragment has <c>frameNumber</c> ≥ 1, <c>fragmentCount</c> 1..<see cref="VideoDatagram.MaxFragments"/>
     /// and <c>fragmentIndex &lt; fragmentCount</c>; a Probe has frameNumber, fragmentIndex and fragmentCount 0.
     /// </summary>
     public bool IsConsistent => Kind switch
     {
-        VideoDatagramKind.VideoFragment => FragmentCount is >= 1 and <= VideoDatagram.MaxFragments && FragmentIndex < FragmentCount,
+        VideoDatagramKind.VideoFragment => FrameNumber >= VideoDatagram.FirstFrameNumber && FragmentCount is >= 1 and <= VideoDatagram.MaxFragments && FragmentIndex < FragmentCount,
         VideoDatagramKind.Probe => FrameNumber == 0 && FragmentIndex == 0 && FragmentCount == 0,
         _ => false,
     };
@@ -152,6 +152,15 @@ public static class VideoDatagram
 
     /// <summary>Access-unit bytes the first fragment carries at most.</summary>
     public const int FirstFragmentDataSize = MaxPayloadSize - FirstFragmentPrefixSize;
+
+    /// <summary>The first frame number of every epoch (always a keyframe); 0 means "no frame".</summary>
+    public const uint FirstFrameNumber = 1;
+
+    /// <summary>
+    /// After a new MirrorConfig the Mac holds the epoch's video until an authenticated Probe carrying that epoch
+    /// arrives, at most this long; then it sends anyway.
+    /// </summary>
+    public static readonly TimeSpan EpochProbeWait = TimeSpan.FromMilliseconds(250);
 
     /// <summary>Total datagram size for a payload of <paramref name="payloadLength"/> bytes.</summary>
     public static int GetSize(int payloadLength) => VideoDatagramHeader.Size + payloadLength + TagSize;

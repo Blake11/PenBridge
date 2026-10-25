@@ -7,8 +7,9 @@ namespace PenBridge.Core.Mirror;
 /// <summary>One access unit to send: the per-frame header fields of its fragments.</summary>
 /// <param name="Epoch">The current MirrorConfig epoch.</param>
 /// <param name="FrameNumber">
-/// Frame number in the epoch: one more than the previous access unit's, also when the sender dropped that one unsent,
-/// so the phone sees a gap and waits for a keyframe.
+/// Frame number in the epoch: <see cref="VideoDatagram.FirstFrameNumber"/> for the epoch's first access unit (a
+/// keyframe), then one more than the previous access unit's, also when the sender dropped that one unsent, so the
+/// phone sees a gap and waits for a keyframe.
 /// </param>
 /// <param name="Keyframe">The access unit is a keyframe (starts with its parameter sets).</param>
 /// <param name="CaptureTimeUs">Capture time on the Mac's session clock (the server's Ping clock), µs, wraps.</param>
