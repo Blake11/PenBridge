@@ -29,7 +29,7 @@ Same validation and snapshot rules as the 1.2 keys (`MacSettings`, `SettingsWrit
 | 0x54 | C | KeyframeRequest | `u8 epoch`, `u32 lastCompleteFrame` |
 | 0x55 | C | MirrorReport | `u8 epoch`, `u32 framesComplete`, `u32 framesDropped`, `u32 fragmentsLost` (counters since MirrorConfig, wrap), `u32 lastRenderedFrame`, `u64 lastRenderedAtUs` (phone clock, the Ping clock) |
 
-**MirrorState:** `state` 0 Off, 1 Starting, 2 Streaming, 3 Paused, 4 Throttled (input guard paused video), 5 Unavailable. `reason` (for Off/Paused/Unavailable, else 0): 0 None, 1 SettingOff, 2 PenBridgePaused, 3 PermissionDenied (Screen Recording), 4 TlsFallback, 5 NoCommonCodec, 6 CaptureFailed, 7 PhoneStopped. Unknown `state`/`reason` values are shown as Unavailable, not an error (forward compatible).
+**MirrorState:** `state` 0 Off, 1 Starting, 2 Streaming, 3 Paused, 4 Throttled (input guard paused video), 5 Unavailable. `reason` (for Off/Paused/Unavailable, else 0): 0 None, 1 SettingOff, 2 PenBridgePaused, 3 PermissionDenied (Screen Recording), 4 TlsFallback, 5 NoCommonCodec, 6 CaptureFailed, 7 PhoneStopped. An unknown `state` is shown as Unavailable (keeping a known reason); a known state with an unknown `reason` keeps its state with reason None. Neither is an error (forward compatible).
 
 **Rules:**
 - The phone sends **MirrorStart** when it wants video: `MirrorEnabled` is true in the snapshot, the app is in the foreground, the screen is on, and the session is not in TLS fallback. It sends **MirrorStop** when any of these ends. Starting again is another MirrorStart (its fields may differ).

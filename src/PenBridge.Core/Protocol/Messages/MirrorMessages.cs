@@ -43,7 +43,7 @@ public enum MirrorState : byte
 
 /// <summary>
 /// <c>u8</c> reason in MirrorState, for <see cref="MirrorState.Off"/>, <see cref="MirrorState.Paused"/> and
-/// <see cref="MirrorState.Unavailable"/> (otherwise <see cref="None"/>). Unknown values are tolerated (shown as Unavailable).
+/// <see cref="MirrorState.Unavailable"/> (otherwise <see cref="None"/>). Unknown values are tolerated (shown as None).
 /// </summary>
 public enum MirrorReason : byte
 {
@@ -101,8 +101,8 @@ public static class MirrorWire
 
     /// <summary>
     /// What a reader shows for a received <c>u8 state ‖ u8 reason</c> (forward compatible, never an error): an unknown
-    /// state or reason becomes <see cref="MirrorState.Unavailable"/> (keeping a known reason, else
-    /// <see cref="MirrorReason.None"/>); a reason sent with a state that carries none is ignored.
+    /// state becomes <see cref="MirrorState.Unavailable"/> (keeping a known reason); a known state with an unknown reason
+    /// keeps its state with <see cref="MirrorReason.None"/>; a reason sent with a state that carries none is ignored.
     /// </summary>
     public static (MirrorState State, MirrorReason Reason) Interpret(byte rawState, byte rawReason)
     {
@@ -114,12 +114,7 @@ public static class MirrorWire
             return (MirrorState.Unavailable, reasonKnown ? reason : MirrorReason.None);
         }
 
-        if (!HasReason(state))
-        {
-            return (state, MirrorReason.None);
-        }
-
-        return reasonKnown ? (state, reason) : (MirrorState.Unavailable, MirrorReason.None);
+        return HasReason(state) && reasonKnown ? (state, reason) : (state, MirrorReason.None);
     }
 }
 

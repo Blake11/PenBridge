@@ -110,9 +110,10 @@ public class MirrorMessageTests
     [InlineData(6, 0, 5, 0)]         // unknown state → Unavailable
     [InlineData(0xFF, 3, 5, 3)]      // unknown state keeps a known reason
     [InlineData(0xFF, 0xFF, 5, 0)]   // both unknown
-    [InlineData(0, 8, 5, 0)]         // Off with an unknown reason → Unavailable
-    [InlineData(3, 0x80, 5, 0)]      // Paused with an unknown reason → Unavailable
-    public void Unknown_state_and_reason_values_read_as_unavailable(byte state, byte reason, byte shownState, byte shownReason)
+    [InlineData(0, 8, 0, 0)]         // Off with an unknown reason stays Off, reason None
+    [InlineData(3, 0x80, 3, 0)]      // Paused with an unknown reason stays Paused, reason None
+    [InlineData(5, 0xFE, 5, 0)]      // Unavailable with an unknown reason
+    public void Unknown_states_read_as_unavailable_and_unknown_reasons_as_none(byte state, byte reason, byte shownState, byte shownReason)
     {
         Assert.True(MirrorStateMessage.TryRead([state, reason], out MirrorStateMessage message));
         Assert.Equal((MirrorState)shownState, message.State);
