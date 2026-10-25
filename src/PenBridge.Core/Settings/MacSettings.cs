@@ -8,7 +8,14 @@ namespace PenBridge.Core.Settings;
 /// <summary>One Mac setting: its key, wire type, allowed values and default.</summary>
 public sealed class MacSettingDescriptor
 {
-    internal MacSettingDescriptor(MacSettingKey key, SettingType type, SettingEntry defaultValue, float min = 0, float max = 0, IReadOnlyList<string>? values = null)
+    internal MacSettingDescriptor(
+        MacSettingKey key,
+        SettingType type,
+        SettingEntry defaultValue,
+        float min = 0,
+        float max = 0,
+        IReadOnlyList<string>? values = null,
+        IReadOnlyList<int>? intValues = null)
     {
         Key = key;
         Type = type;
@@ -16,6 +23,18 @@ public sealed class MacSettingDescriptor
         Min = min;
         Max = max;
         Values = values ?? [];
+        if (intValues is null && type == SettingType.Int)
+        {
+            var indices = new int[Values.Count];
+            for (int i = 0; i < indices.Length; i++)
+            {
+                indices[i] = i;
+            }
+
+            intValues = indices;
+        }
+
+        IntValues = intValues ?? [];
     }
 
     public MacSettingKey Key { get; }
@@ -33,8 +52,14 @@ public sealed class MacSettingDescriptor
     /// <summary>Highest allowed value of a Float key.</summary>
     public float Max { get; }
 
-    /// <summary>For an Int key: the names of the allowed values 0..Count−1 (e.g. Pen, Mouse). Empty otherwise.</summary>
+    /// <summary>
+    /// For an Int key that is an enum: the names of the allowed values 0..Count−1 (e.g. Pen, Mouse). Empty otherwise,
+    /// also for an Int key with a list of numbers (<see cref="IntValues"/>, e.g. MirrorFps).
+    /// </summary>
     public IReadOnlyList<string> Values { get; }
+
+    /// <summary>For an Int key: every allowed value, ascending (0..Count−1 for an enum key). Empty for other types.</summary>
+    public IReadOnlyList<int> IntValues { get; }
 }
 
 /// <summary>
@@ -55,12 +80,16 @@ public static class MacSettings
     /// <summary>Smallest width and height of <see cref="MacSettingKey.Region"/> (normalized; compared as the <c>f32</c> on the wire).</summary>
     public const float MinRegionSize = 0.05f;
 
+    /// <summary><see cref="MacSettingKey.MirrorFps"/> value for no limit: the frame rate follows the refresh rates.</summary>
+    public const int MirrorFpsAuto = 0;
+
     /// <summary>How far a region edge may be from the display edge and still count as the full display.</summary>
     public const double FullRegionEpsilon = 1e-6;
 
     private static readonly string[] StylusModes = ["Pen", "Mouse"];
     private static readonly string[] SideButtonActions = ["RightClick", "MiddleClick", "Eraser", "DoubleClick", "None"];
     private static readonly string[] SmartZoomModes = ["FollowSystem", "On", "Off"];
+    private static readonly string[] MirrorQualities = ["Low", "Balanced", "High"];
 
     private static readonly MacSettingDescriptor[] Table =
     [
@@ -82,6 +111,9 @@ public static class MacSettings
         Bool(MacSettingKey.Rotate, true),
         Bool(MacSettingKey.ThreeFingerDrag, true),
         Bool(MacSettingKey.FourFingerGestures, true),
+        Bool(MacSettingKey.MirrorEnabled, false),
+        Enum(MacSettingKey.MirrorQuality, MirrorQualities, (int)Mirror.MirrorQuality.Balanced),
+        Numbers(MacSettingKey.MirrorFps, [MirrorFpsAuto, 30, 60, 120], MirrorFpsAuto),
     ];
 
     /// <summary>Every Mac setting, in key order.</summary>
@@ -139,7 +171,7 @@ public static class MacSettings
     /// <summary>
     /// The Mac's (server-side) validation of one entry against the table, the <paramref name="current"/> values and
     /// the Mac's <paramref name="displays"/> (the list it sends in DisplayList): a known key, the key's type, a value in
-    /// range (Int: one of <see cref="MacSettingDescriptor.Values"/>; Region: inside 0..1 with width and height at least
+    /// range (Int: one of <see cref="MacSettingDescriptor.IntValues"/>; Region: inside 0..1 with width and height at least
     /// <see cref="MinRegionSize"/>), a TargetDisplay of main, all or one of the display ids, and for the pressure pair
     /// <c>FullPressureAt &gt; ClickThreshold + 0.1</c> with the other one's current value. <paramref name="normalized"/>
     /// is the value to apply (a region pulled exactly inside 0..1). The phone reads snapshots with
@@ -197,7 +229,7 @@ public static class MacSettings
                 normalized = entry;
                 return true;
             case SettingType.Int:
-                if (entry.IntValue < 0 || entry.IntValue >= d.Values.Count)
+                if (!IsAllowed(d.IntValues, entry.IntValue))
                 {
                     return false;
                 }
@@ -342,6 +374,19 @@ public static class MacSettings
         return d.Name + "=" + value;
     }
 
+    private static bool IsAllowed(IReadOnlyList<int> values, int value)
+    {
+        foreach (int allowed in values)
+        {
+            if (allowed == value)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static bool IsKnownTarget(string id, IReadOnlyList<DisplayListEntry>? displays)
     {
         if (id is MainDisplay or AllDisplays || displays is null)
@@ -366,6 +411,9 @@ public static class MacSettings
     private static MacSettingDescriptor Float(MacSettingKey key, float min, float max, float value) =>
         new(key, SettingType.Float, SettingEntry.Float(key, value), min, max);
 
-    private static MacSettingDescriptor Enum(MacSettingKey key, string[] values) =>
-        new(key, SettingType.Int, SettingEntry.Int(key, 0), values: values);
+    private static MacSettingDescriptor Enum(MacSettingKey key, string[] values, int value = 0) =>
+        new(key, SettingType.Int, SettingEntry.Int(key, value), values: values);
+
+    private static MacSettingDescriptor Numbers(MacSettingKey key, int[] values, int value) =>
+        new(key, SettingType.Int, SettingEntry.Int(key, value), intValues: values);
 }

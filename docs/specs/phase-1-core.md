@@ -20,14 +20,16 @@ Tests mirror the folders: `tests/PenBridge.Core.Tests/<Folder>/`. The only exter
 - A different major is rejected with `Error(IncompatibleVersion)`. A different minor is accepted: features are gated by capability flags.
 - **1.1** adds the `SampleDedupe` and `FingerTouches` capabilities (below); 1.0 peers ignore them.
 - **1.2** adds the `RemoteSettings` and `ActiveArea` capabilities and messages `0x40–0x43` (below, ADR-0030/0031); a 1.0/1.1 peer never advertises them, so it never gets these messages.
+- **1.3** adds the `ScreenMirror` capability, messages `0x50–0x55`, the Mac setting keys 30–32 and the video datagram (ADR-0038, `docs/specs/screen-mirroring.md`); a 1.2 peer never advertises it, so it never gets these messages.
 - **Capabilities** (`u32` flags in Hello/HelloAck; unknown bits are ignored): a feature is used only when the peer that must support it advertised it.
   - `SampleDedupe = 1` (since 1.1). Mac: it applies a frame's history samples only if the frame's `timeUs` advances past the previous applied frame's (see the input rules). Phone: it may resend a click frame at its original `timeUs`; it does so only when the Mac advertised this bit.
   - `FingerTouches = 2` (since 1.1, ADR-0026). Used only when **both** sides advertise it (`PenBridgeClient.NegotiatedCapabilities`, `SessionInfo.Capabilities`). Phone: in cursor finger mode it sends a lone finger as raw touches (no hover samples, no arming hold, no phone-side tap decision) and makes a touch lift survive one lost datagram (see the input rules). Mac: the session's `GestureRecognizer` turns one finger into a relative cursor (`OneFingerCursor`). The Core client always advertises it; the Mac server only with `PenBridgeServerOptions.FingerTouches` (off by default until the Mac head posts the one-finger gesture kinds). Without it on either side the phone keeps ADR-0022's absolute cursor.
   - `RemoteSettings = 4` (since 1.2, ADR-0030). Both sides must advertise it. The Mac sends `DisplayList` then `SettingsSnapshot` right after SessionStart, a snapshot after every change from either side and in reply to every `SettingsUpdate`, and the display list on display changes. The Core client always advertises it; the server only with `PenBridgeServerOptions.RemoteSettings`. Server → phone pushes (display list, snapshot, active area) are coalesced per session: one writer sends the latest state, the display list before any snapshot read with it (each list and snapshot once), nothing after the Bye, so a burst of changes costs at most one pending write each. The Mac accepts at most 20 SettingsUpdate per second per session (burst 20); the excess is dropped unanswered and logged, without ending the session.
   - `ActiveArea = 8` (since 1.2, ADR-0031). Both sides must advertise it. The Mac sends `ActiveArea` (the session input's area, `SessionInput.ActiveAreaChanged`) after every SurfaceInfo, never before the first, and whenever the area changes: a target change (`PenBridgeServer.SetTarget(MappingTarget)`: display, region, all displays), or a stylus mode change (`PenBridgeServer.SetInputSettings`) once it takes effect, i.e. after the stroke in progress. An unchanged area isn't resent; rapid changes coalesce (latest wins). The Core client always advertises it; the server only with `PenBridgeServerOptions.ActiveArea`.
   - Server input API (ADR-0031..0033): `PenBridgeServerOptions.InputSettings` is the initial `InputSettings`; `PenBridgeServer.SetInputSettings(InputSettings)` (validated) and `SetTarget(MappingTarget)` apply to the active session immediately and to every later one (before its SessionStart). The Mac maps its settings with `MacSettingValues.ToInputSettings()`; TargetDisplay and Region become the `MappingTarget`. SurfaceInfo's DPI sizes the phone surface for Mouse mode.
-  - Receiving a settings or active-area message without its capability negotiated, or before SessionStart, is a protocol error.
-- The Bonjour TXT record carries `v=1.2`, `fp=<base64url SHA-256 cert fingerprint>` and `name=<Mac name>`.
+  - `ScreenMirror = 16` (since 1.3, ADR-0038). Both sides must advertise it; the rules are in `docs/specs/screen-mirroring.md`. The Core client always advertises it; the server only with `PenBridgeServerOptions.ScreenMirror`.
+  - Receiving a settings, active-area or mirroring message without its capability negotiated, or before SessionStart, is a protocol error (`ControlMessageTypes.RequiredCapability`).
+- The Bonjour TXT record carries `v=1.3`, `fp=<base64url SHA-256 cert fingerprint>` and `name=<Mac name>`.
 
 ## Control channel (TCP + TLS 1.2+, ADR-0013)
 
@@ -58,6 +60,7 @@ Messages (C = phone → Mac, S = Mac → phone):
 | 0x41 | C | SettingsUpdate | `u8 count` (1..64) + setting entries to change; answered by a snapshot (1.2, `RemoteSettings`) |
 | 0x42 | S | DisplayList | `u8 count` (≤ 16) + `{ id string, name string, isMain u8, widthPt f32, heightPt f32 }`; "All displays" is implied (1.2, `RemoteSettings`) |
 | 0x43 | S | ActiveArea | `u16 x, y, w, h` on the 0..65535 scale, current surface orientation; `w, h > 0`, `x + w, y + h ≤ 65535` (1.2, `ActiveArea`) |
+| 0x50–0x55 | C/S | MirrorStart, MirrorStop, MirrorConfig, MirrorState, KeyframeRequest, MirrorReport | screen mirroring (1.3, `ScreenMirror`): `docs/specs/screen-mirroring.md` |
 | 0x7E | S | Busy | — |
 | 0x7F | both | Error | u16 code, message |
 | 0x70 | both | Bye | reason (Normal, TakenOver, Unpaired, Shutdown) |
@@ -167,7 +170,7 @@ Messages (C = phone → Mac, S = Mac → phone):
 - `IInputSink`: receives the tracker and recognizer events on the Mac side. Phase 2's injector implements it; SimClient and tests use a recording sink.
 - `PenBridgeServer`: binds to 47820 with fallback, accepts sessions (one active, optional takeover), exposes `CurrentPin`, `CreateQrPayload()` and events.
 - `PenBridgeClient`: connect, pair (PIN or QR payload), auth, `SendState(in PenSample?, ReadOnlySpan<TouchSample>)`.
-- **QR payload:** `penbridge://pair?h=<host>&p=<port>&fp=<b64url>&t=<b64url token 32B>&v=1.2` (the current protocol version).
+- **QR payload:** `penbridge://pair?h=<host>&p=<port>&fp=<b64url>&t=<b64url token 32B>&v=1.3` (the current protocol version).
 
 ## SimClient (`tools/PenBridge.SimClient`, net10.0 console)
 

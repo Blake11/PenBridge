@@ -68,6 +68,14 @@ public sealed class MacSettingValues
 
     public bool FourFingerGestures => Get(MacSettingKey.FourFingerGestures).BoolValue;
 
+    /// <summary>Stream the target to the phone (protocol 1.3).</summary>
+    public bool MirrorEnabled => Get(MacSettingKey.MirrorEnabled).BoolValue;
+
+    public Mirror.MirrorQuality MirrorQuality => (Mirror.MirrorQuality)Get(MacSettingKey.MirrorQuality).IntValue;
+
+    /// <summary><see cref="MacSettings.MirrorFpsAuto"/> (0, follow the refresh rates) or a limit of 30, 60 or 120.</summary>
+    public int MirrorFps => Get(MacSettingKey.MirrorFps).IntValue;
+
     /// <summary>
     /// Values from a SettingsSnapshot (the phone side): starts at the defaults and applies the entries as one update,
     /// so unknown keys, wrong types and out-of-range values keep their defaults. The TargetDisplay is taken as the Mac
@@ -102,8 +110,8 @@ public sealed class MacSettingValues
     /// <summary>
     /// The input settings these values describe (stylus mode, side button, pressure curve, gesture settings), for
     /// <see cref="Net.PenBridgeServer.SetInputSettings"/>. TargetDisplay, Region and RegionAspectLock are the Mac's
-    /// mapping target (<see cref="Net.PenBridgeServer.SetTarget(MappingTarget)"/>) and RegionTint its display tint,
-    /// not input settings. The values are always valid, so the result passes <see cref="InputSettings.Validate"/>.
+    /// mapping target (<see cref="Net.PenBridgeServer.SetTarget(MappingTarget)"/>), RegionTint its display tint and the
+    /// Mirror keys its screen mirroring, not input settings. The values are always valid, so the result passes <see cref="InputSettings.Validate"/>.
     /// </summary>
     public InputSettings ToInputSettings() => new()
     {

@@ -66,6 +66,24 @@ public enum ControlMessageType : byte
     /// <summary>S (1.2, ActiveArea): the phone surface's active area.</summary>
     ActiveArea = 0x43,
 
+    /// <summary>C (1.3, ScreenMirror): the phone wants video.</summary>
+    MirrorStart = 0x50,
+
+    /// <summary>C (1.3, ScreenMirror): the phone no longer wants video.</summary>
+    MirrorStop = 0x51,
+
+    /// <summary>S (1.3, ScreenMirror): the stream's codec, size, fps and bitrate for a new epoch.</summary>
+    MirrorConfig = 0x52,
+
+    /// <summary>S (1.3, ScreenMirror): mirroring state and reason.</summary>
+    MirrorState = 0x53,
+
+    /// <summary>C (1.3, ScreenMirror): encode the next frame as a keyframe.</summary>
+    KeyframeRequest = 0x54,
+
+    /// <summary>C (1.3, ScreenMirror): receive counters and the last rendered frame.</summary>
+    MirrorReport = 0x55,
+
     /// <summary>Both: orderly close.</summary>
     Bye = 0x70,
 
@@ -88,7 +106,30 @@ public static class ControlMessageTypes
     /// <summary>True when <paramref name="type"/> is a message this build understands.</summary>
     public static bool IsKnown(byte type) => type switch
     {
-        0x01 or 0x02 or (>= 0x10 and <= 0x16) or (>= 0x20 and <= 0x24) or 0x30 or 0x31 or (>= 0x40 and <= 0x43) or 0x70 or 0x7E or 0x7F => true,
+        0x01 or 0x02 or (>= 0x10 and <= 0x16) or (>= 0x20 and <= 0x24) or 0x30 or 0x31 or (>= 0x40 and <= 0x43) or (>= 0x50 and <= 0x55) or 0x70 or 0x7E or 0x7F => true,
         _ => false,
     };
+
+    /// <summary>
+    /// The capability both sides must have negotiated before <paramref name="type"/> may be sent or received during a
+    /// session (<see cref="ProtocolCapabilities.None"/> for the base messages). Receiving a message whose capability
+    /// isn't negotiated is a protocol error.
+    /// </summary>
+    public static ProtocolCapabilities RequiredCapability(ControlMessageType type) => type switch
+    {
+        ControlMessageType.SettingsSnapshot or ControlMessageType.SettingsUpdate or ControlMessageType.DisplayList => ProtocolCapabilities.RemoteSettings,
+        ControlMessageType.ActiveArea => ProtocolCapabilities.ActiveArea,
+        >= ControlMessageType.MirrorStart and <= ControlMessageType.MirrorReport => ProtocolCapabilities.ScreenMirror,
+        _ => ProtocolCapabilities.None,
+    };
+
+    /// <summary>True when <paramref name="negotiated"/> (the capabilities both sides advertised) includes <see cref="RequiredCapability"/>.</summary>
+    public static bool IsNegotiated(ControlMessageType type, ProtocolCapabilities negotiated)
+    {
+        ProtocolCapabilities required = RequiredCapability(type);
+        return (negotiated & required) == required;
+    }
+
+    /// <summary>True for the screen-mirroring messages <c>0x50–0x55</c> (1.3, <see cref="ProtocolCapabilities.ScreenMirror"/>).</summary>
+    public static bool IsMirror(ControlMessageType type) => type is >= ControlMessageType.MirrorStart and <= ControlMessageType.MirrorReport;
 }

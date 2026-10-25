@@ -61,6 +61,15 @@ public enum MacSettingKey : ushort
 
     /// <summary>Bool: four-finger swipes and pinches. Default true.</summary>
     FourFingerGestures = 26,
+
+    /// <summary>Bool: stream the target to the phone (protocol 1.3, ADR-0038). Default false.</summary>
+    MirrorEnabled = 30,
+
+    /// <summary>Int: 0 Low, 1 Balanced, 2 High (<see cref="Mirror.MirrorQuality"/>). Default 1.</summary>
+    MirrorQuality = 31,
+
+    /// <summary>Int: 0 Auto (follow the refresh rates), or a frame-rate limit of 30, 60 or 120. Default 0.</summary>
+    MirrorFps = 32,
 }
 
 #pragma warning restore CA1028
