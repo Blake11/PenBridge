@@ -195,14 +195,14 @@ internal sealed class VideoSender : IDisposable
                 return;
             }
 
-            if (_target is not null)
-            {
-                Interlocked.Increment(ref _endpointChanges);
-            }
-
+            bool moved = _target is not null;
             var copy = new SocketAddress(source.Family, source.Size);
             source.Buffer.Span[..source.Size].CopyTo(copy.Buffer.Span);
             Volatile.Write(ref _target, copy);
+            if (moved)
+            {
+                Interlocked.Increment(ref _endpointChanges); // after the write: a reader that sees the count sees the endpoint
+            }
         }
 
         _wake.Set();
