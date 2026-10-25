@@ -9,7 +9,10 @@ namespace PenBridge.Android.Mirror;
 /// Debug only: plays an Annex-B test file through the real mirror path (<see cref="MirrorView.Show"/> +
 /// <see cref="MirrorView.Feed"/>) at the file's frame rate, looping, and logs every 2 s to logcat (tag PenBridge):
 /// frames fed / rendered / gated, render rate, and decode and render latency p50/p95. With <c>loss</c> one frame is
-/// skipped every 3 s to exercise the keyframe gate (the decoder then waits for the file's next keyframe).
+/// skipped every 3 s to exercise the keyframe gate (the decoder then waits for the file's next keyframe). With
+/// <c>epochs</c> the same config is shown again every 3 s (a new epoch with the same codec and size, as a bitrate step
+/// would send) before a non-key frame, with frame numbers restarting: the gate closes, asks for one keyframe and
+/// reopens at the file's next keyframe.
 /// The feeding thread stands in for the network receive thread: below normal priority, off the UI thread.
 /// </summary>
 internal sealed class MirrorTestPlayer : IDisposable
@@ -22,14 +25,16 @@ internal sealed class MirrorTestPlayer : IDisposable
     private readonly MirrorCodec _codec;
     private readonly int _fps;
     private readonly bool _loss;
+    private readonly bool _epochs;
     private readonly int _width;
     private readonly int _height;
     private volatile bool _running = true;
     private long _rendered;
     private long _keyframeSignals;
 
-    public MirrorTestPlayer(MirrorView view, string path, MirrorCodec codec, int width, int height, int fps, bool loss)
+    public MirrorTestPlayer(MirrorView view, string path, MirrorCodec codec, int width, int height, int fps, bool loss, bool epochs = false)
     {
+        _epochs = epochs;
         _view = view;
         _path = path;
         _codec = codec;
@@ -66,7 +71,7 @@ internal sealed class MirrorTestPlayer : IDisposable
                 keys += u.Keyframe ? 1 : 0;
             }
 
-            Log.Info(Tag, $"Mirror test: {_path}, {_codec.Name()} {_width}x{_height}@{_fps}, {units.Count} access units, {keys} keyframes{(_loss ? ", loss every 3 s" : string.Empty)}");
+            Log.Info(Tag, $"Mirror test: {_path}, {_codec.Name()} {_width}x{_height}@{_fps}, {units.Count} access units, {keys} keyframes{(_loss ? ", loss every 3 s" : string.Empty)}{(_epochs ? ", new epoch every 3 s" : string.Empty)}");
             if (units.Count == 0)
             {
                 return;
@@ -83,12 +88,27 @@ internal sealed class MirrorTestPlayer : IDisposable
             long lastRendered = 0;
             long lastLog = next;
             uint frame = 0;
+            long sent = 0;
             int i = 0;
             while (_running)
             {
                 AnnexBAccessUnits.Unit u = units[i];
                 i = (i + 1) % units.Count;
                 frame++;
+                sent++;
+                if (_epochs && sent % lossEvery == 0 && !u.Keyframe)
+                {
+                    using var shown = new ManualResetEventSlim();
+                    _ui.Post(() =>
+                    {
+                        _view.Show(config); // shown already: a new epoch, same codec and size
+                        shown.Set();
+                    });
+                    shown.Wait(TimeSpan.FromSeconds(1));
+                    frame = 1;
+                    Log.Info(Tag, "Mirror test: new epoch (same config)");
+                }
+
                 if (!_loss || frame % lossEvery != 0)
                 {
                     _view.Feed(data.AsSpan(u.Offset, u.Length), u.Keyframe, frame);

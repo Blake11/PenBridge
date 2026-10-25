@@ -8,7 +8,8 @@ namespace PenBridge.Android.Mirror;
 
 /// <summary>
 /// Debug only: the pad menu's "Debug: mirror" submenu: generate test streams at the active area's pixel size, play
-/// them through the real decoder path (HEVC / H.264, at 60 or 120 fps, optionally with loss), preview the state
+/// them through the real decoder path (HEVC / H.264, at 60 or 120 fps, optionally with loss or same-size epoch
+/// changes), preview the state
 /// overlay, stop. The host forwards menu clicks to <see cref="Handle"/>.
 /// </summary>
 internal sealed class MirrorDebugMenu : IDisposable
@@ -22,7 +23,8 @@ internal sealed class MirrorDebugMenu : IDisposable
     private const int OverlayPaused = 5;
     private const int OverlayUnavailable = 6;
     private const int Stop = 7;
-    private const int Count = 8;
+    private const int PlayH264Epochs = 8;
+    private const int Count = 9;
 
     private readonly Context _context;
     private readonly MirrorView _view;
@@ -32,7 +34,7 @@ internal sealed class MirrorDebugMenu : IDisposable
 
     /// <param name="context">Activity context.</param>
     /// <param name="view">The pad's mirror view.</param>
-    /// <param name="baseId">First menu item id (the submenu uses 8 ids from here).</param>
+    /// <param name="baseId">First menu item id (the submenu uses 9 ids from here).</param>
     /// <param name="activePixels">Current active area size in surface pixels.</param>
     public MirrorDebugMenu(Context context, MirrorView view, int baseId, Func<(int Width, int Height)> activePixels)
     {
@@ -58,7 +60,8 @@ internal sealed class MirrorDebugMenu : IDisposable
         sub.Add(0, _baseId + PlayHevc120, 4, "Play HEVC at 120 fps");
         sub.Add(0, _baseId + OverlayPaused, 5, "Overlay: paused");
         sub.Add(0, _baseId + OverlayUnavailable, 6, "Overlay: unavailable");
-        sub.Add(0, _baseId + Stop, 7, "Stop mirror test");
+        sub.Add(0, _baseId + PlayH264Epochs, 7, "Play H.264 with epoch changes");
+        sub.Add(0, _baseId + Stop, 8, "Stop mirror test");
     }
 
     /// <summary>True if <paramref name="itemId"/> was one of this menu's items.</summary>
@@ -74,6 +77,9 @@ internal sealed class MirrorDebugMenu : IDisposable
         {
             case Generate:
                 StartGenerate();
+                break;
+            case PlayH264Epochs:
+                Play(MirrorCodec.H264, 60, loss: false, epochs: true);
                 break;
             case PlayHevc:
                 Play(MirrorCodec.Hevc, 60, loss: false);
@@ -110,7 +116,7 @@ internal sealed class MirrorDebugMenu : IDisposable
 
     public void Dispose() => StopPlayer();
 
-    private void Play(MirrorCodec codec, int fps, bool loss)
+    private void Play(MirrorCodec codec, int fps, bool loss, bool epochs = false)
     {
         StopPlayer();
         (int w, int h) = _activePixels();
@@ -128,7 +134,7 @@ internal sealed class MirrorDebugMenu : IDisposable
         }
 
         Log.Info(Tag, $"Mirror test: capabilities {MirrorDecoderCapabilities.Get(_context)}");
-        _player = new MirrorTestPlayer(_view, path, codec, fw, fh, fps, loss);
+        _player = new MirrorTestPlayer(_view, path, codec, fw, fh, fps, loss, epochs);
     }
 
     private void StartGenerate()
