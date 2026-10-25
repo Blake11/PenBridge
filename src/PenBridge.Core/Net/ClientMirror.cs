@@ -82,6 +82,14 @@ internal sealed class ClientMirror : IDisposable
     private long _malformed;
     private long _foreign;
     private long _datagrams;
+    private long _keyframesSent;
+    private long _probesSent;
+    private long _reportsSent;
+
+    // Totals of finished epochs (guarded by _lock); the running epoch's come from the reassembler.
+    private long _epochs;
+    private long _droppedBefore;
+    private long _lostBefore;
 
     public ClientMirror(
         PenBridgeClient owner,
@@ -145,6 +153,41 @@ internal sealed class ClientMirror : IDisposable
         Interlocked.Read(ref _frames),
         Interlocked.Read(ref _foreign),
         Interlocked.Read(ref _datagrams));
+
+    /// <summary>Connection-wide mirroring counters (see <see cref="MirrorClientStats"/>).</summary>
+    public MirrorClientStats Stats
+    {
+        get
+        {
+            long dropped;
+            long lost;
+            long epochs;
+            lock (_lock)
+            {
+                dropped = _droppedBefore;
+                lost = _lostBefore;
+                epochs = _epochs;
+                if (_reassembler.IsActive)
+                {
+                    dropped += _reassembler.FramesDropped;
+                    lost += _reassembler.FragmentsLost;
+                }
+            }
+
+            return new MirrorClientStats(
+                Interlocked.Read(ref _datagrams),
+                Interlocked.Read(ref _frames),
+                dropped,
+                lost,
+                Interlocked.Read(ref _keyframesSent),
+                Interlocked.Read(ref _probesSent),
+                Interlocked.Read(ref _reportsSent),
+                epochs,
+                Interlocked.Read(ref _authFailures),
+                Interlocked.Read(ref _malformed),
+                Interlocked.Read(ref _foreign));
+        }
+    }
 
     /// <summary>
     /// Asks for video with <paramref name="request"/> (a second call sends a new MirrorStart). Opens the video socket
@@ -222,6 +265,8 @@ internal sealed class ClientMirror : IDisposable
             }
 
             _config = config;
+            FoldEpochLocked();
+            _epochs++;
             _reassembler.Start(config.Epoch);
             _streaming = true;
             long now = _time.GetTimestamp();
@@ -374,6 +419,7 @@ internal sealed class ClientMirror : IDisposable
     private void StopEpochLocked()
     {
         _streaming = false;
+        FoldEpochLocked();
         _reassembler.Stop();
         _keyframeOut = null;
         _reportOut = null;
@@ -381,6 +427,16 @@ internal sealed class ClientMirror : IDisposable
         if (!_disposed)
         {
             _tick.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        }
+    }
+
+    /// <summary>Adds the running epoch's drop counters to the totals before the reassembler restarts or stops.</summary>
+    private void FoldEpochLocked()
+    {
+        if (_reassembler.IsActive)
+        {
+            _droppedBefore += _reassembler.FramesDropped;
+            _lostBefore += _reassembler.FragmentsLost;
         }
     }
 
@@ -500,6 +556,8 @@ internal sealed class ClientMirror : IDisposable
                 {
                     socket.SendTo(_probe.AsSpan(0, length), SocketFlags.None, target);
                 }
+
+                Interlocked.Increment(ref _probesSent); // a filtered Probe counts as sent and lost
             }
             catch (Exception ex) when (ex is SocketException or ObjectDisposedException)
             {
@@ -659,14 +717,24 @@ internal sealed class ClientMirror : IDisposable
                 return false;
             }
 
-            if (keyframe is { } k && !await _channel.TryWriteAsync(k).ConfigureAwait(false))
+            if (keyframe is { } k)
             {
-                return false;
+                if (!await _channel.TryWriteAsync(k).ConfigureAwait(false))
+                {
+                    return false;
+                }
+
+                Interlocked.Increment(ref _keyframesSent);
             }
 
-            if (report is { } r && !await _channel.TryWriteAsync(r).ConfigureAwait(false))
+            if (report is { } r)
             {
-                return false;
+                if (!await _channel.TryWriteAsync(r).ConfigureAwait(false))
+                {
+                    return false;
+                }
+
+                Interlocked.Increment(ref _reportsSent);
             }
 
             return true;

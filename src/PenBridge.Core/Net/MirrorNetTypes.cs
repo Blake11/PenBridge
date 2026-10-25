@@ -50,6 +50,34 @@ public readonly record struct MirrorCounters(
     long FramesDropped,
     long FragmentsSent);
 
+/// <summary>
+/// The phone side of mirroring on one connection (<see cref="PenBridgeClient.MirrorStats"/>; diagnostics, the SimClient).
+/// Monotonic over the connection, across epochs and runs; a reconnect starts again at zero.
+/// </summary>
+/// <param name="DatagramsReceived">Video datagrams from the Mac's video endpoint (before authentication).</param>
+/// <param name="FramesComplete">Access units reassembled and handed to the head (<see cref="PenBridgeClient.VideoFrameReady"/>).</param>
+/// <param name="FramesDropped">Frames given up while numbered: incomplete in time, gated before a keyframe, never seen, or no buffer.</param>
+/// <param name="FragmentsLost">Fragments of dropped frames that never arrived.</param>
+/// <param name="KeyframeRequestsSent">KeyframeRequests written to the Mac.</param>
+/// <param name="ProbesSent">Probes sent on the video socket.</param>
+/// <param name="ReportsSent">MirrorReports written to the Mac.</param>
+/// <param name="Epochs">MirrorConfigs accepted (each starts an epoch).</param>
+/// <param name="AuthFailures">Datagrams with a valid header whose tag didn't verify.</param>
+/// <param name="Malformed">Datagrams without a valid header.</param>
+/// <param name="ForeignDatagrams">Datagrams from another endpoint than the Mac's video port (ignored).</param>
+public readonly record struct MirrorClientStats(
+    long DatagramsReceived,
+    long FramesComplete,
+    long FramesDropped,
+    long FragmentsLost,
+    long KeyframeRequestsSent,
+    long ProbesSent,
+    long ReportsSent,
+    long Epochs,
+    long AuthFailures,
+    long Malformed,
+    long ForeignDatagrams);
+
 /// <summary>DSCP marking and head socket hooks (<c>docs/specs/screen-mirroring.md</c> "QoS").</summary>
 internal static class SocketQos
 {

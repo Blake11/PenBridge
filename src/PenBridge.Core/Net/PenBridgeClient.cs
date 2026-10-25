@@ -117,6 +117,12 @@ public sealed class PenBridgeClient : IAsyncDisposable
     /// <summary>The mirroring configuration of the current epoch, or null.</summary>
     public MirrorStreamConfig? MirrorConfig => Volatile.Read(ref _connection)?.Mirror?.Config;
 
+    /// <summary>
+    /// Mirroring counters of the current connection: datagrams, frames complete and dropped, KeyframeRequests, Probes
+    /// and MirrorReports sent (default when not connected or mirroring wasn't negotiated). Thread-safe; a snapshot.
+    /// </summary>
+    public MirrorClientStats MirrorStats => Volatile.Read(ref _connection)?.Mirror?.Stats ?? default;
+
     /// <summary>Video-path counters of the current connection (tests, diagnostics).</summary>
     internal MirrorCounters MirrorCounters => Volatile.Read(ref _connection)?.Mirror?.Counters ?? default;
 

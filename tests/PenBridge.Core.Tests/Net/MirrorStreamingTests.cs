@@ -85,6 +85,43 @@ public class MirrorStreamingTests
     }
 
     [Fact]
+    public async Task The_phones_mirror_stats_count_frames_drops_requests_probes_and_reports_across_epochs()
+    {
+        int dropFrame = 0;
+        DatagramFilter filter = d => !VideoDatagramHeader.TryRead(d, out VideoDatagramHeader h) || h.FrameNumber != (uint)Volatile.Read(ref dropFrame);
+        await using MirrorRig rig = await MirrorRig.CreateAsync(o => MirrorRig.ServerOptions(o, videoFilter: filter));
+        Assert.Equal(default, rig.Client.MirrorStats);
+        await rig.StartAsync();
+        await rig.SendAsync(MirrorRig.AccessUnit(5000, 1, true), true);
+        await rig.Frames.WaitFor(0, 1, "the keyframe");
+
+        int keyframes = rig.Keyframes.Mark();
+        Volatile.Write(ref dropFrame, 2);
+        await rig.SendAsync(MirrorRig.AccessUnit(800, 2, false), false); // lost
+        await rig.SendAsync(MirrorRig.AccessUnit(800, 3, false), false); // gated after the gap
+        await rig.Keyframes.WaitFor(keyframes, 1, "a KeyframeRequest");
+        MirrorClientStats stats = await Wait.Until(() => rig.Client.MirrorStats, s => s.KeyframeRequestsSent == 1, "the request counted");
+        Assert.Equal(1, stats.FramesComplete);
+        Assert.Equal(2, stats.FramesDropped); // the lost frame and the gated one
+        Assert.Equal(1, stats.Epochs);
+        Assert.True(stats.ProbesSent >= 1, "the epoch's Probe");
+        Assert.True(stats.DatagramsReceived >= 2);
+        Assert.Equal(0, stats.ReportsSent);
+
+        rig.H.Time.Advance(ClientMirror.ReportInterval);
+        await Wait.Until(() => rig.Client.MirrorStats.ReportsSent == 1, "a MirrorReport counted");
+
+        // A new epoch restarts the reassembler's counters; the stats keep the totals.
+        int configs = rig.ClientConfigs.Mark();
+        rig.Server.SetMirrorSource(1000, 1500, 60); // a new size, a new epoch
+        await rig.ClientConfigs.WaitFor(configs, 1, "the second epoch");
+        stats = rig.Client.MirrorStats;
+        Assert.Equal(2, stats.Epochs);
+        Assert.Equal(2, stats.FramesDropped);
+        Assert.Equal(1, stats.FramesComplete);
+    }
+
+    [Fact]
     public async Task A_new_epoch_holds_its_first_keyframe_until_the_epochs_probe()
     {
         bool blockProbes = false;
