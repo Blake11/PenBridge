@@ -55,7 +55,8 @@ public enum MirrorHostStatus
 /// encoder; rate changes apply in place) and then a keyframe is requested, so the epoch's first frame is a keyframe.
 /// Frames reach the server only while the applied configuration is the current one: an old-epoch keyframe still in the
 /// encoder can't become the new epoch's frame 1. An HEVC encoder failure drops HEVC from the encoders (Core falls back
-/// to H.264 with a new epoch) until the phone's next request.</para>
+/// to H.264 with a new epoch) until a request at least 30 s later. A repeated MirrorStart (the phone recovering from a
+/// decoder loss) never restarts capture: same plan → only the new epoch's keyframe, else an in-place reconfigure.</para>
 /// <para><b>Idle</b>: nothing runs while mirroring is off, stopped or waiting; the worker exists only while it has work.
 /// While streaming a static screen produces no frames (<see cref="MirrorController"/>).</para>
 /// <para><b>Threads</b>: public members on the main thread; server events on Core's event thread; frames on a
@@ -65,6 +66,9 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
 {
     /// <summary>NSUserDefaults flag: the system Screen Recording prompt was shown once (the first enable without the grant).</summary>
     private const string ScreenRecordingPromptedKey = "ScreenRecordingPrompted";
+
+    /// <summary>After an HEVC failure, a new request tries HEVC again only after this long (the phone may repeat requests every second).</summary>
+    private const long HevcRetryMs = 30_000;
 
     private readonly SettingsStore _store;
     private readonly DisplayTargetResolver _resolver;
@@ -95,6 +99,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
     private bool _dirty;
     private bool _working;
     private bool _stopped;
+    private long _fallbackAt = long.MinValue / 2;
 
     // Reconcile worker only (one at a time).
     private MirrorTarget? _appliedTarget;
@@ -320,11 +325,15 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
 
             server = _server;
             _requested = true;
-            _config = null; // a new request starts a new epoch; its configuration follows
+
+            // Core starts a new epoch for every MirrorStart and its configuration follows. A repeated request while
+            // streaming (the phone recovering from a decoder loss) keeps the capture running: the worker reconfigures
+            // only what changed and asks for the new epoch's keyframe. Until then no frame goes out.
             Volatile.Write(ref _send, 0);
-            if (_hardware is { } hardware && _encoders != hardware)
+            long now = Environment.TickCount64;
+            if (_hardware is { } hardware && _encoders != hardware && now - _fallbackAt >= HevcRetryMs)
             {
-                _encoders = hardware; // retry HEVC after an earlier fallback
+                _encoders = hardware; // retry HEVC after an earlier fallback, at most every 30 s
                 restore = hardware;
             }
         }
@@ -522,6 +531,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
                 && (_encoders & MirrorCodecs.Hevc) != 0 && (_encoders & MirrorCodecs.H264) != 0)
             {
                 _encoders &= ~MirrorCodecs.Hevc;
+                _fallbackAt = Environment.TickCount64;
                 fallback = _encoders;
                 server = _server;
             }
