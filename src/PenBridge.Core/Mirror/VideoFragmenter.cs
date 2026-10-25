@@ -24,7 +24,7 @@ public readonly record struct VideoFrameInfo(byte Epoch, uint FrameNumber, bool 
 /// </summary>
 public static class VideoFragmenter
 {
-    /// <summary>Fragments for an access unit of <paramref name="accessUnitLength"/> bytes (1..1 MiB), 1..1024.</summary>
+    /// <summary>Fragments for an access unit of <paramref name="accessUnitLength"/> bytes (1..1 MiB), 1..<see cref="VideoDatagram.MaxFragments"/>.</summary>
     public static int GetFragmentCount(int accessUnitLength)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(accessUnitLength, 1);

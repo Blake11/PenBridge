@@ -142,7 +142,11 @@ public static class VideoDatagram
     public const int MaxPayloadSize = MaxSize - VideoDatagramHeader.Size - TagSize;
 
     /// <summary>Most fragments per frame.</summary>
-    public const int MaxFragments = 1024;
+    /// <remarks>
+    /// The most a <see cref="MaxFrameLength"/> frame needs with full fragments (904): a larger count can't carry a valid
+    /// frame and would only reserve reassembly memory, so the header rejects it.
+    /// </remarks>
+    public const int MaxFragments = 1 + ((MaxFrameLength - FirstFragmentDataSize + MaxPayloadSize - 1) / MaxPayloadSize);
 
     /// <summary>Largest access unit (<c>frameLength</c>).</summary>
     public const int MaxFrameLength = 1024 * 1024;

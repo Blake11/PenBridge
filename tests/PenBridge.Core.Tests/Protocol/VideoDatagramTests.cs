@@ -13,7 +13,7 @@ public class VideoDatagramTests
         Assert.Equal(1160, VideoDatagram.MaxPayloadSize);
         Assert.Equal(1152, VideoDatagram.FirstFragmentDataSize);
         Assert.Equal(40, VideoDatagram.MinSize);
-        Assert.Equal(1024, VideoDatagram.MaxFragments);
+        Assert.Equal(904, VideoDatagram.MaxFragments);
         Assert.Equal(1 << 20, VideoDatagram.MaxFrameLength);
         Assert.Equal(24 + 1 + 16, VideoDatagram.GetSize(1));
         Assert.Equal(1, (int)VideoDatagramKind.VideoFragment);
@@ -51,7 +51,7 @@ public class VideoDatagramTests
     [InlineData("01 00 07 00 00000001 0000000000000001 00000001 0000 0001")] // kind 0
     [InlineData("01 03 07 00 00000001 0000000000000001 00000001 0000 0001")] // kind 3
     [InlineData("01 01 07 00 00000001 0000000000000001 00000001 0000 0000")] // count 0
-    [InlineData("01 01 07 00 00000001 0000000000000001 00000001 0000 0401")] // count 1025
+    [InlineData("01 01 07 00 00000001 0000000000000001 00000001 0000 0389")] // count 905
     [InlineData("01 01 07 00 00000001 0000000000000001 00000001 0001 0001")] // index == count
     [InlineData("01 01 07 00 00000001 0000000000000001 00000001 FFFF 0400")] // index past count
     [InlineData("01 02 07 00 00000001 0000000000000001 00000001 0000 0000")] // probe with a frame number
@@ -67,7 +67,7 @@ public class VideoDatagramTests
 
     [Theory]
     [InlineData("01 01 07 FE 00000001 0000000000000001 00000001 0000 0001")] // unknown flag bits are ignored
-    [InlineData("01 01 07 00 00000001 0000000000000000 00000001 03FF 0400")] // last of 1024
+    [InlineData("01 01 07 00 00000001 0000000000000000 00000001 0387 0388")] // last of 904
     [InlineData("01 02 07 FF 00000001 0000000000000001 00000000 0000 0000")] // probe flags ignored
     public void Valid_edge_headers_are_read(string hex) => Assert.True(VideoDatagramHeader.TryRead(Hex.Bytes(hex), out _));
 
@@ -76,7 +76,7 @@ public class VideoDatagramTests
     {
         byte[] bytes = new byte[24];
         Assert.Throws<ArgumentException>(() => VideoDatagramHeader.Fragment(1, false, 1, 1, 1, 1, 1).Write(bytes));
-        Assert.Throws<ArgumentException>(() => VideoDatagramHeader.Fragment(1, false, 1, 1, 1, 0, 1025).Write(bytes));
+        Assert.Throws<ArgumentException>(() => VideoDatagramHeader.Fragment(1, false, 1, 1, 1, 0, 905).Write(bytes));
         Assert.Throws<ArgumentException>(() => VideoDatagramHeader.Fragment(1, false, 1, 1, 0, 0, 1).Write(bytes));
         Assert.Throws<ArgumentException>(() => new VideoDatagramHeader(VideoDatagramKind.Probe, 1, 0, 1, 1, 1, 0, 0).Write(bytes));
         Assert.Throws<ArgumentException>(() => new VideoDatagramHeader((VideoDatagramKind)9, 1, 0, 1, 1, 0, 0, 0).Write(bytes));

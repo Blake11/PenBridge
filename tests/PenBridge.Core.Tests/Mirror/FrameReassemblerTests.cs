@@ -440,11 +440,14 @@ public sealed class FrameReassemblerTests : IDisposable
         Assert.Equal(ReassemblyResult.Invalid, _r.Accept(h with { FragmentIndex = 1 }, [], out _)); // empty
         Assert.Equal(ReassemblyResult.Invalid, _r.Accept(h with { FragmentIndex = 1 }, new byte[1161], out _));
         Assert.Equal(ReassemblyResult.Invalid, _r.Accept(h with { FragmentIndex = 3 }, new byte[10], out _)); // inconsistent header
+        Assert.Equal(ReassemblyResult.Invalid, _r.Accept(h with { FragmentIndex = 5, FragmentCount = VideoDatagram.MaxFragments + 1 }, new byte[10], out _)); // more than 1 MiB needs
+        Assert.Equal(ReassemblyResult.Buffered, _r.Accept(h with { FrameNumber = 9, FragmentIndex = 5, FragmentCount = VideoDatagram.MaxFragments }, new byte[10], out _));
+        Assert.Equal(VideoDatagram.MaxFragments, VideoFragmenter.GetFragmentCount(VideoDatagram.MaxFrameLength));
 
         Assert.Equal(ReassemblyResult.Buffered, _r.Accept(h, first.Payload, out _));
         Assert.Equal(ReassemblyResult.Invalid, _r.Accept(h with { FragmentIndex = 1, FragmentCount = 4 }, new byte[10], out _));
         Assert.Equal(ReassemblyResult.Invalid, _r.Accept(h with { FragmentIndex = 1, Flags = VideoDatagramOptions.None }, new byte[10], out _));
-        Assert.Equal(10UL, _r.DatagramsRejected);
+        Assert.Equal(11UL, _r.DatagramsRejected);
     }
 
     [Fact]

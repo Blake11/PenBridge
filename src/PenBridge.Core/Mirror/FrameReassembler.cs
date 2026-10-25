@@ -830,7 +830,7 @@ public sealed class FrameReassembler
 
     private sealed class Slot
     {
-        private readonly ulong[] _bits = new ulong[VideoDatagram.MaxFragments / 64];
+        private readonly ulong[] _bits = new ulong[(VideoDatagram.MaxFragments + 63) / 64];
 
         public bool InUse { get; set; }
 
