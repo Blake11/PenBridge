@@ -50,7 +50,8 @@ public enum ReassemblyResult
 /// arrives (<see cref="TryTakeKeyframeRequest"/>); after <see cref="Start"/> the first request waits one interval for
 /// the epoch's first keyframe.</para>
 /// <para><b>Counters</b> (since <see cref="Start"/>, wrap, for MirrorReport): frames handed out; frames dropped (including
-/// gated and never-seen ones); fragments lost (the missing fragments of dropped frames, one per never-seen frame).</para>
+/// gated and never-seen ones); fragments lost (the missing fragments of dropped frames, one per never-seen frame). Each
+/// frame counts once, however many drop between two completed frames.</para>
 /// <para><b>Driving it.</b> The receive thread opens each datagram (<see cref="Security.VideoCipher.TryOpen"/>) and
 /// passes the header and plaintext to <see cref="Accept"/>; it waits on the socket at most <see cref="NextDeadline"/> and
 /// calls <see cref="Poll"/> and <see cref="TryTakeKeyframeRequest"/> when it passes. Thread-safe (one internal lock);
@@ -74,7 +75,10 @@ public sealed class FrameReassembler
     public static readonly TimeSpan KeyframeRequestInterval = TimeSpan.FromMilliseconds(250);
 
     private const int RangeCount = MaxFramesInFlight + MaxFramesHeld;
-    private const int DroppedMemory = 16;
+    // Dropped frame numbers are remembered exactly in a window above the last assembled frame; anything older than the
+    // window counts as dropped (and its late fragments as stale).
+    private const int DropWindow = 256;
+    private const int DropWords = DropWindow / 64;
 
     private readonly TimeProvider _time;
     private readonly Lock _lock = new();
@@ -84,7 +88,7 @@ public sealed class FrameReassembler
     private readonly int[] _rangeOffset = new int[RangeCount];
     private readonly int[] _rangeLength = new int[RangeCount];
     private readonly bool[] _rangeUsed = new bool[RangeCount];
-    private readonly uint[] _dropped = new uint[DroppedMemory];
+    private readonly ulong[] _dropBits = new ulong[DropWords];
     private readonly long _timeoutTicks;
     private readonly long _requestTicks;
 
@@ -94,7 +98,8 @@ public sealed class FrameReassembler
     private uint _lastAssembled;
     private bool _haveDelivered;
     private uint _lastDelivered;
-    private int _droppedCount;
+    private uint _dropBase;
+    private uint _dropsBelowBase;
     private bool _gated;
     private bool _requesting;
     private bool _inGrace;
@@ -232,7 +237,7 @@ public sealed class FrameReassembler
             _haveDelivered = false;
             _lastAssembled = 0;
             _lastDelivered = 0;
-            _droppedCount = 0;
+            ClearDrops();
             _framesComplete = 0;
             _framesDropped = 0;
             _fragmentsLost = 0;
@@ -467,11 +472,13 @@ public sealed class FrameReassembler
             }
         }
 
+        // Frames between the last assembled one and this one were dropped (already counted) or never seen (counted
+        // now, one lost fragment each). The epoch's first frame is gated anyway; the drops before it are forgotten.
         bool loss = false;
+        uint seen = TakeDropsBelow(number);
         if (_haveAssembled)
         {
             uint skipped = number - _lastAssembled - 1;
-            uint seen = (uint)TakeDropped(true, _lastAssembled, number);
             if (skipped > 0)
             {
                 loss = true;
@@ -479,11 +486,6 @@ public sealed class FrameReassembler
                 _framesDropped = unchecked(_framesDropped + neverSeen);
                 _fragmentsLost = unchecked(_fragmentsLost + neverSeen);
             }
-        }
-        else
-        {
-            // The epoch's first frame: gated anyway; forget the drops before it.
-            _ = TakeDropped(false, 0, number);
         }
 
         _haveAssembled = true;
@@ -562,8 +564,7 @@ public sealed class FrameReassembler
     {
         _framesDropped = unchecked(_framesDropped + 1);
         _fragmentsLost = unchecked(_fragmentsLost + (uint)(slot.Count - slot.Received));
-        _dropped[_droppedCount % DroppedMemory] = slot.Frame;
-        _droppedCount++;
+        RememberDrop(slot.Frame);
         Free(slot);
         _gated = true;
         StartRequesting(now);
@@ -625,50 +626,106 @@ public sealed class FrameReassembler
         return null;
     }
 
+    /// <summary>True for a frame dropped earlier, or one older than the drop window (too late to use).</summary>
     private bool WasDropped(uint number)
     {
-        int remembered = Math.Min(_droppedCount, DroppedMemory);
-        for (int i = 0; i < remembered; i++)
+        if (number < _dropBase)
         {
-            if (_dropped[(_droppedCount - 1 - i) % DroppedMemory] == number)
-            {
-                return true;
-            }
+            return true;
         }
 
-        return false;
+        uint offset = number - _dropBase;
+        return offset < DropWindow && (_dropBits[offset >> 6] & (1UL << (int)(offset & 63))) != 0;
     }
 
-    /// <summary>Forgets the remembered drops below <paramref name="before"/> and returns how many were above <paramref name="after"/> (any, without one); keeps newer ones.</summary>
-    private int TakeDropped(bool haveAfter, uint after, uint before)
+    /// <summary>Remembers a dropped frame (each number once: its late fragments are stale from now on).</summary>
+    private void RememberDrop(uint number)
     {
-        int remembered = Math.Min(_droppedCount, DroppedMemory);
-        int taken = 0;
-        int kept = 0;
-        Span<uint> keep = stackalloc uint[DroppedMemory];
-        for (int i = remembered - 1; i >= 0; i--)
+        if (number < _dropBase)
         {
-            uint n = _dropped[(_droppedCount - 1 - i) % DroppedMemory];
-            if (n < before)
-            {
-                if (!haveAfter || n > after)
-                {
-                    taken++;
-                }
-            }
-            else if (n >= before)
-            {
-                keep[kept++] = n;
-            }
+            return;
         }
 
-        for (int i = 0; i < kept; i++)
+        uint offset = number - _dropBase;
+        if (offset >= DropWindow)
         {
-            _dropped[i] = keep[i];
+            uint shift = offset - DropWindow + 1;
+            _dropsBelowBase = unchecked(_dropsBelowBase + ShiftDrops(shift));
+            _dropBase += shift;
+            offset = DropWindow - 1;
         }
 
-        _droppedCount = kept;
-        return taken;
+        _dropBits[offset >> 6] |= 1UL << (int)(offset & 63);
+    }
+
+    /// <summary>
+    /// Counts the remembered drops below <paramref name="number"/> (the frame completing now) and moves the window to
+    /// start after it, keeping newer drops.
+    /// </summary>
+    private uint TakeDropsBelow(uint number)
+    {
+        uint seen = _dropsBelowBase;
+        _dropsBelowBase = 0;
+        if (number >= _dropBase)
+        {
+            // The completing frame itself is no remembered drop: a dropped frame's fragments are stale.
+            seen = unchecked(seen + ShiftDrops(number - _dropBase + 1));
+            _dropBase = number + 1;
+        }
+
+        return seen;
+    }
+
+    /// <summary>Shifts the window up by <paramref name="shift"/> frames; returns how many drops fell out of it.</summary>
+    private uint ShiftDrops(uint shift)
+    {
+        if (shift == 0)
+        {
+            return 0;
+        }
+
+        Span<ulong> bits = _dropBits;
+        if (shift >= DropWindow)
+        {
+            uint all = 0;
+            foreach (ulong word in bits)
+            {
+                all += (uint)ulong.PopCount(word);
+            }
+
+            bits.Clear();
+            return all;
+        }
+
+        int words = (int)(shift >> 6);
+        int rest = (int)(shift & 63);
+        uint count = 0;
+        for (int i = 0; i < words; i++)
+        {
+            count += (uint)ulong.PopCount(bits[i]);
+        }
+
+        if (rest > 0)
+        {
+            count += (uint)ulong.PopCount(bits[words] & ((1UL << rest) - 1));
+        }
+
+        for (int i = 0; i < DropWords; i++)
+        {
+            int from = i + words;
+            ulong low = from < DropWords ? bits[from] >> rest : 0;
+            ulong high = rest > 0 && from + 1 < DropWords ? bits[from + 1] << (64 - rest) : 0;
+            bits[i] = low | high;
+        }
+
+        return count;
+    }
+
+    private void ClearDrops()
+    {
+        Array.Clear(_dropBits);
+        _dropBase = 0;
+        _dropsBelowBase = 0;
     }
 
     private ReassemblyResult TryAllocate(uint number, int count, bool keyframe, long now, out Slot? slot)

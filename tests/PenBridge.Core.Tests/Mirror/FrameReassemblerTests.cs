@@ -354,6 +354,52 @@ public sealed class FrameReassemblerTests : IDisposable
         Assert.Equal(ReassemblyResult.FrameReady, AcceptAll(Frame(4, true, VideoDatagram.MaxFrameLength), dispose: true));
     }
 
+    [Theory]
+    [InlineData(20, 0)]   // more drops than the old 16-entry memory
+    [InlineData(20, 3)]   // plus never-seen frames
+    [InlineData(300, 0)]  // more than the drop window
+    [InlineData(300, 2)]
+    public void Many_drops_between_completes_count_each_frame_once(int dropped, int neverSeen)
+    {
+        DeliverAll(Frame(1, true)).Dispose();
+        var partial = new List<List<OpenedFragment>>();
+        uint n = 2;
+        for (int i = 0; i < dropped; i++, n++)
+        {
+            List<OpenedFragment> f = Frame(n, false, 3000); // 3 fragments, only the first arrives
+            Assert.Equal(ReassemblyResult.Buffered, Accept(f[0]));
+            partial.Add(f);
+        }
+
+        n += (uint)neverSeen;
+        DeliverAll(Frame(n, true)).Dispose();
+        uint frames = (uint)(dropped + neverSeen);
+        Assert.Equal((frames, (uint)(2 * dropped + neverSeen)), (_r.FramesDropped, _r.FragmentsLost));
+
+        // Late fragments of any dropped frame are stale and count nothing again.
+        Assert.Equal(ReassemblyResult.Stale, Accept(partial[0][1]));
+        Assert.Equal(ReassemblyResult.Stale, Accept(partial[^1][2]));
+        Assert.Equal((frames, (uint)(2 * dropped + neverSeen), 2u), (_r.FramesDropped, _r.FragmentsLost, _r.FramesComplete));
+    }
+
+    [Fact]
+    public void Drops_past_the_window_before_a_complete_stay_exact()
+    {
+        DeliverAll(Frame(1, true)).Dispose();
+        List<OpenedFragment> old = Frame(2, false, 3000);
+        Assert.Equal(ReassemblyResult.Buffered, Accept(old[0]));
+        _time.Advance(FrameReassembler.FrameTimeout);
+        _r.Poll();                                   // frame 2 dropped
+        List<OpenedFragment> far = Frame(400, false, 3000);
+        Assert.Equal(ReassemblyResult.Buffered, Accept(far[0]));
+        _time.Advance(FrameReassembler.FrameTimeout);
+        _r.Poll();                                   // frame 400 dropped: the window slides past frame 2
+        Assert.Equal(ReassemblyResult.Stale, Accept(old[1]));
+        Assert.Equal(ReassemblyResult.Stale, Accept(Frame(100, false)[0])); // below the window (145..400): too late
+        DeliverAll(Frame(401, true)).Dispose();
+        Assert.Equal((399u, 2u + 2u + 397u), (_r.FramesDropped, _r.FragmentsLost));
+    }
+
     [Fact]
     public void A_held_frame_keeps_only_its_bytes_so_two_large_keyframes_fit()
     {
