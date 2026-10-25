@@ -35,6 +35,13 @@ internal sealed class CaptureStream : NSObject, ISCStreamOutput, ISCStreamDelega
     /// <summary>How long a stop waits for ScreenCaptureKit's completion before giving up.</summary>
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(2);
 
+    /// <summary>
+    /// The stream background. <c>SCStreamConfiguration.backgroundColor</c> is an <c>assign</c> property (not retained),
+    /// and SCStream copies the configuration later: a colour disposed after setting it crashes in <c>CGColorCreateCopy</c>.
+    /// So one colour lives for the process.
+    /// </summary>
+    private static readonly CGColor Black = new(0, 0, 0, 1);
+
     private SCStream? _stream;
     private volatile bool _active;
 
@@ -77,8 +84,7 @@ internal sealed class CaptureStream : NSObject, ISCStreamOutput, ISCStreamDelega
             WeakColorMatrix = CGDisplayStreamYCbCrMatrixOptionKeys.Itu_R_709_2,
             WeakColorSpaceName = CGColorSpaceNames.Srgb,
         };
-        using CGColor black = new(0, 0, 0, 1);
-        config.BackgroundColor = black;
+        config.BackgroundColor = Black;
         return config;
     }
 
