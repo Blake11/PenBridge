@@ -126,17 +126,41 @@ internal static class SocketQos
 
         if (socket.AddressFamily == AddressFamily.InterNetworkV6 && Ipv6TrafficClass is { } option)
         {
-            ok |= TrySet(socket, SocketOptionLevel.IPv6, option, tos);
+            // No SocketOptionName exists for it, and on Unix SetSocketOption rejects numbers it doesn't know: raw only.
+            Span<byte> value = stackalloc byte[sizeof(int)];
+            BitConverter.TryWriteBytes(value, tos);
+            try
+            {
+                socket.SetRawSocketOption(IpProtoIpv6, option, value);
+                ok = true;
+            }
+            catch (Exception ex) when (ex is SocketException or PlatformNotSupportedException or NotSupportedException)
+            {
+            }
         }
 
         return ok;
     }
 
-    // IPV6_TCLASS has no SocketOptionName and differs per OS.
-    private static SocketOptionName? Ipv6TrafficClass =>
-        OperatingSystem.IsLinux() || OperatingSystem.IsAndroid() ? (SocketOptionName)67
-        : OperatingSystem.IsMacOS() || OperatingSystem.IsIOS() || OperatingSystem.IsMacCatalyst() || OperatingSystem.IsTvOS() ? (SocketOptionName)36
-        : OperatingSystem.IsWindows() ? (SocketOptionName)39
+    /// <summary>The IPv6 traffic class of <paramref name="socket"/> (tests), or -1 where it can't be read.</summary>
+    internal static int GetTrafficClass(Socket socket)
+    {
+        if (Ipv6TrafficClass is not { } option)
+        {
+            return -1;
+        }
+
+        Span<byte> value = stackalloc byte[sizeof(int)];
+        return socket.GetRawSocketOption(IpProtoIpv6, option, value) == sizeof(int) ? BitConverter.ToInt32(value) : -1;
+    }
+
+    // IPPROTO_IPV6 is 41 everywhere; IPV6_TCLASS differs per OS.
+    private const int IpProtoIpv6 = 41;
+
+    private static int? Ipv6TrafficClass =>
+        OperatingSystem.IsLinux() || OperatingSystem.IsAndroid() ? 67
+        : OperatingSystem.IsMacOS() || OperatingSystem.IsIOS() || OperatingSystem.IsMacCatalyst() || OperatingSystem.IsTvOS() ? 36
+        : OperatingSystem.IsWindows() ? 39
         : null;
 
     private static bool TrySet(Socket socket, SocketOptionLevel level, SocketOptionName name, int value)
