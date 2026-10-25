@@ -32,7 +32,7 @@ internal sealed class MirrorView : IDisposable
     private readonly MirrorDecoder _decoder;
     private readonly SurfaceCallback _surfaceCallback;
     private MirrorVideoConfig? _config;
-    private bool _highRefresh;
+    private int _modeId; // the preferredDisplayModeId we set, 0 = none
     private bool _disposed;
 
     public MirrorView(Activity activity)
@@ -151,25 +151,27 @@ internal sealed class MirrorView : IDisposable
     }
 
     /// <summary>
-    /// Above 60 fps: the window prefers the display mode with the highest refresh at the current resolution, and the
-    /// video surface declares its frame rate (API 30+). 0 releases both.
+    /// The video surface declares its frame rate (API 30+), and above 60 fps the window prefers the display mode at the
+    /// current resolution that fits it (<see cref="HighRefreshModeId"/>), re-picked on every fps change (90 → 120 picks
+    /// another mode). 0 releases both.
     /// </summary>
     private void ApplyFrameRate(int fps)
     {
-        bool high = fps > DefaultFps;
         if (_layer.Video.Holder?.Surface is { IsValid: true } surface)
         {
             SetSurfaceRate(surface, fps);
         }
 
-        if (high == _highRefresh || _activity.Window is not { } window || window.Attributes is not { } attrs)
+        int modeId = fps > DefaultFps ? HighRefreshModeId(fps) : 0;
+        if (modeId == _modeId || _activity.Window is not { } window || window.Attributes is not { } attrs)
         {
             return;
         }
 
-        _highRefresh = high;
-        attrs.PreferredDisplayModeId = high ? HighRefreshModeId(fps) : 0;
+        _modeId = modeId;
+        attrs.PreferredDisplayModeId = modeId;
         window.Attributes = attrs;
+        global::Android.Util.Log.Info("PenBridge", $"Mirror: preferred display mode {(modeId == 0 ? "released" : modeId.ToString(System.Globalization.CultureInfo.InvariantCulture))} for {fps} fps");
     }
 
     private static void SetSurfaceRate(Surface surface, int fps)

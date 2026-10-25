@@ -13,16 +13,22 @@ namespace PenBridge.Android.Mirror;
 /// mode, low-latency where the decoder supports it, rendering each frame to the surface as soon as it is decoded.
 /// </summary>
 /// <remarks>
-/// <para><b>Threads.</b> Every codec call runs on one decoder <see cref="HandlerThread"/> at the default priority, below
-/// the pad's input sender (<c>PadSendQueue</c>, AboveNormal); the UI thread, which delivers pen input, only posts to
-/// it. <see cref="Feed"/> may be called from any thread: it copies the access unit into a reused slot and wakes the
+/// <para><b>Threads.</b> Every codec call runs on one decoder <see cref="HandlerThread"/>, created on the first
+/// <see cref="Configure"/> (mirroring shown), with its Linux nice set explicitly to the default (0). Managed
+/// <c>Thread.Priority</c> is a no-op on Android, so the nice is the only priority that counts; the pad's input sender
+/// gets its own explicitly (#311). The UI thread, which delivers pen input, only posts to the decoder thread.
+/// <see cref="Feed"/> may be called from any thread: it copies the access unit into a reused slot and wakes the
 /// decoder thread. <see cref="FrameRendered"/>, <see cref="KeyframeNeeded"/> and <see cref="Error"/> are raised on the
 /// decoder thread (except <see cref="KeyframeNeeded"/>, which can also come from the <see cref="Feed"/> caller).</para>
-/// <para><b>Keyframe gate.</b> After a configure, a codec restart, a frame-number gap or a frame that couldn't be
-/// queued, nothing is fed until a keyframe arrives, and <see cref="KeyframeNeeded"/> is raised once per gap (the
-/// sender of KeyframeRequests repeats them itself).</para>
-/// <para><b>Allocation.</b> Steady-state feeding reuses its slots and copies straight into the codec's direct input
-/// buffers; a slot grows only when a larger access unit than ever before arrives.</para>
+/// <para><b>Keyframe gate.</b> After a configure (every new epoch, even with the same codec and size), a codec
+/// restart, a frame-number gap or a frame that couldn't be queued, nothing is fed until a keyframe arrives, and
+/// <see cref="KeyframeNeeded"/> is raised once per closing (the sender of KeyframeRequests repeats them itself). A gap
+/// that lands on a keyframe needs nothing: the keyframe is fed.</para>
+/// <para><b>Allocation.</b> The access-unit bytes are never reallocated: <see cref="Feed"/> copies into reused slots
+/// (a slot grows only when a larger access unit than ever before arrives) and the decoder thread copies them straight
+/// into the codec's direct input buffers. The Java interop is not allocation-free: each frame creates small managed
+/// peers (the input <c>ByteBuffer</c> from <c>GetInputBuffer</c>, the <c>BufferInfo</c> of the output callback),
+/// short-lived and disposed at once, on the decoder thread, never on the pen input path.</para>
 /// </remarks>
 internal sealed class MirrorDecoder : IDisposable
 {
@@ -49,10 +55,10 @@ internal sealed class MirrorDecoder : IDisposable
     private const string QtiPictureOrder = "vendor.qti-ext-dec-picture-order.enable";
 
     private readonly global::Android.Content.Context _context;
-    private readonly HandlerThread _thread;
-    private readonly Handler _handler;
     private readonly CodecCallback _callback;
     private readonly Java.Lang.Runnable _drainRunnable;
+    private HandlerThread? _thread; // created on the first Configure (under _lock)
+    private Handler? _handler;
     private readonly Lock _lock = new();
 
     // Pending access units (under _lock).
@@ -64,6 +70,7 @@ internal sealed class MirrorDecoder : IDisposable
     private bool _drainPosted;
     private bool _accepting;
     private bool _needKeyframe = true;
+    private bool _signalOnGated; // a configure closed the gate: the first gated frame raises KeyframeNeeded
     private bool _haveLast;
     private uint _lastFrame;
     private long _framesFed;
@@ -95,9 +102,6 @@ internal sealed class MirrorDecoder : IDisposable
             _slotData[i] = [];
         }
 
-        _thread = new HandlerThread("PenBridge.MirrorDecode", (int)global::Android.OS.ThreadPriority.Default);
-        _thread.Start();
-        _handler = new Handler(_thread.Looper!);
         _callback = new CodecCallback(this);
         _drainRunnable = new Java.Lang.Runnable(Drain);
     }
@@ -106,7 +110,10 @@ internal sealed class MirrorDecoder : IDisposable
     /// <remarks>renderedAtUs is microseconds since <see cref="ClockOrigin"/> on the <see cref="Stopwatch"/> clock.</remarks>
     public Action<uint, long>? FrameRendered { get; set; }
 
-    /// <summary>The decoder needs a keyframe (gap, restart). Raised once per gap; decoder or <see cref="Feed"/> thread.</summary>
+    /// <summary>
+    /// The decoder needs a keyframe (new epoch, gap, lost frame, restart). Raised once each time the gate closes; decoder
+    /// or <see cref="Feed"/> thread.
+    /// </summary>
     public Action? KeyframeNeeded { get; set; }
 
     /// <summary>The decoder can't run (no decoder for the codec, creation failed). Decoder thread.</summary>
@@ -143,8 +150,10 @@ internal sealed class MirrorDecoder : IDisposable
     }
 
     /// <summary>
-    /// Applies a stream configuration. The same codec and size keep the running decoder (a new epoch for a bitrate or
-    /// fps step); anything else reconfigures it once a surface exists. Frame-number continuity restarts. Any thread.
+    /// Applies a stream configuration (a new epoch). The same codec and size keep the running decoder (a bitrate or
+    /// fps step); anything else reconfigures it once a surface exists. Either way the keyframe gate closes and
+    /// frame-number continuity restarts: the new epoch is fed from its first keyframe, and the first non-key frame that
+    /// arrives before it raises <see cref="KeyframeNeeded"/>. Starts the decoder thread on first use. Any thread.
     /// </summary>
     public void Configure(MirrorVideoConfig config)
     {
@@ -155,7 +164,21 @@ internal sealed class MirrorDecoder : IDisposable
 
         lock (_lock)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
+            if (_thread is null)
+            {
+                _thread = new HandlerThread("PenBridge.MirrorDecode", (int)global::Android.OS.ThreadPriority.Default);
+                _thread.Start();
+                _handler = new Handler(_thread.Looper!);
+            }
+
             _haveLast = false;
+            _needKeyframe = true;
+            _signalOnGated = true;
         }
 
         Post(() =>
@@ -228,6 +251,7 @@ internal sealed class MirrorDecoder : IDisposable
         bool signal = false;
         bool post = false;
         bool queued = false;
+        Handler? handler;
         lock (_lock)
         {
             if (!_accepting || _disposed)
@@ -235,7 +259,7 @@ internal sealed class MirrorDecoder : IDisposable
                 return false;
             }
 
-            if (_haveLast && frameNumber != unchecked(_lastFrame + 1))
+            if (_haveLast && frameNumber != unchecked(_lastFrame + 1) && !keyframe)
             {
                 signal |= CloseGate(); // a frame went missing (or came out of order) before it reached us
             }
@@ -248,7 +272,9 @@ internal sealed class MirrorDecoder : IDisposable
             }
             else if (_needKeyframe && !keyframe)
             {
-                // Gated: keep waiting for the keyframe.
+                // Gated: keep waiting for the keyframe. After a configure the first one asks for it.
+                signal |= _signalOnGated;
+                _signalOnGated = false;
             }
             else if (_slotCount == SlotCount)
             {
@@ -257,6 +283,7 @@ internal sealed class MirrorDecoder : IDisposable
             else
             {
                 _needKeyframe = false;
+                _signalOnGated = false;
                 int slot = (_slotHead + _slotCount) % SlotCount;
                 if (_slotData[slot].Length < accessUnit.Length)
                 {
@@ -279,12 +306,11 @@ internal sealed class MirrorDecoder : IDisposable
             {
                 _framesGated++;
             }
+
+            handler = post ? _handler : null;
         }
 
-        if (post)
-        {
-            _handler.Post(_drainRunnable);
-        }
+        handler?.Post(_drainRunnable);
 
         if (signal)
         {
@@ -296,6 +322,8 @@ internal sealed class MirrorDecoder : IDisposable
 
     public void Dispose()
     {
+        Handler? handler;
+        HandlerThread? thread;
         lock (_lock)
         {
             if (_disposed)
@@ -305,10 +333,18 @@ internal sealed class MirrorDecoder : IDisposable
 
             _disposed = true;
             _accepting = false;
+            handler = _handler;
+            thread = _thread;
+        }
+
+        if (handler is null || thread is null)
+        {
+            _callback.Dispose();
+            return; // never shown: no thread, no codec
         }
 
         using var done = new ManualResetEventSlim();
-        _handler.Post(() =>
+        handler.Post(() =>
         {
             _config = null;
             ReleaseCodec();
@@ -316,12 +352,12 @@ internal sealed class MirrorDecoder : IDisposable
             done.Set();
         });
         done.Wait(TimeSpan.FromSeconds(1));
-        _thread.QuitSafely();
-        _thread.Join(1000);
-        _handler.RemoveCallbacks(_drainRunnable);
+        thread.QuitSafely();
+        thread.Join(1000);
+        handler.RemoveCallbacks(_drainRunnable);
         _callback.Dispose();
-        _handler.Dispose();
-        _thread.Dispose();
+        handler.Dispose();
+        thread.Dispose();
     }
 
     private static long StopwatchUs(long timestamp) => (long)(timestamp * (1_000_000.0 / Stopwatch.Frequency));
@@ -334,17 +370,21 @@ internal sealed class MirrorDecoder : IDisposable
         return wasOpen;
     }
 
+    /// <summary>False when disposed or never configured (no decoder thread yet: nothing to do).</summary>
     private bool Post(Action action)
     {
+        Handler? handler;
         lock (_lock)
         {
             if (_disposed)
             {
                 return false;
             }
+
+            handler = _handler;
         }
 
-        return _handler.Post(action);
+        return handler is not null && handler.Post(action);
     }
 
     /// <summary>Decoder thread: starts, keeps or replaces the codec to match the config and surface.</summary>
@@ -399,8 +439,8 @@ internal sealed class MirrorDecoder : IDisposable
                 format.SetInteger(QtiPictureOrder, 1);
             }
 
-            codec.SetCallback(_callback, _handler);
-            codec.SetOnFrameRenderedListener(_callback, _handler);
+            codec.SetCallback(_callback, _handler!); // decoder thread: the handler exists
+            codec.SetOnFrameRenderedListener(_callback, _handler!);
             codec.Configure(format, surface, null, MediaCodecConfigFlags.None);
             codec.SetVideoScalingMode(VideoScalingMode.ScaleToFit);
             LogStart(codec, info, config, qti);
@@ -430,6 +470,7 @@ internal sealed class MirrorDecoder : IDisposable
         {
             _slotCount = 0;
             _needKeyframe = true;
+            _signalOnGated = false; // signalled just below
             _accepting = !_disposed;
         }
 
@@ -529,43 +570,47 @@ internal sealed class MirrorDecoder : IDisposable
 
             int index = _freeInputs[_freeHead];
             bool ok = Queue(codec, index, slot, length, frame);
-            lock (_lock)
+            if (!IsCurrent(codec))
             {
-                // The slot is consumed either way; Stop/Release may have emptied the queue meanwhile.
-                if (_slotCount > 0)
-                {
-                    _slotHead = (_slotHead + 1) % SlotCount;
-                    _slotCount--;
-                }
-
-                if (!ok)
-                {
-                    _framesGated++;
-                }
+                return; // the codec failed and was released or restarted: that emptied the queue and closed the gate
             }
 
             if (ok)
             {
-                _freeHead = (_freeHead + 1) % _freeInputs.Length;
+                _freeHead = (_freeHead + 1) % _freeInputs.Length; // the codec owns that input buffer now
                 _freeCount--;
             }
-            else
+
+            bool signal = false;
+            lock (_lock)
             {
-                bool signal;
-                lock (_lock)
+                if (_slotCount == 0)
                 {
-                    signal = CloseGate();
+                    return; // Stop emptied the queue meanwhile
                 }
 
+                if (ok)
+                {
+                    _slotHead = (_slotHead + 1) % SlotCount;
+                    _slotCount--;
+                }
+                else
+                {
+                    // This frame is lost, so the ones queued behind it can't decode: drop them too, wait for a keyframe.
+                    _framesGated += _slotCount;
+                    _slotCount = 0;
+                    signal = CloseGate();
+                }
+            }
+
+            if (!ok)
+            {
                 if (signal)
                 {
                     KeyframeNeeded?.Invoke();
                 }
 
-                if (_codec is null)
-                {
-                    return; // the codec failed
-                }
+                return;
             }
         }
     }

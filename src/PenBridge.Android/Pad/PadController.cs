@@ -204,6 +204,7 @@ public sealed class PadController : IDisposable
 #if DEBUG
         _mirrorDebug.StopPlayer();
 #endif
+        _mirror.Hide(); // the display mode and surface frame rate never outlive the pad
         ExitImmersive();
         _activity.RequestedOrientation = _hostOrientation;
     }
