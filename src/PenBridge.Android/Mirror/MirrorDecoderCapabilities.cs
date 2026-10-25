@@ -2,6 +2,7 @@ using Android.Content;
 using Android.Hardware.Display;
 using Android.Media;
 using Android.Views;
+using PenBridge.Core.Protocol;
 
 namespace PenBridge.Android.Mirror;
 

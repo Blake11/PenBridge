@@ -5,6 +5,7 @@ using Android.Runtime;
 using Android.Views;
 using Android.Widget;
 using PenBridge.Core.Input;
+using PenBridge.Core.Protocol;
 
 namespace PenBridge.Android.Mirror;
 

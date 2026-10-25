@@ -6,6 +6,7 @@ using Android.Graphics;
 using Android.Media;
 using Android.Util;
 using Android.Views;
+using PenBridge.Core.Protocol;
 
 namespace PenBridge.Android.Mirror;
 

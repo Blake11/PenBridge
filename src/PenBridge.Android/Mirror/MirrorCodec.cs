@@ -1,21 +1,8 @@
+using PenBridge.Core.Protocol;
+
 namespace PenBridge.Android.Mirror;
 
-/// <summary>Decoders the phone has, as the MirrorStart <c>codecs</c> bit mask (spec "Control messages").</summary>
-[Flags]
-internal enum MirrorCodecs : byte
-{
-    None = 0,
-    H264 = 1,
-    Hevc = 2,
-}
-
-/// <summary>The stream's codec, as the MirrorConfig <c>codec</c> value (spec "Control messages").</summary>
-internal enum MirrorCodec : byte
-{
-    H264 = 1,
-    Hevc = 2,
-}
-
+/// <summary>MIME types and names for Core's <see cref="MirrorCodec"/> (the MirrorConfig <c>codec</c>, spec "Control messages").</summary>
 internal static class MirrorCodecExtensions
 {
     public const string MimeH264 = "video/avc";
