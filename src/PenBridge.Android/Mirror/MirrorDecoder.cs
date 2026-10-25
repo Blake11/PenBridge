@@ -24,7 +24,9 @@ namespace PenBridge.Android.Mirror;
 /// <para><b>Keyframe gate.</b> After a configure (every new epoch, even with the same codec and size), a codec
 /// restart, a frame-number gap or a frame that couldn't be queued, nothing is fed until a keyframe arrives, and
 /// <see cref="KeyframeNeeded"/> is raised once per closing (the sender of KeyframeRequests repeats them itself). A gap
-/// that lands on a keyframe needs nothing: the keyframe is fed.</para>
+/// that lands on a keyframe needs nothing: the keyframe is fed. Access units that arrive before the codec runs (its
+/// surface is still being created) or while it restarts wait in the queue, and the codec starts from the first keyframe
+/// among them, so the epoch's first keyframe isn't lost to the start-up.</para>
 /// <para><b>Allocation.</b> The access-unit bytes are never reallocated: <see cref="Feed"/> copies into reused slots
 /// (a slot grows only when a larger access unit than ever before arrives) and the decoder thread copies them straight
 /// into the codec's direct input buffers. The Java interop is not allocation-free: each frame creates small managed
@@ -66,10 +68,11 @@ internal sealed class MirrorDecoder : IDisposable
     private readonly byte[][] _slotData = new byte[SlotCount][];
     private readonly int[] _slotLength = new int[SlotCount];
     private readonly uint[] _slotFrame = new uint[SlotCount];
+    private readonly bool[] _slotKey = new bool[SlotCount];
     private int _slotHead;
     private int _slotCount;
     private bool _drainPosted;
-    private bool _accepting;
+    private bool _configured; // between Configure and Stop (or giving up): Feed queues, even before the codec runs
     private bool _needKeyframe = true;
     private bool _signalOnGated; // a configure closed the gate: the first gated frame raises KeyframeNeeded
     private bool _haveLast;
@@ -180,6 +183,9 @@ internal sealed class MirrorDecoder : IDisposable
             _haveLast = false;
             _needKeyframe = true;
             _signalOnGated = true;
+            _configured = true;
+            _framesGated += _slotCount; // the previous epoch's backlog: the new one starts at its own keyframe
+            _slotCount = 0;
         }
 
         Post(() =>
@@ -231,7 +237,7 @@ internal sealed class MirrorDecoder : IDisposable
     {
         lock (_lock)
         {
-            _accepting = false;
+            _configured = false;
             _slotCount = 0;
         }
 
@@ -243,7 +249,7 @@ internal sealed class MirrorDecoder : IDisposable
     }
 
     /// <summary>
-    /// Queues one Annex-B access unit. False when it was dropped: no running decoder, the keyframe gate (waiting for a
+    /// Queues one Annex-B access unit. False when it was dropped: not configured, the keyframe gate (waiting for a
     /// keyframe), too large, or the decoder is too far behind (which closes the gate). Any thread; never blocks on the
     /// codec. The bytes are copied, so the caller may reuse the buffer right away.
     /// </summary>
@@ -255,7 +261,7 @@ internal sealed class MirrorDecoder : IDisposable
         Handler? handler;
         lock (_lock)
         {
-            if (!_accepting || _disposed)
+            if (!_configured || _disposed)
             {
                 return false;
             }
@@ -294,6 +300,7 @@ internal sealed class MirrorDecoder : IDisposable
                 accessUnit.CopyTo(_slotData[slot]);
                 _slotLength[slot] = accessUnit.Length;
                 _slotFrame[slot] = frameNumber;
+                _slotKey[slot] = keyframe;
                 _slotCount++;
                 queued = true;
                 if (!_drainPosted)
@@ -333,7 +340,7 @@ internal sealed class MirrorDecoder : IDisposable
             }
 
             _disposed = true;
-            _accepting = false;
+            _configured = false;
             handler = _handler;
             thread = _thread;
         }
@@ -467,15 +474,33 @@ internal sealed class MirrorDecoder : IDisposable
         _nanoToStopwatchNs = (long)(Stopwatch.GetTimestamp() * (1_000_000_000.0 / Stopwatch.Frequency)) - Java.Lang.JavaSystem.NanoTime();
         DecodeLatency.Reset();
         RenderLatency.Reset();
+        bool signal;
         lock (_lock)
         {
-            _slotCount = 0;
-            _needKeyframe = true;
-            _signalOnGated = false; // signalled just below
-            _accepting = !_disposed;
+            // A fresh decoder can only start at a keyframe. Access units queued while no codec ran (the surface was
+            // still being created, a shape change, a restart) are kept from the first keyframe on, so a start right
+            // after a new epoch needs no second keyframe from the Mac. The gate keeps its state: closed when frames
+            // after the queued ones were lost (it signalled then), open when the stream continues. Without a queued
+            // keyframe the gate closes; it asks only if it was open (a closed gate signalled, or will on its first
+            // gated frame after a configure).
+            while (_slotCount > 0 && !_slotKey[_slotHead])
+            {
+                _slotHead = (_slotHead + 1) % SlotCount;
+                _slotCount--;
+                _framesGated++;
+            }
+
+            signal = _slotCount == 0 && CloseGate();
+            if (signal)
+            {
+                _signalOnGated = false; // signalled just below
+            }
         }
 
-        KeyframeNeeded?.Invoke(); // a fresh decoder can only start at a keyframe
+        if (signal)
+        {
+            KeyframeNeeded?.Invoke();
+        }
     }
 
     private static void LogStart(MediaCodec codec, MirrorDecoderInfo info, MirrorVideoConfig config, bool qti)
@@ -497,14 +522,9 @@ internal sealed class MirrorDecoder : IDisposable
         Log.Info(Tag, $"Mirror decoder {info.Name} ({(info.Hardware ? "hardware" : "SOFTWARE, debug only")}) {config.Codec.Name()} {config.Width}x{config.Height}@{config.Fps}, low-latency {(info.LowLatency ? "on" : "unsupported")}{vendor}");
     }
 
+    /// <summary>Decoder thread. Pending access units stay queued: the next <see cref="StartCodec"/> resumes from a keyframe among them.</summary>
     private void ReleaseCodec()
     {
-        lock (_lock)
-        {
-            _accepting = false;
-            _slotCount = 0;
-        }
-
         if (_codec is not { } codec)
         {
             return;
@@ -672,6 +692,12 @@ internal sealed class MirrorDecoder : IDisposable
         if (++_restartsWithoutOutput > MaxRestarts)
         {
             _config = null; // a decoder that fails again and again without a frame: give up until the next Configure
+            lock (_lock)
+            {
+                _configured = false;
+                _slotCount = 0;
+            }
+
             Error?.Invoke("Decoder keeps failing");
             return;
         }

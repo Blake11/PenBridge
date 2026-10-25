@@ -93,13 +93,32 @@ internal sealed class MirrorView : IDisposable
     /// <summary>Decode latency and render latency windows (µs), for logs and the debug player.</summary>
     public MirrorDecoder Decoder => _decoder;
 
-    /// <summary>Shows the video for <paramref name="config"/>, or applies a new config while shown. UI thread.</summary>
-    public void Show(MirrorVideoConfig config)
+    /// <summary>
+    /// Applies a new epoch's <paramref name="config"/> to the decoder only (keyframe gate, codec shape), at once and on
+    /// any thread: a session calls it on the thread that receives MirrorConfig, before the epoch's video can arrive, and
+    /// then <see cref="Show(MirrorVideoConfig, bool)"/> without configuring again on the UI thread.
+    /// </summary>
+    public void ConfigureDecoder(MirrorVideoConfig config)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        _decoder.Configure(config);
+    }
+
+    /// <summary>
+    /// Shows the video for <paramref name="config"/>, or applies a new config while shown. UI thread.
+    /// <paramref name="configureDecoder"/> false: the decoder already has it (<see cref="ConfigureDecoder"/>);
+    /// configuring again would close the keyframe gate behind a keyframe that already arrived.
+    /// </summary>
+    public void Show(MirrorVideoConfig config, bool configureDecoder = true)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         bool wasShown = _config is not null;
         _config = config;
-        _decoder.Configure(config);
+        if (configureDecoder)
+        {
+            _decoder.Configure(config);
+        }
+
         ApplyFrameRate(config.Fps);
         if (!wasShown)
         {
