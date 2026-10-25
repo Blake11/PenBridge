@@ -93,7 +93,9 @@ public sealed class PenBridgeClient : IAsyncDisposable
 
     /// <summary>
     /// Raised with the Mac's MirrorState (read-loop thread), and with Unavailable/TlsFallback when this client falls
-    /// back to TLS while mirroring (thread pool). Anything but Streaming means no video until the next MirrorConfig.
+    /// back to TLS while mirroring (thread pool), or with Unavailable/None when the phone's video socket can't open
+    /// (thread pool; logged once; call <see cref="StartMirror"/> again to retry). Anything but Streaming means no video
+    /// until the next MirrorConfig.
     /// </summary>
     public event EventHandler<MirrorStateChangedEventArgs>? MirrorStateChanged;
 
@@ -131,7 +133,7 @@ public sealed class PenBridgeClient : IAsyncDisposable
 
     /// <summary>
     /// Asks the Mac for video (MirrorStart; protocol 1.3, <see cref="ProtocolCapabilities.ScreenMirror"/>): opens a video
-    /// socket and its receive thread, then follows MirrorConfig and MirrorState on its own (Probes, KeyframeRequests,
+    /// socket and its receive thread on the thread pool (MirrorStart goes out once it has a port), then follows MirrorConfig and MirrorState on its own (Probes, KeyframeRequests,
     /// MirrorReports). Call it again with new limits to send another MirrorStart. In TLS fallback it waits for UDP
     /// (raising Unavailable/TlsFallback). False, without sending, when not connected or the Mac doesn't offer mirroring.
     /// </summary>

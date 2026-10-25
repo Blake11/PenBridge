@@ -247,6 +247,75 @@ public class MirrorSessionTests
     }
 
     [Fact]
+    public async Task A_video_socket_that_cannot_open_makes_mirroring_unavailable_and_input_goes_on()
+    {
+        // The head's hook disposes the socket, so reading its port fails: a stand-in for a bind failure.
+        await using MirrorRig rig = await MirrorRig.CreateAsync(phone: MirrorRig.Phone(videoSocket: s => s.Dispose()));
+        int states = rig.ClientStates.Mark();
+        Assert.True(rig.Client.StartMirror(MirrorRig.Request));
+        await rig.ClientStates.WaitFor(states, got => got.Contains((MirrorState.Unavailable, MirrorReason.None)), "Unavailable/None");
+        await rig.H.SettleAsync();
+        Assert.Equal(0, rig.Requested.Count); // no MirrorStart without a port
+        Assert.Equal(0, rig.Client.Mirror!.Port);
+
+        SessionInput input = rig.Server.ActiveInput!;
+        long accepted = input.Accepted;
+        Assert.True(rig.Client.SendState(Pens.Hover(100, 100), []));
+        await Wait.Until(() => input.Accepted > accepted, "input still flows");
+        Assert.True(rig.Client.IsConnected);
+    }
+
+    [Fact]
+    public async Task Udp_coming_back_opens_the_video_socket_off_the_read_loop_and_a_failure_keeps_the_session()
+    {
+        bool drop = false;
+        int hooks = 0;
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        void Hook(System.Net.Sockets.Socket socket)
+        {
+            if (Interlocked.Increment(ref hooks) == 1)
+            {
+                return; // the first run opens normally
+            }
+
+            entered.Set();
+            release.Wait(TestContext.Current.CancellationToken); // a slow head hook...
+            socket.Dispose(); // ...that then breaks the socket
+        }
+
+        await using MirrorRig rig = await MirrorRig.CreateAsync(phone: MirrorRig.Phone(input: _ => !Volatile.Read(ref drop), videoSocket: Hook));
+        await rig.StartAsync();
+        int states = rig.ClientStates.Mark();
+        Volatile.Write(ref drop, true);
+        Assert.True(rig.Client.SendState(Pens.Hover(100, 100), []));
+        await Wait.Step(rig.H.Time, TimeSpan.FromSeconds(3), TimeSpan.FromMilliseconds(500));
+        Assert.Equal(InputTransport.Tls, rig.Client.Transport);
+        await rig.ClientStates.WaitFor(states, got => got.Contains((MirrorState.Unavailable, MirrorReason.TlsFallback)), "Unavailable/TlsFallback");
+
+        // UDP is back: the restore path opens the run, and the hook blocks while the session keeps going.
+        Volatile.Write(ref drop, false);
+        await Wait.Step(rig.H.Time, TimeSpan.FromSeconds(11), TimeSpan.FromMilliseconds(500));
+        await Wait.Until(() => rig.Client.Transport == InputTransport.Udp, "the probe's ack restored UDP");
+        Assert.True(entered.Wait(Wait.Limit, TestContext.Current.CancellationToken), "the restore path opened a socket");
+        SessionInput input = rig.Server.ActiveInput!;
+        long accepted = input.Accepted;
+        Assert.True(rig.Client.SendState(Pens.Hover(200, 200), [])); // the send lock is free
+        await Wait.Until(() => input.Accepted > accepted, "input flows while the hook blocks");
+        await rig.H.SettleAsync(); // the read loop is free too
+
+        states = rig.ClientStates.Mark();
+        release.Set();
+        await rig.ClientStates.WaitFor(states, got => got.Contains((MirrorState.Unavailable, MirrorReason.None)), "Unavailable/None");
+        accepted = input.Accepted;
+        Assert.True(rig.Client.SendState(Pens.Hover(300, 300), []));
+        await Wait.Until(() => input.Accepted > accepted, "input still flows after the failure");
+        await rig.H.SettleAsync();
+        Assert.True(rig.Client.IsConnected);
+        Assert.Equal(1, rig.Requested.Count); // the failed run never asked the Mac
+    }
+
+    [Fact]
     public async Task An_input_loss_during_contact_wakes_the_guard_and_steps_the_video_down()
     {
         int dropNext = 0;

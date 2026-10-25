@@ -67,9 +67,13 @@ internal sealed class MirrorRig : IAsyncDisposable
             RemoteSettings = remoteSettings,
         };
 
-    /// <summary>A phone with optional input and Probe filters.</summary>
-    public static Func<PenBridgeClientOptions, PenBridgeClientOptions> Phone(DatagramFilter? input = null, DatagramFilter? probes = null) => o => new()
+    /// <summary>A phone with optional input and Probe filters and a video socket hook.</summary>
+    public static Func<PenBridgeClientOptions, PenBridgeClientOptions> Phone(
+        DatagramFilter? input = null,
+        DatagramFilter? probes = null,
+        Action<System.Net.Sockets.Socket>? videoSocket = null) => o => new()
     {
+        ConfigureVideoSocket = videoSocket,
         SecretStore = o.SecretStore,
         Surface = o.Surface,
         DeviceName = o.DeviceName,

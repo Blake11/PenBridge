@@ -35,6 +35,7 @@ internal sealed class ClientMirror : IDisposable
     private const int WriteReport = 4;
 
     private static readonly TimerCallback TickCallback = static s => ((ClientMirror)s!).OnTick();
+    private static readonly Action<ClientMirror> OpenRunCallback = static m => m.OpenRun();
 
     private readonly PenBridgeClient _owner;
     private readonly ControlChannel _channel;
@@ -70,6 +71,8 @@ internal sealed class ClientMirror : IDisposable
     private MirrorReportMessage? _reportOut;
     private bool _disposed;
     private int _qosWarned;
+    private int _openWarned;
+    private bool _opening; // an OpenRun is queued or running (under _lock)
 
     private SocketAddress? _source; // the Mac's video endpoint; read by the receive thread
     private long _armedDue = long.MaxValue; // tick due (timestamp), read without the lock to skip re-arms
@@ -191,7 +194,7 @@ internal sealed class ClientMirror : IDisposable
 
     /// <summary>
     /// Asks for video with <paramref name="request"/> (a second call sends a new MirrorStart). Opens the video socket
-    /// and its receive thread unless the session is in TLS fallback (then it asks once UDP is back).
+    /// and its receive thread (on the thread pool) unless the session is in TLS fallback (then it asks once UDP is back).
     /// </summary>
     public void Start(MirrorRequest request)
     {
@@ -208,8 +211,7 @@ internal sealed class ClientMirror : IDisposable
             fallback = _fallback;
             if (!fallback)
             {
-                OpenRunLocked();
-                QueueIntentLocked(start: true);
+                WantRunLocked();
             }
         }
 
@@ -294,8 +296,9 @@ internal sealed class ClientMirror : IDisposable
     }
 
     /// <summary>
-    /// The input transport changed (called under the client's send lock: only records and posts). Fallback: MirrorStop,
-    /// close the run, Unavailable/TlsFallback. Back on UDP: ask again.
+    /// The input transport changed (called under the client's send lock on the read loop: only records and posts, never
+    /// opens a socket or starts a thread here). Fallback: MirrorStop, close the run, Unavailable/TlsFallback. Back on
+    /// UDP: the run opens on the thread pool, then MirrorStart goes out.
     /// </summary>
     public void OnTransport(bool tls)
     {
@@ -319,8 +322,7 @@ internal sealed class ClientMirror : IDisposable
             }
             else
             {
-                OpenRunLocked();
-                QueueIntentLocked(start: true);
+                WantRunLocked();
             }
         }
 
@@ -378,29 +380,128 @@ internal sealed class ClientMirror : IDisposable
 
     private long Ticks(TimeSpan span) => (long)(span.TotalSeconds * _time.TimestampFrequency);
 
-    private void OpenRunLocked()
+    /// <summary>
+    /// Under <c>_lock</c>, with a request and not in fallback: with a run open, MirrorStart (new limits) goes out now;
+    /// otherwise the run opens on the thread pool and MirrorStart follows once it has a port.
+    /// </summary>
+    private void WantRunLocked()
     {
         if (_socket is not null)
         {
+            QueueIntentLocked(start: true);
             return;
         }
 
-        var socket = new Socket(_server.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+        if (!_opening)
+        {
+            _opening = true;
+            ThreadPool.UnsafeQueueUserWorkItem(OpenRunCallback, this, preferLocal: false);
+        }
+    }
+
+    private bool RunWantedLocked() => !_disposed && _request is not null && !_fallback;
+
+    /// <summary>
+    /// Thread pool: opens the run's socket (bind, TOS, the head's hook) and starts its receive thread, both off every
+    /// lock. A failure makes mirroring Unavailable (logged once) and never touches the session.
+    /// </summary>
+    private void OpenRun()
+    {
+        lock (_lock)
+        {
+            if (!RunWantedLocked() || _socket is not null)
+            {
+                _opening = false;
+                return;
+            }
+        }
+
+        Socket? socket = null;
+        int port = 0;
+        Exception? failure = null;
         try
         {
+            socket = new Socket(_server.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
             socket.Bind(new IPEndPoint(_server.AddressFamily == AddressFamily.InterNetworkV6 ? IPAddress.IPv6Any : IPAddress.Any, 0));
             VideoSockets.PrepareForReceiveThread(socket);
             SocketQos.Configure(socket, SocketQos.Video, _options.ConfigureVideoSocket, _log, ref _qosWarned);
+            port = ((IPEndPoint)socket.LocalEndPoint!).Port;
         }
-        catch
+#pragma warning disable CA1031 // A video socket that can't open (bind, a broken hook) costs mirroring, never the session.
+        catch (Exception ex)
+#pragma warning restore CA1031
         {
-            socket.Dispose();
-            throw;
+            failure = ex;
+            socket?.Dispose();
+            socket = null;
         }
 
-        _socket = socket;
-        _port = ((IPEndPoint)socket.LocalEndPoint!).Port;
-        MirrorThreads.Start("PenBridge video receive", MirrorThreadRole.VideoReceive, _options.MirrorThreadStarted, _log, () => ReceiveLoop(socket));
+        bool published = false;
+        bool unavailable = false;
+        lock (_lock)
+        {
+            _opening = false;
+            if (RunWantedLocked() && _socket is null)
+            {
+                if (socket is not null)
+                {
+                    _socket = socket;
+                    _port = port;
+                    published = true;
+                }
+                else
+                {
+                    unavailable = true;
+                }
+            }
+        }
+
+        if (published)
+        {
+            try
+            {
+                MirrorThreads.Start("PenBridge video receive", MirrorThreadRole.VideoReceive, _options.MirrorThreadStarted, _log, () => ReceiveLoop(socket!));
+                lock (_lock)
+                {
+                    if (ReferenceEquals(_socket, socket))
+                    {
+                        QueueIntentLocked(start: true);
+                    }
+                }
+
+                return;
+            }
+#pragma warning disable CA1031 // No receive thread (out of threads): no mirroring, the session goes on.
+            catch (Exception ex)
+#pragma warning restore CA1031
+            {
+                failure = ex;
+                lock (_lock)
+                {
+                    if (ReferenceEquals(_socket, socket))
+                    {
+                        Volatile.Write(ref _socket, null);
+                        _port = 0;
+                        unavailable = RunWantedLocked();
+                    }
+                }
+            }
+        }
+
+        if (!published || failure is not null)
+        {
+            socket?.Dispose(); // never handed to a receive thread
+        }
+
+        if (failure is not null && Interlocked.Exchange(ref _openWarned, 1) == 0)
+        {
+            NetLog.VideoSocketFailed(_log, failure);
+        }
+
+        if (unavailable)
+        {
+            _owner.RaiseMirrorState(MirrorState.Unavailable, MirrorReason.None);
+        }
     }
 
     private void CloseRunLocked()

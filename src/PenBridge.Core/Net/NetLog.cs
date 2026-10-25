@@ -102,4 +102,7 @@ internal static partial class NetLog
 
     [LoggerMessage(42, LogLevel.Information, "Mirroring state {State} ({Reason})")]
     public static partial void MirrorState(ILogger logger, PenBridge.Core.Protocol.MirrorState state, PenBridge.Core.Protocol.MirrorReason reason);
+
+    [LoggerMessage(43, LogLevel.Warning, "Could not open the video socket; mirroring is unavailable until it is requested again")]
+    public static partial void VideoSocketFailed(ILogger logger, Exception exception);
 }
