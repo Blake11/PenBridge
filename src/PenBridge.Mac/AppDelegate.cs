@@ -78,6 +78,9 @@ public sealed partial class AppDelegate : NSApplicationDelegate
 
         PromptAccessibilityOnce();
         _ = StartServerAsync();
+#if DEBUG
+        Mirror.MirrorDumpHook.StartIfRequested(_resolver, _loggers); // no-op unless PENBRIDGE_MIRROR_DUMP is set
+#endif
     }
 
     public override NSApplicationTerminateReply ApplicationShouldTerminate(NSApplication sender)
