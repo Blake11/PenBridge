@@ -32,6 +32,7 @@ namespace PenBridge.Mac.Mirror;
 /// </remarks>
 public sealed class MirrorController : IDisposable
 {
+    private static readonly TimeSpan LateCallbackGrace = TimeSpan.FromSeconds(5);
     private const int MaxStillRetries = 4;
     private const long StillRetryNs = 250_000_000;
 
@@ -353,7 +354,10 @@ public sealed class MirrorController : IDisposable
     private void ApplyEncoderSettings(MirrorStreamSettings settings, MirrorTarget? compositeTarget, bool captureChanged)
     {
         MirrorStreamSettings old = _settings;
-        bool newEncoder = old.Width != settings.Width || old.Height != settings.Height || old.Codec != settings.Codec;
+        // An encoder retired by an overload or failure (null) is replaced even when nothing about the stream changed.
+        bool encoderLost = false;
+        _queue.DispatchSync(() => encoderLost = _encoder is null);
+        bool newEncoder = encoderLost || old.Width != settings.Width || old.Height != settings.Height || old.Codec != settings.Codec;
         if (newEncoder)
         {
             HardwareEncoder encoder = CreateEncoder(settings);
@@ -404,7 +408,11 @@ public sealed class MirrorController : IDisposable
             MirrorLog.StopTimedOut(_logger, stream.DisplayId);
         }
 
-        stream.Dispose();
+        // A late ScreenCaptureKit callback (stop notification) may still be in flight: detach the handlers and keep the
+        // exported target alive for a while before releasing it.
+        stream.FrameHandler = null;
+        stream.StoppedHandler = null;
+        _ = Task.Delay(LateCallbackGrace).ContinueWith(_ => stream.Dispose(), TaskScheduler.Default);
     }
 
     private async Task StopCoreAsync()
@@ -519,21 +527,24 @@ public sealed class MirrorController : IDisposable
         return encoder;
     }
 
-    // VideoToolbox thread: report, then retire the encoder on the capture queue (never dispose it from its own callback).
+    // VideoToolbox thread: hop to the capture queue, which owns the encoder and its settings (never dispose an encoder from
+    // its own callback). Only the encoder still in use reports; one already replaced or retired is ignored.
     private void OnEncoderOverloaded(HardwareEncoder encoder, int bad, int total)
     {
-        MirrorStreamSettings s = encoder.Settings;
-        MirrorLog.EncoderOverloaded(_logger, s.Codec.ToString(), bad, total, s.Width, s.Height, s.Fps);
         _queue.DispatchAsync(() =>
         {
-            if (ReferenceEquals(_encoder, encoder))
+            if (!ReferenceEquals(_encoder, encoder))
             {
-                _encoder = null;
-                encoder.Dispose();
+                return;
             }
+
+            MirrorStreamSettings s = encoder.Settings;
+            _encoder = null;
+            encoder.Dispose();
+            MirrorLog.EncoderOverloaded(_logger, s.Codec.ToString(), bad, total, s.Width, s.Height, s.Fps);
+            RaiseFailed(MirrorFailure.EncoderFailed,
+                $"The {s.Codec} encoder can't sustain {s.Width}x{s.Height} @ {s.Fps} fps ({bad} of {total} frames dropped in the last second).");
         });
-        RaiseFailed(MirrorFailure.EncoderFailed,
-            $"The {s.Codec} encoder can't sustain {s.Width}x{s.Height} @ {s.Fps} fps ({bad} of {total} frames dropped in the last second).");
     }
 
     private void ReleaseQueueState()
@@ -598,7 +609,7 @@ public sealed class MirrorController : IDisposable
                 _queue.DispatchAfter(new DispatchTime(DispatchTime.Now, Math.Max(0, delayNs)), () =>
                 {
                     _composePending = false;
-                    if (_compositor is not null)
+                    if (_compositor is not null && _encoder is not null)
                     {
                         Compose(MirrorClock.NowUs());
                     }
