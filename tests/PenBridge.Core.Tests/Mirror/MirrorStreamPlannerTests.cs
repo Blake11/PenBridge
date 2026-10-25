@@ -98,6 +98,10 @@ public class MirrorStreamPlannerTests
         MirrorPlanInputs inputs = Inputs();
         Assert.True(MirrorStreamPlanner.TryPlan(inputs, out MirrorStreamPlan plan, out MirrorReason failure));
         Assert.Equal(MirrorReason.None, failure);
+        (int target93, int floor93) = MirrorStreamPlanner.Bitrate(MirrorQuality.Balanced, MirrorCodec.Hevc, 2228, 1440, 93);
+        Assert.Equal(new MirrorStreamPlan(MirrorCodec.Hevc, 2228, 1440, 93, target93, floor93), plan); // 3.2 MP: the pixel rate caps 120 → 93
+
+        Assert.True(MirrorStreamPlanner.TryPlan(inputs with { MaxPixelRate = 400_000_000 }, out plan, out _)); // a measured cap
         Assert.Equal(new MirrorStreamPlan(MirrorCodec.Hevc, 2228, 1440, 120, 23342, 5835), plan);
 
         Assert.True(MirrorStreamPlanner.TryPlan(inputs with { Encoders = MirrorCodecs.H264, FpsLimit = 60 }, out plan, out _));
@@ -108,6 +112,34 @@ public class MirrorStreamPlannerTests
         Assert.Equal(MirrorCodec.Hevc, plan.Codec);
         Assert.Equal((1728, 1116), (plan.WidthPx, plan.HeightPx));
         Assert.Equal(60, plan.Fps);
+    }
+
+    [Theory]
+    [InlineData(1920, 1080, 120, 300_000_000, 1920, 1080, 120)] // fits
+    [InlineData(2228, 1440, 120, 300_000_000, 2228, 1440, 93)]  // the fps drops first
+    [InlineData(2228, 1440, 120, 200_000_000, 2228, 1440, 62)]
+    [InlineData(3840, 2160, 120, 300_000_000, 2980, 1676, 60)]  // not below 60, then the size shrinks
+    [InlineData(3840, 2160, 30, 300_000_000, 3840, 2160, 30)]   // fits at 30
+    [InlineData(3840, 2160, 50, 300_000_000, 3264, 1836, 50)]   // below 60 already: only the size shrinks
+    [InlineData(1000, 1000, 120, 10_000_000, 408, 408, 60)]
+    [InlineData(3840, 2160, 120, 1, 2, 2, 60)]                  // at least 2×2
+    public void Pixel_rate_cap_lowers_fps_to_60_then_the_size(int w, int h, int fps, long cap, int ew, int eh, int efps)
+    {
+        Assert.Equal((ew, eh, efps), MirrorStreamPlanner.ApplyPixelRate(w, h, fps, cap));
+        if (ew > 2)
+        {
+            Assert.InRange((long)ew * eh * efps, 1, cap);
+        }
+    }
+
+    [Fact]
+    public void Pixel_rate_cap_rejects_bad_inputs()
+    {
+        Assert.Equal("maxPixelRate", Assert.Throws<ArgumentOutOfRangeException>(() => MirrorStreamPlanner.ApplyPixelRate(2, 2, 1, 0)).ParamName);
+        Assert.Equal("fps", Assert.Throws<ArgumentOutOfRangeException>(() => MirrorStreamPlanner.ApplyPixelRate(2, 2, 0, 1)).ParamName);
+        Assert.Equal("widthPx", Assert.Throws<ArgumentOutOfRangeException>(() => MirrorStreamPlanner.ApplyPixelRate(1, 2, 1, 1)).ParamName);
+        Assert.Equal("heightPx", Assert.Throws<ArgumentOutOfRangeException>(() => MirrorStreamPlanner.ApplyPixelRate(2, 1, 1, 1)).ParamName);
+        Assert.Equal(300_000_000, Inputs().MaxPixelRate);
     }
 
     [Fact]

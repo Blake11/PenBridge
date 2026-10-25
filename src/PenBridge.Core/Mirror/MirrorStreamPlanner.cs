@@ -29,6 +29,13 @@ public sealed record MirrorPlanInputs
 
     /// <summary>The encoder's highest frame rate at this size, 0 when unknown (no cap).</summary>
     public int EncoderMaxFps { get; init; }
+
+    /// <summary>
+    /// The encoder's pixel rate (fps × width × height) cap in pixels per second, at least 1:
+    /// <see cref="MirrorStreamPlanner.DefaultMaxPixelRate"/> unless the head measured its encoder
+    /// (<see cref="MirrorStreamPlanner.ApplyPixelRate"/>).
+    /// </summary>
+    public long MaxPixelRate { get; init; } = MirrorStreamPlanner.DefaultMaxPixelRate;
 }
 
 /// <summary>
@@ -72,6 +79,15 @@ public static class MirrorStreamPlanner
 
     /// <summary>H.264 needs this much more bitrate than HEVC for the same quality.</summary>
     public const double H264Factor = 1.4;
+
+    /// <summary>
+    /// The default encoder pixel-rate cap, 300 MP/s (fps × width × height). Measured on the dev Mac in low-latency mode:
+    /// 120 fps holds up to about 2.5 MP, 4K tops out near 50 fps.
+    /// </summary>
+    public const long DefaultMaxPixelRate = 300_000_000;
+
+    /// <summary>The pixel-rate cap lowers the fps down to this (or the planned fps if lower) before it shrinks the size.</summary>
+    public const int MinPixelRateFps = 60;
 
     /// <summary>Lowest planned bitrate.</summary>
     public const int MinBitrateKbps = 2_000;
@@ -168,6 +184,53 @@ public static class MirrorStreamPlanner
     }
 
     /// <summary>
+    /// Fits a stream into the encoder's pixel rate: while fps × width × height exceeds <paramref name="maxPixelRate"/>,
+    /// first the fps drops (to the highest rate that fits, but not below <see cref="MinPixelRateFps"/> or the planned fps
+    /// if that is lower), then the size shrinks at that fps, keeping the aspect ratio, each side even and at least 2.
+    /// </summary>
+    public static (int WidthPx, int HeightPx, int Fps) ApplyPixelRate(int widthPx, int heightPx, int fps, long maxPixelRate)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(widthPx, 2);
+        ArgumentOutOfRangeException.ThrowIfLessThan(heightPx, 2);
+        ArgumentOutOfRangeException.ThrowIfLessThan(fps, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxPixelRate, 1);
+
+        long pixels = (long)widthPx * heightPx;
+        if (pixels * fps <= maxPixelRate)
+        {
+            return (widthPx, heightPx, fps);
+        }
+
+        int minFps = Math.Min(fps, MinPixelRateFps);
+        fps = (int)Math.Max(minFps, maxPixelRate / pixels);
+        if (pixels * fps <= maxPixelRate)
+        {
+            return (widthPx, heightPx, fps);
+        }
+
+        double scale = Math.Sqrt((double)maxPixelRate / fps / pixels);
+        int w = Even((long)(widthPx * scale));
+        int h = Even((long)(heightPx * scale));
+
+        // Guard against rounding: shrink the longer side until it fits (or both are at the minimum).
+        while ((long)w * h * fps > maxPixelRate && (w > 2 || h > 2))
+        {
+            if (w >= h && w > 2)
+            {
+                w -= 2;
+            }
+            else
+            {
+                h -= 2;
+            }
+        }
+
+        return (w, h, fps);
+
+        static int Even(long value) => (int)Math.Max(2, value & ~1L);
+    }
+
+    /// <summary>
     /// The preset's target and floor for a stream: preset (at 60 fps and 2.5 MP) × (fps / 60)^0.6 × (pixels / 2.5 MP),
     /// × 1.4 for H.264, then clamped to 2–40 Mbps. The floor is scaled and clamped the same way and is at most the target.
     /// </summary>
@@ -198,9 +261,10 @@ public static class MirrorStreamPlanner
     }
 
     /// <summary>
-    /// Plans the stream. False with <paramref name="failure"/> = <see cref="MirrorReason.NoCommonCodec"/> when the
-    /// phone's decoders and the Mac's encoders share no codec. Throws <see cref="ArgumentOutOfRangeException"/> for
-    /// sizes or rates below 1 (the server plans only once it has a SurfaceInfo, an active area and a source).
+    /// Plans the stream: size, fps, the pixel-rate cap, then the bitrate. False with <paramref name="failure"/> =
+    /// <see cref="MirrorReason.NoCommonCodec"/> when the phone's decoders and the Mac's encoders share no codec. Throws
+    /// <see cref="ArgumentOutOfRangeException"/> for sizes, rates or a pixel-rate cap below 1 (the server plans only once
+    /// it has a SurfaceInfo, an active area and a source).
     /// </summary>
     public static bool TryPlan(MirrorPlanInputs inputs, out MirrorStreamPlan plan, out MirrorReason failure)
     {
@@ -215,6 +279,7 @@ public static class MirrorStreamPlanner
 
         (int w, int h) = StreamSize(inputs.ActiveWidthPx, inputs.ActiveHeightPx, inputs.Source, inputs.Request.MaxWidthPx, inputs.Request.MaxHeightPx);
         int fps = Fps(inputs.Source.RefreshHz, inputs.Request.MaxFps, inputs.FpsLimit, inputs.EncoderMaxFps);
+        (w, h, fps) = ApplyPixelRate(w, h, fps, inputs.MaxPixelRate);
         (int target, int floor) = Bitrate(inputs.Quality, codec, w, h, fps);
         plan = new MirrorStreamPlan(codec, w, h, fps, target, floor);
         return true;
