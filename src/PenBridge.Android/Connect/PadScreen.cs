@@ -1,4 +1,5 @@
 using Android.Views;
+using PenBridge.Android.Mirror;
 using PenBridge.Android.Pad;
 using PenBridge.Android.Services;
 
@@ -15,6 +16,7 @@ internal sealed class PadScreen : Screen
     private readonly bool _preview;
     private IPadOutput? _output;
     private PadController? _controller;
+    private MirrorSession? _mirror;
 
     public PadScreen(MainActivity activity)
         : this(activity, preview: false)
@@ -45,9 +47,14 @@ internal sealed class PadScreen : Screen
 
         _controller.ApplyOptions(LoadOptions());
         _controller.Start();
+        _mirror?.SetForeground(true);
     }
 
-    public override void Pause() => _controller?.Stop();
+    public override void Pause()
+    {
+        _mirror?.SetForeground(false); // MirrorStop before the pad hides the video
+        _controller?.Stop();
+    }
 
     public override bool OnBack()
     {
@@ -81,6 +88,12 @@ internal sealed class PadScreen : Screen
         _controller.DisconnectRequested += OnDisconnectRequested;
         _controller.ChangeMacRequested += OnChangeMacRequested;
         _controller.OrientationModeChanged += OnOrientationModeChanged;
+        if (!_preview)
+        {
+            _mirror = new MirrorSession(Activity, Host, _controller.Mirror);
+            _controller.MirrorToggle = _mirror;
+        }
+
         return _controller.View;
     }
 
@@ -92,6 +105,9 @@ internal sealed class PadScreen : Screen
             _controller.DisconnectRequested -= OnDisconnectRequested;
             _controller.ChangeMacRequested -= OnChangeMacRequested;
             _controller.OrientationModeChanged -= OnOrientationModeChanged;
+            _controller.MirrorToggle = null;
+            _mirror?.Dispose();
+            _mirror = null;
             _controller.Dispose();
             _controller = null;
             (_output as IDisposable)?.Dispose();
@@ -128,6 +144,7 @@ internal sealed class PadScreen : Screen
     private void Leave(bool forgetLastUsed)
     {
         // Stop first: releases any held pen/touch state on the Mac before the session closes.
+        _mirror?.SetForeground(false);
         _controller?.Stop();
         if (_preview)
         {
