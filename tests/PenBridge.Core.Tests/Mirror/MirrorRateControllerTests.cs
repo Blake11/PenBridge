@@ -354,6 +354,26 @@ public class MirrorRateControllerTests
         Assert.Equal(new MirrorGuardLevel(5000, halvings.Length > 0 ? halvings[^1] : fps, true), _guard.Level);
     }
 
+    [Theory]
+    [InlineData(120, 120, new[] { 60, 30 })]
+    [InlineData(90, 90, new[] { 45, 30 })]
+    [InlineData(90, 120, new[] { 40, 30 })]  // 45 snaps down to a divisor of 120
+    [InlineData(100, 100, new[] { 50, 30 })] // 25 would be below 30
+    public void Fps_steps_snap_to_divisors_of_the_phone_refresh(int fps, int phoneMaxFps, int[] steps)
+    {
+        _guard.Start(Plan with { Fps = fps, TargetBitrateKbps = 5000, PhoneMaxFps = phoneMaxFps });
+        Degrade();
+        foreach (int expected in steps)
+        {
+            Assert.True(_guard.Update());
+            Assert.Equal(new MirrorGuardLevel(5000, expected, false), _guard.Level);
+            _time.Advance(TimeSpan.FromMilliseconds(500));
+        }
+
+        Assert.True(_guard.Update());
+        Assert.True(_guard.Level.Paused);
+    }
+
     [Fact]
     public void Retarget_keeps_the_guard_position()
     {

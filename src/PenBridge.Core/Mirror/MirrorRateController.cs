@@ -13,7 +13,8 @@ namespace PenBridge.Core.Mirror;
 /// <see cref="OnInputDatagram"/>), or when a MirrorReport shows more than 2 % fragment loss; the last two keep the guard
 /// degraded for <see cref="StepInterval"/>.</para>
 /// <para><b>Ladder</b>, one step per <see cref="StepInterval"/> while degraded: bitrate × 0.7 down to the plan's floor,
-/// then the fps halves (120 → 60 → 30, never below 30 by halving), then the video pauses
+/// then the fps halves (120 → 60 → 30, never below 30 by halving; snapped down to a divisor of the phone's refresh,
+/// 90 → 45 → 30), then the video pauses
 /// (<see cref="MirrorGuardLevel.Paused"/>, MirrorState Throttled). <b>Recovery</b>: after <see cref="HealthyBeforeRecovery"/>
 /// healthy, one step up per <see cref="RecoveryInterval"/>: unpause, then the fps back to the plan, then bitrate × 1.15
 /// up to the target.</para>
@@ -97,6 +98,7 @@ public sealed class MirrorRateController
     private int _target;
     private int _floor;
     private int _plannedFps;
+    private int _phoneMaxFps;
     private int _bitrate;
     private int _halvings;
     private bool _paused;
@@ -453,6 +455,7 @@ public sealed class MirrorRateController
         _target = plan.TargetBitrateKbps;
         _floor = Math.Clamp(plan.FloorBitrateKbps, 1, _target);
         _plannedFps = plan.Fps;
+        _phoneMaxFps = plan.PhoneMaxFps;
     }
 
     private MirrorGuardLevel CurrentLevel() => _active ? new MirrorGuardLevel(_bitrate, HalvedFps(_halvings), _paused) : default;
@@ -462,7 +465,7 @@ public sealed class MirrorRateController
         int fps = _plannedFps;
         for (int i = 0; i < halvings && fps > MinHalvedFps; i++)
         {
-            fps = Math.Max(MinHalvedFps, fps / 2);
+            fps = MirrorStreamPlanner.SnapFps(Math.Max(MinHalvedFps, fps / 2), _phoneMaxFps);
         }
 
         return fps;

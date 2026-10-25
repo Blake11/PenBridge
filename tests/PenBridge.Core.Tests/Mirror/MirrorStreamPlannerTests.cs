@@ -98,15 +98,18 @@ public class MirrorStreamPlannerTests
         MirrorPlanInputs inputs = Inputs();
         Assert.True(MirrorStreamPlanner.TryPlan(inputs, out MirrorStreamPlan plan, out MirrorReason failure));
         Assert.Equal(MirrorReason.None, failure);
-        (int target93, int floor93) = MirrorStreamPlanner.Bitrate(MirrorQuality.Balanced, MirrorCodec.Hevc, 2228, 1440, 93);
-        Assert.Equal(new MirrorStreamPlan(MirrorCodec.Hevc, 2228, 1440, 93, target93, floor93), plan); // 3.2 MP: the pixel rate caps 120 → 93
+        (int target60, int floor60) = MirrorStreamPlanner.Bitrate(MirrorQuality.Balanced, MirrorCodec.Hevc, 2228, 1440, 60);
+        Assert.Equal(new MirrorStreamPlan(MirrorCodec.Hevc, 2228, 1440, 60, target60, floor60, 120), plan); // the S23: 3.2 MP caps 120 → 93, snapped to 60
 
-        Assert.True(MirrorStreamPlanner.TryPlan(inputs with { MaxPixelRate = 400_000_000 }, out plan, out _)); // a measured cap
-        Assert.Equal(new MirrorStreamPlan(MirrorCodec.Hevc, 2228, 1440, 120, 23342, 5835), plan);
+        Assert.True(MirrorStreamPlanner.TryPlan(inputs with { MaxPixelRate = 400_000_000 }, out plan, out _)); // a measured cap: stays at 120
+        Assert.Equal(new MirrorStreamPlan(MirrorCodec.Hevc, 2228, 1440, 120, 23342, 5835, 120), plan);
+
+        Assert.True(MirrorStreamPlanner.TryPlan(inputs with { EncoderMaxFps = 100 }, out plan, out _)); // 100 isn't a divisor of 120
+        Assert.Equal(60, plan.Fps);
 
         Assert.True(MirrorStreamPlanner.TryPlan(inputs with { Encoders = MirrorCodecs.H264, FpsLimit = 60 }, out plan, out _));
         (int target, int floor) = MirrorStreamPlanner.Bitrate(MirrorQuality.Balanced, MirrorCodec.H264, 2228, 1440, 60);
-        Assert.Equal(new MirrorStreamPlan(MirrorCodec.H264, 2228, 1440, 60, target, floor), plan);
+        Assert.Equal(new MirrorStreamPlan(MirrorCodec.H264, 2228, 1440, 60, target, floor, 120), plan);
 
         Assert.True(MirrorStreamPlanner.TryPlan(inputs with { Source = new MirrorSource(1728, 1117, 60), Quality = MirrorQuality.Low }, out plan, out _));
         Assert.Equal(MirrorCodec.Hevc, plan.Codec);
@@ -131,6 +134,22 @@ public class MirrorStreamPlannerTests
             Assert.InRange((long)ew * eh * efps, 1, cap);
         }
     }
+
+    [Theory]
+    [InlineData(120, 120, 120)]
+    [InlineData(93, 120, 60)]
+    [InlineData(59, 120, 40)]
+    [InlineData(39, 120, 30)]
+    [InlineData(30, 120, 30)]
+    [InlineData(29, 120, 29)]  // below 30: nothing to snap to
+    [InlineData(89, 90, 45)]
+    [InlineData(44, 90, 30)]
+    [InlineData(40, 100, 40)]  // no divisor of 100 in 30..40: unchanged
+    [InlineData(24, 24, 24)]   // a phone below 30: any divisor
+    [InlineData(20, 24, 12)]
+    [InlineData(60, 0, 60)]    // unknown refresh
+    public void Fps_snaps_down_to_a_divisor_of_the_phone_refresh(int fps, int phoneMaxFps, int expected) =>
+        Assert.Equal(expected, MirrorStreamPlanner.SnapFps(fps, phoneMaxFps));
 
     [Fact]
     public void Pixel_rate_cap_rejects_bad_inputs()

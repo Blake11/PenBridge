@@ -48,7 +48,11 @@ public sealed record MirrorPlanInputs
 /// <param name="Fps">Planned frame rate (before the guard).</param>
 /// <param name="TargetBitrateKbps">The preset's bitrate for this size, fps and codec.</param>
 /// <param name="FloorBitrateKbps">The lowest bitrate the guard steps down to, at most the target.</param>
-public readonly record struct MirrorStreamPlan(MirrorCodec Codec, int WidthPx, int HeightPx, int Fps, int TargetBitrateKbps, int FloorBitrateKbps)
+/// <param name="PhoneMaxFps">
+/// The phone's refresh rate (MirrorStart <c>maxFps</c>); the guard's fps steps snap to its divisors
+/// (<see cref="MirrorStreamPlanner.SnapFps"/>). 0 = unknown: plain halving.
+/// </param>
+public readonly record struct MirrorStreamPlan(MirrorCodec Codec, int WidthPx, int HeightPx, int Fps, int TargetBitrateKbps, int FloorBitrateKbps, int PhoneMaxFps = 0)
 {
     /// <summary>The configuration for one epoch with the guard's bitrate and fps.</summary>
     public MirrorStreamConfig ToConfig(byte epoch, MirrorGuardLevel level) =>
@@ -88,6 +92,9 @@ public static class MirrorStreamPlanner
 
     /// <summary>The pixel-rate cap lowers the fps down to this (or the planned fps if lower) before it shrinks the size.</summary>
     public const int MinPixelRateFps = 60;
+
+    /// <summary>Snapping never takes the fps below this (unless the phone's refresh rate is lower).</summary>
+    public const int MinSnapFps = 30;
 
     /// <summary>Lowest planned bitrate.</summary>
     public const int MinBitrateKbps = 2_000;
@@ -231,6 +238,42 @@ public static class MirrorStreamPlanner
     }
 
     /// <summary>
+    /// Snaps <paramref name="fps"/> down to a divisor of the phone's refresh rate (<c>maxFps / k</c>: 120 → 120, 60,
+    /// 40, 30; 90 → 90, 45, 30), so frames land on the panel's refreshes evenly. Never below <see cref="MinSnapFps"/>
+    /// (any divisor when the refresh rate itself is lower); when no divisor lies between that and
+    /// <paramref name="fps"/>, the fps stays as it is.
+    /// </summary>
+    public static int SnapFps(int fps, int phoneMaxFps)
+    {
+        if (fps < 1 || phoneMaxFps < 1)
+        {
+            return fps;
+        }
+
+        int floor = phoneMaxFps < MinSnapFps ? 1 : MinSnapFps;
+        for (int k = 1; k <= phoneMaxFps; k++)
+        {
+            if (phoneMaxFps % k != 0)
+            {
+                continue;
+            }
+
+            int divisor = phoneMaxFps / k;
+            if (divisor < floor)
+            {
+                break;
+            }
+
+            if (divisor <= fps)
+            {
+                return divisor;
+            }
+        }
+
+        return fps;
+    }
+
+    /// <summary>
     /// The preset's target and floor for a stream: preset (at 60 fps and 2.5 MP) × (fps / 60)^0.6 × (pixels / 2.5 MP),
     /// × 1.4 for H.264, then clamped to 2–40 Mbps. The floor is scaled and clamped the same way and is at most the target.
     /// </summary>
@@ -261,7 +304,7 @@ public static class MirrorStreamPlanner
     }
 
     /// <summary>
-    /// Plans the stream: size, fps, the pixel-rate cap, then the bitrate. False with <paramref name="failure"/> =
+    /// Plans the stream: size, fps, the pixel-rate cap, the fps snapped to the phone's refresh, then the bitrate. False with <paramref name="failure"/> =
     /// <see cref="MirrorReason.NoCommonCodec"/> when the phone's decoders and the Mac's encoders share no codec. Throws
     /// <see cref="ArgumentOutOfRangeException"/> for sizes, rates or a pixel-rate cap below 1 (the server plans only once
     /// it has a SurfaceInfo, an active area and a source).
@@ -280,8 +323,9 @@ public static class MirrorStreamPlanner
         (int w, int h) = StreamSize(inputs.ActiveWidthPx, inputs.ActiveHeightPx, inputs.Source, inputs.Request.MaxWidthPx, inputs.Request.MaxHeightPx);
         int fps = Fps(inputs.Source.RefreshHz, inputs.Request.MaxFps, inputs.FpsLimit, inputs.EncoderMaxFps);
         (w, h, fps) = ApplyPixelRate(w, h, fps, inputs.MaxPixelRate);
+        fps = SnapFps(fps, inputs.Request.MaxFps);
         (int target, int floor) = Bitrate(inputs.Quality, codec, w, h, fps);
-        plan = new MirrorStreamPlan(codec, w, h, fps, target, floor);
+        plan = new MirrorStreamPlan(codec, w, h, fps, target, floor, inputs.Request.MaxFps);
         return true;
     }
 }
