@@ -29,6 +29,7 @@ public sealed class PadController : IDisposable
     private const int MenuDisconnect = 6;
     private const int MenuChangeMac = 7;
     private const int MenuSettings = 8;
+    private const int MenuMirror = 10;
 #if DEBUG
     private const int MenuDebugArea = 9;
     private const int MenuDebugMirrorBase = 100;
@@ -137,8 +138,11 @@ public sealed class PadController : IDisposable
     /// <summary>The surface last reported via <see cref="IPadOutput.UpdateSurface"/>, or null before the first layout.</summary>
     public SurfaceInfoMessage? Surface { get; private set; }
 
-    /// <summary>Screen mirroring: video under the pad and its state overlay (SM-F wires it to the session). UI thread.</summary>
+    /// <summary>Screen mirroring: video under the pad and its state overlay (<see cref="MirrorSession"/> wires it to the session). UI thread.</summary>
     internal MirrorView Mirror => _mirror;
+
+    /// <summary>The pad menu's "Mirror Mac screen" toggle, or null (no session, e.g. the debug preview pad). UI thread.</summary>
+    internal IMirrorToggle? MirrorToggle { get; set; }
 
     /// <summary>Current orientation setting (a pending change applies when input is idle).</summary>
     public PadOrientationMode OrientationMode => _pendingOrientation ?? _orientation;
@@ -584,6 +588,13 @@ public sealed class PadController : IDisposable
             orientation.SetGroupCheckable(OrientationGroup, true, true);
         }
 
+        if (MirrorToggle is { IsAvailable: true } mirror)
+        {
+            IMenuItem? item = menu.Add(0, MenuMirror, 3, "Mirror Mac screen");
+            item?.SetCheckable(true);
+            item?.SetChecked(mirror.IsEnabled);
+        }
+
         menu.Add(0, MenuSettings, 3, "Settings…");
         menu.Add(0, MenuDisconnect, 4, "Disconnect");
         menu.Add(0, MenuChangeMac, 5, "Change Mac");
@@ -613,6 +624,13 @@ public sealed class PadController : IDisposable
                 break;
             case MenuSettings:
                 SettingsRequested?.Invoke(this, EventArgs.Empty);
+                break;
+            case MenuMirror:
+                if (MirrorToggle is { } toggle)
+                {
+                    toggle.SetEnabled(!toggle.IsEnabled);
+                }
+
                 break;
 #if DEBUG
             case MenuDebugArea:

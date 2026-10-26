@@ -3,6 +3,7 @@ using Android.Content;
 using Android.Util;
 using Android.Views;
 using Android.Widget;
+using PenBridge.Core.Protocol;
 
 namespace PenBridge.Android.Mirror;
 

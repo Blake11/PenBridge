@@ -93,6 +93,18 @@ internal sealed class MacSettingsSection
         AddSwitch(MacSettingKey.Rotate, "Rotate");
         AddSwitch(MacSettingKey.ThreeFingerDrag, "Three-finger drag");
         AddSwitch(MacSettingKey.FourFingerGestures, "Four-finger gestures");
+
+        // Screen mirroring (ADR-0038): only with a Mac that offers it (protocol 1.3, ScreenMirror).
+        LinearLayout mirroring = Ui.Column(context);
+        _root.AddView(mirroring, Ui.FullWidthLp(context, 0));
+        mirroring.AddView(Ui.Text(context, "Screen mirroring", TextRole.Title), Ui.FullWidthLp(context, 16));
+        mirroring.AddView(Ui.Text(context, "Shows the mapped part of the Mac's screen under the pad.", TextRole.Secondary));
+        AddSwitch(MacSettingKey.MirrorEnabled, "Mirror the Mac screen", mirroring);
+        mirroring.AddView(Ui.Text(context, "Mirror quality"), Ui.FullWidthLp(context, 8));
+        AddChoices(MacSettingKey.MirrorQuality, mirroring);
+        mirroring.AddView(Ui.Text(context, "Mirror frame rate"), Ui.FullWidthLp(context, 8));
+        AddNumberChoices(MacSettingKey.MirrorFps, FormatFps, mirroring);
+        _binders.Add(v => mirroring.Visibility = _host.MirrorOffered && v.Carries(MacSettingKey.MirrorEnabled) ? ViewStates.Visible : ViewStates.Gone);
         _root.Visibility = ViewStates.Gone;
     }
 
@@ -217,7 +229,7 @@ internal sealed class MacSettingsSection
         Math.Abs(r.X) < 1e-4 && Math.Abs(r.Y) < 1e-4 && Math.Abs(r.Width - 1) < 1e-4 && Math.Abs(r.Height - 1) < 1e-4;
 
     /// <summary>Radio buttons for an Int key, one per value name of the table.</summary>
-    private void AddChoices(MacSettingKey key)
+    private void AddChoices(MacSettingKey key, LinearLayout? parent = null)
     {
         MacSettingDescriptor d = MacSettings.Get(key);
         var group = new RadioGroup(_ctx) { Orientation = global::Android.Widget.Orientation.Vertical };
@@ -244,10 +256,54 @@ internal sealed class MacSettingsSection
                 group.Check(buttons[value].Id);
             }
         });
-        _root.AddView(group, Ui.FullWidthLp(_ctx, 0));
+        (parent ?? _root).AddView(group, Ui.FullWidthLp(_ctx, 0));
     }
 
-    private Switch AddSwitch(MacSettingKey key, string text)
+    /// <summary>
+    /// Radio buttons for an Int key whose values are numbers (<see cref="MacSettingDescriptor.IntValues"/>, e.g.
+    /// MirrorFps 0/30/60/120): each button carries its value, not its list position.
+    /// </summary>
+    private void AddNumberChoices(MacSettingKey key, Func<int, string> label, LinearLayout? parent = null)
+    {
+        MacSettingDescriptor d = MacSettings.Get(key);
+        var group = new RadioGroup(_ctx) { Orientation = global::Android.Widget.Orientation.Vertical };
+        var buttons = new RadioButton[d.IntValues.Count];
+        for (int i = 0; i < buttons.Length; i++)
+        {
+            buttons[i] = Choice(label(d.IntValues[i]));
+            buttons[i].Tag = Java.Lang.Integer.ValueOf(d.IntValues[i]);
+            group.AddView(buttons[i]);
+        }
+
+        group.CheckedChange += (_, e) =>
+        {
+            if (!_updating && group.FindViewById(e.CheckedId) is RadioButton { Tag: Java.Lang.Integer value })
+            {
+                Send(SettingEntry.Int(key, value.IntValue()));
+            }
+        };
+        _binders.Add(v =>
+        {
+            int value = v.Get(key).IntValue;
+            foreach (RadioButton button in buttons)
+            {
+                if (button.Tag is Java.Lang.Integer tag && tag.IntValue() == value)
+                {
+                    if (group.CheckedRadioButtonId != button.Id)
+                    {
+                        group.Check(button.Id);
+                    }
+
+                    return;
+                }
+            }
+
+            group.ClearCheck(); // a value this phone doesn't know
+        });
+        (parent ?? _root).AddView(group, Ui.FullWidthLp(_ctx, 0));
+    }
+
+    private Switch AddSwitch(MacSettingKey key, string text, LinearLayout? parent = null)
     {
         var toggle = new Switch(_ctx) { Text = text };
         toggle.SetTextColor(Ui.ColorOf(_ctx, Resource.Color.pb_on_surface));
@@ -255,7 +311,7 @@ internal sealed class MacSettingsSection
         toggle.SetMinHeight(Ui.Dp(_ctx, 48));
         toggle.CheckedChange += (_, e) => Send(SettingEntry.Bool(key, e.IsChecked));
         _binders.Add(v => toggle.Checked = v.Get(key).BoolValue);
-        _root.AddView(toggle, Ui.FullWidthLp(_ctx, 4));
+        (parent ?? _root).AddView(toggle, Ui.FullWidthLp(_ctx, 4));
         return toggle;
     }
 
@@ -385,6 +441,10 @@ internal sealed class MacSettingsSection
         "FollowSystem" => "Follow macOS",
         _ => name,
     };
+
+    private static string FormatFps(int fps) => fps == MacSettings.MirrorFpsAuto
+        ? "Auto (follows the Mac's and the phone's refresh rates)"
+        : "Up to " + fps.ToString(CultureInfo.InvariantCulture) + " fps";
 
     private static string FormatSpeed(double value) => value.ToString("0.00", CultureInfo.InvariantCulture) + "×";
 

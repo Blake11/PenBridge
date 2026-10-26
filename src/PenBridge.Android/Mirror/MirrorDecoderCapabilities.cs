@@ -2,6 +2,7 @@ using Android.Content;
 using Android.Hardware.Display;
 using Android.Media;
 using Android.Views;
+using PenBridge.Core.Protocol;
 
 namespace PenBridge.Android.Mirror;
 
@@ -101,11 +102,18 @@ internal sealed record MirrorDecoderCapabilities(MirrorCodecs Codecs, int MaxWid
             if (hevc.MaxWidth > limit)
             {
                 hevc = Pick(infos, MirrorCodec.Hevc, limit, limitShort, fps);
+                LogDropped(hevc, MirrorCodec.Hevc, limit, limitShort, fps);
             }
             else
             {
                 h264 = Pick(infos, MirrorCodec.H264, limit, limitShort, fps);
+                LogDropped(h264, MirrorCodec.H264, limit, limitShort, fps);
             }
+        }
+
+        if (hevc is not null && h264 is not null && hevc.MaxWidth != h264.MaxWidth)
+        {
+            global::Android.Util.Log.Warn("PenBridge", $"Mirror decoders: HEVC and H.264 limits didn't converge ({hevc.MaxWidth} vs {h264.MaxWidth}); offering the smaller");
         }
 
         foreach (MediaCodecInfo info in infos)
@@ -122,6 +130,15 @@ internal sealed record MirrorDecoderCapabilities(MirrorCodecs Codecs, int MaxWid
         int maxW = Math.Min(hevc?.MaxWidth ?? int.MaxValue, h264?.MaxWidth ?? int.MaxValue);
         int maxH = Math.Min(hevc?.MaxHeight ?? int.MaxValue, h264?.MaxHeight ?? int.MaxValue);
         return new MirrorDecoderCapabilities(codecs, maxW, maxH, fps, hevc, h264);
+    }
+
+    /// <summary>The shared-limit re-check found no decoder for <paramref name="codec"/>: it leaves the codec mask (logged, not silent).</summary>
+    private static void LogDropped(MirrorDecoderInfo? picked, MirrorCodec codec, int longSide, int shortSide, int fps)
+    {
+        if (picked is null)
+        {
+            global::Android.Util.Log.Warn("PenBridge", $"Mirror decoders: {codec.Name()} dropped, no decoder takes the shared limit {longSide}x{shortSide}@{fps}");
+        }
     }
 
     private static MirrorDecoderInfo? Pick(MediaCodecInfo[] infos, MirrorCodec codec, int longSide, int shortSide, int fps)

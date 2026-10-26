@@ -1,4 +1,6 @@
 #if DEBUG
+using PenBridge.Core.Protocol;
+
 namespace PenBridge.Android.Mirror;
 
 /// <summary>

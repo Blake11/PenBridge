@@ -3,7 +3,9 @@ using Android.Content;
 using Android.OS;
 using Android.Util;
 using Microsoft.Extensions.Logging;
+using PenBridge.Android.Mirror;
 using PenBridge.Core.Input;
+using PenBridge.Core.Mirror;
 using PenBridge.Core.Net;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
@@ -52,6 +54,8 @@ public sealed class ClientHost : IAsyncDisposable
     private bool _disposed;
     private bool _autoConnectSuppressed;
     private bool _autoConnectTried;
+    private int _sessionId; // +1 per established session (main thread)
+    private IMirrorSink? _mirrorSink; // read on Core's read-loop and video threads
 
     // The Mac's settings, display list and active area (protocol 1.2, ADR-0030/0031): main thread only.
     private MacSettingValues? _macSettings;
@@ -129,6 +133,49 @@ public sealed class ClientHost : IAsyncDisposable
         _state.Status == ClientHostStatus.Connected && Volatile.Read(ref _client) is { } client
             ? client.NegotiatedCapabilities
             : ProtocolCapabilities.None;
+
+    /// <summary>
+    /// Identifies the established session: a new value for every connection, 0 unless <see cref="State"/> is
+    /// connected. Lets a listener tell a new session from a state refresh of the same one. Main thread.
+    /// </summary>
+    internal int SessionId => _state.Status == ClientHostStatus.Connected && _client is not null ? _sessionId : 0;
+
+    /// <summary>
+    /// The session offers screen mirroring (ADR-0038): both sides negotiated
+    /// <see cref="ProtocolCapabilities.ScreenMirror"/> and the Mac's settings carry MirrorEnabled. Main thread.
+    /// </summary>
+    internal bool MirrorOffered =>
+        (NegotiatedCapabilities & ProtocolCapabilities.ScreenMirror) != 0 && MacSettings?.Carries(MacSettingKey.MirrorEnabled) == true;
+
+    /// <summary>
+    /// Receives the current session's mirroring events on Core's threads (config and state on the read loop or thread
+    /// pool, frames on the video receive thread); events of a replaced client never reach it. Set on the main thread.
+    /// </summary>
+    internal IMirrorSink? MirrorSink
+    {
+        get => Volatile.Read(ref _mirrorSink);
+        set => Volatile.Write(ref _mirrorSink, value);
+    }
+
+    /// <summary>The client's Ping clock (µs), the clock of <see cref="ReportFrameRendered"/>; 0 when not connected. Any thread.</summary>
+    internal ulong MirrorNowUs => Volatile.Read(ref _client) is { } client ? client.NowUs : 0;
+
+    /// <summary>
+    /// Sends MirrorStart for the current session (<see cref="PenBridgeClient.StartMirror"/>; again = a new MirrorStart,
+    /// which the Mac answers with a new epoch). False when no session offers mirroring. Any thread; never blocks.
+    /// </summary>
+    internal bool StartMirror(MirrorRequest request) =>
+        Volatile.Read(ref _client) is { IsConnected: true } client && client.StartMirror(request);
+
+    /// <summary>Asks the Mac for a keyframe (Core repeats the request until one arrives); no-op when not mirroring. Any thread, cheap.</summary>
+    internal void RequestKeyframe() => Volatile.Read(ref _client)?.RequestKeyframe();
+
+    /// <summary>Sends MirrorStop and closes the video socket; no-op when not mirroring. Any thread.</summary>
+    internal void StopMirror() => Volatile.Read(ref _client)?.StopMirror();
+
+    /// <summary>The frame reached the screen at <paramref name="renderedAtUs"/> (<see cref="MirrorNowUs"/>). Any thread, cheap.</summary>
+    internal void ReportFrameRendered(uint frameNumber, ulong renderedAtUs) =>
+        Volatile.Read(ref _client)?.ReportFrameRendered(frameNumber, renderedAtUs);
 
     /// <summary>Device id and per-Mac keys (Keystore-backed).</summary>
     public ClientCredentialStore Credentials { get; }
@@ -567,6 +614,7 @@ public sealed class ClientHost : IAsyncDisposable
         }
 
         _target = new Target(host, port, fingerprint, name, host, port);
+        _sessionId = _sessionId == int.MaxValue ? 1 : _sessionId + 1;
         Settings.RecordConnected(fingerprint, name, host, port);
         _retryAttempt = 0;
         _autoConnectSuppressed = false;
@@ -758,11 +806,15 @@ public sealed class ClientHost : IAsyncDisposable
             Surface = _surface,
             DeviceName = _deviceName,
             LoggerFactory = _loggerFactory,
+            MirrorThreadStarted = OnMirrorThreadStarted,
         });
         client.Disconnected += OnClientDisconnected;
         client.SettingsSnapshotReceived += OnClientSettingsSnapshot;
         client.DisplayListReceived += OnClientDisplayList;
         client.ActiveAreaReceived += OnClientActiveArea;
+        client.MirrorConfigReceived += OnClientMirrorConfig;
+        client.MirrorStateChanged += OnClientMirrorState;
+        client.VideoFrameReady += OnClientVideoFrame;
         return client;
     }
 
@@ -772,6 +824,61 @@ public sealed class ClientHost : IAsyncDisposable
         client.SettingsSnapshotReceived -= OnClientSettingsSnapshot;
         client.DisplayListReceived -= OnClientDisplayList;
         client.ActiveAreaReceived -= OnClientActiveArea;
+        client.MirrorConfigReceived -= OnClientMirrorConfig;
+        client.MirrorStateChanged -= OnClientMirrorState;
+        client.VideoFrameReady -= OnClientVideoFrame;
+    }
+
+    /// <summary>
+    /// Core's mirroring threads (the video receive thread) start from whichever thread asked for video, often the UI
+    /// thread, and would inherit its nice (-10, above the pad's input sender). Managed <c>Thread.Priority</c> is a no-op
+    /// on Android, so the nice is set here, on that thread: <see cref="global::Android.OS.ThreadPriority.Default"/> (0),
+    /// the decoder's level, eight steps below the input sender (-8, <c>PadSendQueue</c>). Not Background: video latency
+    /// still matters, and the input sender outranks it by far at 0 already (spec "QoS", #311).
+    /// </summary>
+    private static void OnMirrorThreadStarted(MirrorThreadRole _)
+    {
+        try
+        {
+            global::Android.OS.Process.SetThreadPriority(global::Android.OS.ThreadPriority.Default);
+        }
+        catch (Java.Lang.Exception)
+        {
+            // Keep the inherited priority.
+        }
+    }
+
+    /// <summary>Read-loop thread: a new epoch. Synchronous, so the decoder's gate is set before the epoch's video arrives.</summary>
+    private void OnClientMirrorConfig(object? sender, MirrorStreamConfig config)
+    {
+        if (ReferenceEquals(sender, Volatile.Read(ref _client)) && MirrorSink is { } sink)
+        {
+            sink.OnMirrorConfig(config);
+        }
+    }
+
+    private void OnClientMirrorState(object? sender, MirrorStateChangedEventArgs e)
+    {
+        if (ReferenceEquals(sender, Volatile.Read(ref _client)) && MirrorSink is { } sink)
+        {
+            sink.OnMirrorState(e.State, e.Reason);
+        }
+    }
+
+    /// <summary>Video receive thread, per frame: hand the access unit to the sink (it copies), then release Core's buffer. Allocation-free.</summary>
+    private void OnClientVideoFrame(object? sender, VideoFrame frame)
+    {
+        try
+        {
+            if (ReferenceEquals(sender, Volatile.Read(ref _client)) && MirrorSink is { } sink)
+            {
+                sink.OnVideoFrame(frame);
+            }
+        }
+        finally
+        {
+            frame.Dispose();
+        }
     }
 
     /// <summary>Core raises this on a thread-pool thread; hop to the main looper.</summary>

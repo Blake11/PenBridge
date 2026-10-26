@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using Android.OS;
 using Android.Util;
+using PenBridge.Core.Protocol;
 
 namespace PenBridge.Android.Mirror;
 
