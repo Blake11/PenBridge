@@ -12,10 +12,11 @@ namespace PenBridge.Mac.Services;
 /// <para><b>Sockets.</b> <c>SO_NET_SERVICE_TYPE</c> tells the stack (and Wi-Fi WMM) what a socket carries:
 /// <c>NET_SERVICE_TYPE_VO</c> (voice, DSCP EF) for the UDP input socket, <c>NET_SERVICE_TYPE_VI</c> (interactive
 /// video, AF41) for each video socket, on top of the TOS byte Core sets. A failure throws; Core logs it once.</para>
-/// <para><b>Threads.</b> The input path (the injector, called on the thread-pool thread that completed the UDP
-/// receive) runs at user-interactive QoS: <see cref="PromoteInputThread"/> raises the calling thread once (one
-/// thread-static check per event afterwards). Core's video send and probe threads run at user-initiated, like the
-/// capture queue, so they never compete with input for a core.</para>
+/// <para><b>Threads.</b> Core's thread hook (<see cref="OnCoreThreadStarted"/>) sets each dedicated Core thread once,
+/// when it starts: the input receive thread (UDP receive, decrypt, tracker and the injector, all on that one thread)
+/// at user-interactive QoS; the video send and probe threads at user-initiated, like the capture queue, so they never
+/// compete with input for a core. Input that arrives over the TLS fallback or from a watchdog timer runs on pool
+/// threads at their default class.</para>
 /// </remarks>
 internal static partial class Qos
 {
@@ -32,38 +33,24 @@ internal static partial class Qos
     internal const uint Background = 0x09;
     internal const uint Unspecified = 0;
 
-    [ThreadStatic]
-    private static bool _inputThreadPromoted;
-
     /// <summary><see cref="PenBridgeServerOptions.ConfigureInputSocket"/>: interactive voice (DSCP EF).</summary>
     public static void ConfigureInputSocket(Socket socket) => SetServiceType(socket, NetServiceTypeVoice);
 
     /// <summary><see cref="PenBridgeServerOptions.ConfigureVideoSocket"/>: interactive video (DSCP AF41).</summary>
     public static void ConfigureVideoSocket(Socket socket) => SetServiceType(socket, NetServiceTypeVideo);
 
-    /// <summary><see cref="PenBridgeServerOptions.MirrorThreadStarted"/>: user-initiated, below the input path.</summary>
-    public static void OnMirrorThreadStarted(MirrorThreadRole role) => _ = SetCurrentThread(UserInitiated);
-
     /// <summary>
-    /// Raises the calling thread to user-interactive QoS the first time it delivers input (thread-pool threads keep it;
-    /// the rest of their work is light, and the heavy mirroring work runs on its own queue and threads). Hot path:
-    /// after the first call per thread, one thread-static read. The raise is permanent for that pool thread, so
-    /// mirroring work never uses the pool: it runs on dedicated threads with an explicit class (<see cref="SetThread"/>).
-    /// Temporary until Core receives input on its own thread (#320), which the head can then set once.
+    /// <see cref="PenBridgeServerOptions.MirrorThreadStarted"/>, on the new thread: <see cref="MirrorThreadRole.InputReceive"/>
+    /// at user-interactive (ADR-0038 "input always wins"), the video roles at user-initiated, below it. Once per thread.
     /// </summary>
-    /// <param name="previous">The thread's class before, when this call raised it.</param>
-    /// <returns>True when this call raised the thread (first input on it), for a log line.</returns>
-    public static bool PromoteInputThread(out uint previous)
+    /// <param name="role">The thread's role.</param>
+    /// <param name="previous">The thread's class before the call, for a log line.</param>
+    /// <returns>The class requested, and whether setting it succeeded.</returns>
+    public static (uint Requested, bool Set) OnCoreThreadStarted(MirrorThreadRole role, out uint previous)
     {
-        previous = 0;
-        if (_inputThreadPromoted)
-        {
-            return false;
-        }
-
-        _inputThreadPromoted = true;
         previous = qos_class_self();
-        return previous != UserInteractive && SetCurrentThread(UserInteractive);
+        uint requested = role == MirrorThreadRole.InputReceive ? UserInteractive : UserInitiated;
+        return (requested, SetCurrentThread(requested));
     }
 
     /// <summary>The calling thread's QoS class.</summary>

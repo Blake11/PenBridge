@@ -565,7 +565,7 @@ public sealed partial class ServerHost : IAsyncDisposable
             ScreenMirror = _mirror is not null, // ADR-0038: MirrorHost answers the mirroring events
             ConfigureInputSocket = Qos.ConfigureInputSocket, // NET_SERVICE_TYPE_VO
             ConfigureVideoSocket = Qos.ConfigureVideoSocket, // NET_SERVICE_TYPE_VI
-            MirrorThreadStarted = Qos.OnMirrorThreadStarted, // below the input path
+            MirrorThreadStarted = OnCoreThreadStarted, // input receive above everything, video below it
             // Read live at each two-finger tap: Smart Zoom off right-clicks on the lift (ADR-0029).
             TrackerOptions = new PenStateTrackerOptions
             {
@@ -798,6 +798,28 @@ public sealed partial class ServerHost : IAsyncDisposable
         return preferred;
     }
 
+    /// <summary>
+    /// Core's thread hook, on each dedicated Core thread as it starts (ADR-0038 QoS): sets its class once and logs the
+    /// input receive thread's, so the log shows input at user-interactive once per server start.
+    /// </summary>
+    private void OnCoreThreadStarted(MirrorThreadRole role)
+    {
+        (uint requested, bool set) = Qos.OnCoreThreadStarted(role, out uint previous);
+        if (role != MirrorThreadRole.InputReceive)
+        {
+            return;
+        }
+
+        if (set)
+        {
+            Log.InputThreadQos(_log, Environment.CurrentManagedThreadId, Qos.Name(requested), Qos.Name(previous));
+        }
+        else
+        {
+            Log.InputThreadQosFailed(_log, Qos.Name(requested), Qos.Name(previous));
+        }
+    }
+
     private static void EnsureMainThread()
     {
         if (!NSThread.IsMain)
@@ -852,5 +874,11 @@ public sealed partial class ServerHost : IAsyncDisposable
 
         [LoggerMessage(12, LogLevel.Warning, "Accessibility permission missing: injected input is dropped until it is granted")]
         public static partial void AccessibilityMissing(ILogger logger);
+
+        [LoggerMessage(16, LogLevel.Information, "Input receive thread {ThreadId} at {QosClass} QoS (was {Previous})")]
+        public static partial void InputThreadQos(ILogger logger, int threadId, string qosClass, string previous);
+
+        [LoggerMessage(17, LogLevel.Warning, "Setting the input receive thread to {QosClass} QoS failed; it stays at {Previous}")]
+        public static partial void InputThreadQosFailed(ILogger logger, string qosClass, string previous);
     }
 }

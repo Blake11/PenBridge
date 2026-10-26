@@ -428,8 +428,8 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
             _working = true;
         }
 
-        // A dedicated thread at user-initiated QoS, not the pool: pool threads can carry the injector's user-interactive
-        // raise (Qos.PromoteInputThread), and capture setup must not compete with input at that class.
+        // A dedicated thread at an explicit user-initiated QoS, not the pool: capture setup stays below Core's input
+        // receive thread (user-interactive, Qos.OnCoreThreadStarted).
         var worker = new Thread(Reconcile) { IsBackground = true, Name = "PenBridge.MirrorReconcile" };
         worker.Start();
     }
