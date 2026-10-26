@@ -6,10 +6,11 @@ using PenBridge.Core.Protocol;
 namespace PenBridge.Core.Net;
 
 /// <summary>
-/// What a thread Core starts for screen mirroring does (<c>docs/specs/screen-mirroring.md</c> "Thread hooks"). The
-/// server and client options' <c>MirrorThreadStarted</c> hook gets it on that thread when it starts, so a head can set
-/// the thread's priority with platform APIs (the Mac's QoS class, Android's <c>Process.SetThreadPriority</c>). All of
-/// them belong below the input path.
+/// What a dedicated thread Core starts does (<c>docs/specs/screen-mirroring.md</c> "Thread hooks"). The server and
+/// client options' <c>MirrorThreadStarted</c> hook gets it on that thread when it starts, so a head can set the
+/// thread's priority with platform APIs (the Mac's QoS class, Android's <c>Process.SetThreadPriority</c>). The video
+/// roles belong below the input path; <see cref="InputReceive"/> is the input path (ADR-0038 "input always wins").
+/// The name predates the input role; a head must switch on the role rather than treat every call as a video thread.
 /// </summary>
 public enum MirrorThreadRole
 {
@@ -18,6 +19,13 @@ public enum MirrorThreadRole
 
     /// <summary>Mac: receives the phone's Probes. Phone: receives video datagrams and reassembles frames.</summary>
     VideoReceive = 2,
+
+    /// <summary>
+    /// Mac: receives, decrypts and delivers UDP input datagrams to the sink (one thread per running server, for its
+    /// whole life). Give it the highest priority the platform offers (user-interactive QoS on the Mac); keep the hook
+    /// quick. Core sets <see cref="Thread.Priority"/> above normal as a portable default.
+    /// </summary>
+    InputReceive = 3,
 }
 
 /// <summary>Raised by <see cref="PenBridgeClient.MirrorStateChanged"/>: the Mac's mirroring state, or the client's own (TLS fallback).</summary>
@@ -186,9 +194,10 @@ internal static class SocketQos
 }
 
 /// <summary>
-/// Video sockets are read by a dedicated thread blocked in a synchronous receive. Disposing a UDP socket doesn't
-/// unblock that receive on every platform (on macOS the dispose itself waits for it), so the receive thread owns its
-/// socket: the stopper only flags it and <see cref="Wake"/>s it, and the thread disposes the socket when it leaves.
+/// Video sockets and the server's input socket are read by a dedicated thread blocked in a synchronous receive.
+/// Disposing a UDP socket doesn't unblock that receive on every platform (on macOS the dispose itself waits for it), so
+/// the receive thread owns its socket: the stopper only flags it and <see cref="Wake"/>s it, and the thread disposes
+/// the socket when it leaves.
 /// </summary>
 internal static class VideoSockets
 {
@@ -220,7 +229,10 @@ internal static class VideoSockets
     }
 }
 
-/// <summary>Starts the threads Core runs for mirroring (below normal priority, head hook on start).</summary>
+/// <summary>
+/// Starts Core's dedicated threads with the head hook on start: video threads below normal priority, the input receive
+/// thread above normal (portable defaults; the hook sets the real priority).
+/// </summary>
 internal static class MirrorThreads
 {
     public static Thread Start(string name, MirrorThreadRole role, Action<MirrorThreadRole>? hook, ILogger log, Action body)
@@ -232,7 +244,7 @@ internal static class MirrorThreads
         };
         try
         {
-            thread.Priority = ThreadPriority.BelowNormal;
+            thread.Priority = role == MirrorThreadRole.InputReceive ? ThreadPriority.AboveNormal : ThreadPriority.BelowNormal;
         }
         catch (Exception ex) when (ex is ThreadStateException or PlatformNotSupportedException)
         {
