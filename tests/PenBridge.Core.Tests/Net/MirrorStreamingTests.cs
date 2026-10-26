@@ -196,6 +196,7 @@ public class MirrorStreamingTests
         rig.Server.SendVideoFrame(MirrorRig.AccessUnit(700, 3, false), false, rig.NowCaptureUs);
         await rig.H.SettleAsync();
         Assert.False(rig.Sender.IsReleased);
+        await Wait.Until(() => rig.Sender.FramesSent, n => n >= 1, "the first epoch's frame counted (after the phone got it)");
         Assert.Equal(1, rig.Sender.FramesSent);
 
         // The epoch's Probe, delivered late from the phone's socket and well within the wait, releases frame 1 and its follower.

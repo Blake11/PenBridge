@@ -647,22 +647,31 @@ public class MirrorSessionTests
             }
         }, TestContext.Current.CancellationToken);
 
+        // At least 300 input frames, and on until 10 video frames went out meanwhile (a count, not a duration: a slow
+        // machine streams fewer frames per input frame).
         const int Frames = 300;
+        const int VideoFrames = 10;
         var latencies = new double[Frames];
-        for (int i = 0; i < Frames; i++)
+        long began = Stopwatch.GetTimestamp();
+        int i = 0;
+        for (; i < Frames || rig.Sender.FramesSent < VideoFrames; i++)
         {
+            Assert.True(Stopwatch.GetElapsedTime(began) < Wait.Limit + Wait.Limit, $"only {rig.Sender.FramesSent} video frames streamed after {i} input frames");
             long accepted = input.Accepted;
             long start = Stopwatch.GetTimestamp();
-            Assert.True(rig.Client.SendState(Pens.Contact((ushort)(1000 + i), 1000), []));
+            Assert.True(rig.Client.SendState(Pens.Contact((ushort)(1000 + (i % 1000)), 1000), []));
             await Wait.Until(() => input.Accepted > accepted, "the input frame arrived");
-            latencies[i] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+            if (i < Frames)
+            {
+                latencies[i] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+            }
         }
 
         await done.CancelAsync();
         await video;
-        Assert.Equal(Frames, input.Accepted);
+        Assert.Equal(i, input.Accepted);
         Assert.Equal(0, input.Counters.Stale);
-        Assert.InRange(rig.Sender.FramesSent, 10, long.MaxValue);
+        Assert.InRange(rig.Sender.FramesSent, VideoFrames, long.MaxValue);
         Array.Sort(latencies);
         TestContext.Current.TestOutputHelper?.WriteLine($"input p50 {latencies[Frames / 2]:F2} ms, p95 {latencies[Frames * 95 / 100]:F2} ms while {rig.Sender.FramesSent} video frames streamed");
         Assert.InRange(latencies[Frames * 95 / 100], 0, 100); // loopback; a generous bound for loaded CI machines
