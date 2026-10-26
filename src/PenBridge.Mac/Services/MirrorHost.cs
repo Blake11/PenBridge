@@ -51,7 +51,7 @@ public enum MirrorHostStatus
 /// on every change. The encoder pixel-rate cap stays Core's default: VideoToolbox doesn't report one, and measuring it
 /// would mean seconds of GPU work.</para>
 /// <para><b>Stream</b>: capture runs while the phone asks (MirrorRequested … MirrorStopped), the head is available and
-/// Core gave a configuration (MirrorConfigChanged). One worker on the thread pool reconciles the controller with that
+/// Core gave a configuration (MirrorConfigChanged). One dedicated worker thread (user-initiated QoS, alive only while it has work) reconciles the controller with that
 /// wanted state (latest wins), so the events never block. Each new epoch is applied (a new size or codec makes a new
 /// encoder; rate changes apply in place) and then a keyframe is requested, so the epoch's first frame is a keyframe.
 /// Frames reach the server only while the applied configuration is the current one: an old-epoch keyframe still in the
@@ -77,6 +77,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
     private readonly MirrorController _controller;
     private readonly ILogger _log;
     private readonly Lock _lock = new();
+    private readonly Lock _pushLock = new();
 
     // Main thread.
     private MappingTarget? _mapping;
@@ -95,6 +96,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
     private MirrorCodecs? _hardware;
     private MirrorCodecs _encoders;
     private bool _requested;
+    private bool _awaitingConfig; // a MirrorStart is answered by a new epoch's configuration that hasn't arrived yet
     private bool _available;
     private MirrorStreamConfig? _config;
     private MirrorTarget? _target;
@@ -230,6 +232,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
         {
             _server = server;
             _requested = false;
+            _awaitingConfig = false;
             _config = null;
             hardware = _hardware;
             if (hardware is { } known)
@@ -242,9 +245,9 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
         server.MirrorStopped += OnMirrorStopped;
         server.MirrorConfigChanged += OnMirrorConfigChanged;
         server.KeyframeRequested += OnKeyframeRequested;
-        if (hardware is { } codecs)
+        if (hardware is not null)
         {
-            server.SetMirrorEncoders(codecs);
+            PushEncoders();
         }
         else
         {
@@ -273,6 +276,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
 
             _server = null;
             _requested = false;
+            _awaitingConfig = false;
             _config = null;
             Volatile.Write(ref _send, 0);
         }
@@ -320,7 +324,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
     private void OnMirrorRequested(object? sender, MirrorRequest request)
     {
         PenBridgeServer? server;
-        MirrorCodecs restore = MirrorCodecs.None;
+        bool restore = false;
         lock (_lock)
         {
             if (!ReferenceEquals(sender, _server))
@@ -330,6 +334,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
 
             server = _server;
             _requested = true;
+            _awaitingConfig = true; // _config is still the previous epoch's: the gate stays shut until Core's new one arrives
 
             // Core starts a new epoch for every MirrorStart and its configuration follows. A repeated request while
             // streaming (the phone recovering from a decoder loss) keeps the capture running: the worker reconfigures
@@ -339,14 +344,14 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
             if (_hardware is { } hardware && _encoders != hardware && now - _fallbackAt >= HevcRetryMs)
             {
                 _encoders = hardware; // retry HEVC after an earlier fallback, at most every 30 s
-                restore = hardware;
+                restore = true;
             }
         }
 
         Log.Requested(_log, request.Codecs.ToString(), request.MaxWidthPx, request.MaxHeightPx, request.MaxFps);
-        if (restore != MirrorCodecs.None)
+        if (restore)
         {
-            server!.SetMirrorEncoders(restore);
+            PushEncoders();
         }
 
         Kick();
@@ -370,6 +375,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
             }
 
             _requested = false;
+            _awaitingConfig = false;
             _config = null;
             Volatile.Write(ref _send, 0);
         }
@@ -388,6 +394,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
             }
 
             _config = config;
+            _awaitingConfig = false;
             Volatile.Write(ref _send, 0); // until this epoch's encoder settings are applied
         }
 
@@ -421,11 +428,15 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
             _working = true;
         }
 
-        _ = Task.Run(ReconcileAsync);
+        // A dedicated thread at user-initiated QoS, not the pool: pool threads can carry the injector's user-interactive
+        // raise (Qos.PromoteInputThread), and capture setup must not compete with input at that class.
+        var worker = new Thread(Reconcile) { IsBackground = true, Name = "PenBridge.MirrorReconcile" };
+        worker.Start();
     }
 
-    private async Task ReconcileAsync()
+    private void Reconcile()
     {
+        _ = Qos.SetThread(Qos.UserInitiated);
         while (true)
         {
             bool run;
@@ -450,11 +461,11 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
             {
                 if (run)
                 {
-                    await RunAsync(config, target!).ConfigureAwait(false);
+                    Run(config, target!);
                 }
                 else
                 {
-                    await StopCaptureAsync().ConfigureAwait(false);
+                    StopCapture();
                 }
             }
             catch (MirrorException ex)
@@ -475,19 +486,19 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
         }
     }
 
-    private async Task RunAsync(MirrorStreamConfig config, MirrorTarget target)
+    private void Run(MirrorStreamConfig config, MirrorTarget target)
     {
         var settings = new MirrorStreamSettings(config.WidthPx, config.HeightPx, config.Fps, config.BitrateKbps, config.Codec);
         Volatile.Write(ref _codec, (int)settings.Codec);
         bool started = false;
         if (!_controller.IsRunning)
         {
-            await _controller.StartAsync(target, settings).ConfigureAwait(false);
+            _controller.StartAsync(target, settings).GetAwaiter().GetResult();
             started = true;
         }
         else if (!target.SameAs(_appliedTarget) || settings != _appliedSettings)
         {
-            await _controller.ReconfigureAsync(target, settings).ConfigureAwait(false);
+            _controller.ReconfigureAsync(target, settings).GetAwaiter().GetResult();
         }
 
         Interlocked.Exchange(ref _capturing, 1);
@@ -498,7 +509,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
         lock (_lock)
         {
             // Only while this configuration is still the current one; a newer epoch closed the gate and queued a pass.
-            if (_config == config && _requested && _available && !_stopped)
+            if (_config == config && !_awaitingConfig && _requested && _available && !_stopped)
             {
                 Volatile.Write(ref _send, 1);
             }
@@ -510,12 +521,12 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
         }
     }
 
-    private async Task StopCaptureAsync()
+    private void StopCapture()
     {
         Volatile.Write(ref _send, 0);
         if (_controller.IsRunning)
         {
-            await _controller.StopAsync().ConfigureAwait(false);
+            _controller.StopAsync().GetAwaiter().GetResult();
         }
 
         Interlocked.Exchange(ref _capturing, 0);
@@ -526,8 +537,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
     private void OnFailure(MirrorFailure failure, string message, MirrorCodec codec)
     {
         Log.Failed(_log, failure.ToString(), codec.ToString(), message);
-        PenBridgeServer? server = null;
-        MirrorCodecs fallback = MirrorCodecs.None;
+        bool fallback = false;
         lock (_lock)
         {
             _config = null; // Core starts a new epoch when the stream can run again
@@ -537,16 +547,15 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
             {
                 _encoders &= ~MirrorCodecs.Hevc;
                 _fallbackAt = Environment.TickCount64;
-                fallback = _encoders;
-                server = _server;
+                fallback = true;
             }
         }
 
         Kick();
-        if (fallback != MirrorCodecs.None)
+        if (fallback)
         {
             Log.HevcFallback(_log);
-            server?.SetMirrorEncoders(fallback); // Core replans with H.264 (new epoch)
+            PushEncoders(); // Core replans with H.264 (new epoch)
             return;
         }
 
@@ -602,11 +611,13 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
         }
 
         _detecting = true;
-        _ = Task.Run(DetectEncoders);
+        var detector = new Thread(DetectEncoders) { IsBackground = true, Name = "PenBridge.MirrorEncoderDetect" };
+        detector.Start();
     }
 
     private void DetectEncoders()
     {
+        _ = Qos.SetThread(Qos.Utility); // a few seconds of GPU test sessions, once; nobody waits on it interactively
         MirrorCodecs codecs;
         try
         {
@@ -620,15 +631,32 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
             codecs = MirrorCodecs.None;
         }
 
-        PenBridgeServer? server;
         lock (_lock)
         {
             _hardware = codecs;
             _encoders = codecs;
-            server = _server;
         }
 
-        server?.SetMirrorEncoders(codecs); // None → Core answers NoCommonCodec
+        PushEncoders(); // None → Core answers NoCommonCodec
+    }
+
+    // Callers race (Core's event thread, the detection thread, the main thread): the encoder set is read under _lock
+    // inside _pushLock, so the last call to run always sends the newest set and Core can't be left with a stale one.
+    // Core's setter is quick and the events never take _pushLock, so no lock cycle.
+    private void PushEncoders()
+    {
+        lock (_pushLock)
+        {
+            PenBridgeServer? server;
+            MirrorCodecs encoders;
+            lock (_lock)
+            {
+                server = _server;
+                encoders = _encoders;
+            }
+
+            server?.SetMirrorEncoders(encoders);
+        }
     }
 
     // ---- Main thread ----
@@ -742,12 +770,10 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
         {
             if (_available != available)
             {
+                // Either way, a configuration from the other period (an event in flight) must not survive into this one.
                 _available = available;
-                if (!available)
-                {
-                    _config = null;
-                    Volatile.Write(ref _send, 0);
-                }
+                _config = null;
+                Volatile.Write(ref _send, 0);
             }
 
             server = _server;

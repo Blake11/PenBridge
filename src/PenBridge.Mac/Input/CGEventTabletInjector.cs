@@ -227,6 +227,7 @@ public sealed class CGEventTabletInjector : IReleasableInputSink, IMomentumSink,
     }
 
     // Input runs at user-interactive QoS, above the mirroring threads (ADR-0038 "input always wins"); Qos.PromoteInputThread.
+    // The raise is permanent on a pool thread (hence mirroring uses dedicated threads); a dedicated Core input thread (#320) replaces it.
     private void PromoteThread()
     {
         if (Qos.PromoteInputThread(out uint previous))

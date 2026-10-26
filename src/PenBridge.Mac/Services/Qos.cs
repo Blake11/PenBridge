@@ -47,7 +47,9 @@ internal static partial class Qos
     /// <summary>
     /// Raises the calling thread to user-interactive QoS the first time it delivers input (thread-pool threads keep it;
     /// the rest of their work is light, and the heavy mirroring work runs on its own queue and threads). Hot path:
-    /// after the first call per thread, one thread-static read.
+    /// after the first call per thread, one thread-static read. The raise is permanent for that pool thread, so
+    /// mirroring work never uses the pool: it runs on dedicated threads with an explicit class (<see cref="SetThread"/>).
+    /// Temporary until Core receives input on its own thread (#320), which the head can then set once.
     /// </summary>
     /// <param name="previous">The thread's class before, when this call raised it.</param>
     /// <returns>True when this call raised the thread (first input on it), for a log line.</returns>
@@ -78,6 +80,9 @@ internal static partial class Qos
         Unspecified => "unspecified",
         _ => "0x" + qosClass.ToString("x", System.Globalization.CultureInfo.InvariantCulture),
     };
+
+    /// <summary>Sets the calling thread's QoS class (dedicated threads at their own level).</summary>
+    internal static bool SetThread(uint qosClass) => SetCurrentThread(qosClass);
 
     private static bool SetCurrentThread(uint qosClass) => pthread_set_qos_class_self_np(qosClass, 0) == 0;
 
