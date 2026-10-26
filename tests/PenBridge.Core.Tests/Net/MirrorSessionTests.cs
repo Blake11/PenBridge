@@ -332,7 +332,13 @@ public class MirrorSessionTests
         // follows the probe's ack with one UDP datagram on its own.
         await rig.ClientConfigs.WaitFor(configs, 1, "a new epoch once UDP is back");
         await rig.Requested.WaitFor(0, 2, "the head was asked again"); // raised by the event drainer, maybe after the config
-        Assert.Equal(2, rig.Requested.Count);
+
+        // A TLS keepalive read after the probe but newer than it may flap the session once more (stop, then ask again
+        // on the follow-up datagram); either way it ends streaming, with every request but the last one stopped.
+        await Wait.Until(
+            () => !rig.Mirror.InTlsFallback && rig.Requested.Count == rig.Stopped.Count + 1
+                && rig.Server.MirrorStatus == (MirrorState.Streaming, MirrorReason.None),
+            "streaming again");
     }
 
     [Fact]
