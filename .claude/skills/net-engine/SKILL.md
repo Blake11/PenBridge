@@ -39,5 +39,15 @@ Design and timings: `docs/specs/phase-1-core.md` (connection flow), ADR-0012/001
 - UdpAck ≤ 1/s **plus a trailing one-shot ack** for the last sequence, else a stroke that ends right after an ack looks unacked and the client falls back to TLS. Client falls back after 2 s unacked, re-probes UDP every 10 s.
 - Frames before SurfaceInfo are dropped (UDP can overtake TCP); the next full-state frame recovers.
 
+## Mirroring (video, protocol 1.3)
+Spec: `docs/specs/screen-mirroring.md`. Server side `ServerMirror` (per session) + `VideoSender` (per run); phone side `ClientMirror`.
+- **A video socket pair per run**, apart from the input socket: the Mac's `VideoSender` socket (send thread: fragment, seal, pace; probe thread: the phone's Probes) and the phone's `ClientMirror` socket (receive thread). Video endpoint pinning works like UDP input: only an authenticated Probe with a higher sequence moves it.
+- **DSCP:** `SocketQos` sets `IPV6_TCLASS` with `SetRawSocketOption`. `SetSocketOption` rejects option numbers it doesn't know on Unix, so a dual-mode socket would get no traffic class.
+- **Receive threads own their sockets** (`VideoSockets`): the thread disposes its socket on exit; stopping sets a flag and wakes it with a one-byte datagram to its own port (1 s receive timeout as backstop). A `Dispose` from another thread while `ReceiveFrom` blocks can hang on macOS.
+- **The client opens a run off the send lock:** `ClientMirror.OnTransport`/`Start` only record and post; `OpenRun` binds the socket and starts the thread on the thread pool, so a slow bind or a socket hook never blocks input sends. A failed open → `Unavailable`, input goes on; `StartMirror` retries.
+- TLS fallback stops video; `ServerMirror.RestoreUdp` (posted) resumes only if input is still on UDP when it runs. The next accepted UDP datagram re-posts it otherwise.
+- `PenBridgeClient.RequestKeyframe()`: the head's decoder lost frames → gated KeyframeRequests, repeated until a keyframe arrives.
+- Allocation tests: `NetworkAllocationTests` (head enqueue, send thread via `VideoSender.SendThreadAllocatedBytes`, Probes, phone receive).
+
 ## SimClient
-`tools/PenBridge.SimClient` (`penbridge-sim pair|draw|serve|scripts`, `--in-process-server`) exercises every path without a phone; keep it working when the protocol or engine changes. Identity in `~/.penbridge/simclient/`.
+`tools/PenBridge.SimClient` (`penbridge-sim pair|draw|settings|mirror|serve|scripts`, `--in-process-server`) exercises every path without a phone; keep it working when the protocol or engine changes. `mirror [--draw <script>]` streams video (in-process: a synthetic encoder) and with `--draw` compares pen latency while video runs. Identity in `~/.penbridge/simclient/`.
