@@ -228,7 +228,7 @@ internal static class VideoSockets
         }
         catch (Exception ex) when (ex is SocketException or ObjectDisposedException)
         {
-            // The receive timeout still ends the thread.
+            // The stopper's retry (input thread) or the receive timeout (video threads) ends the thread.
         }
     }
 }
