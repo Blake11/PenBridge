@@ -147,6 +147,18 @@ internal sealed class ServerMirror : IDisposable
         }
     }
 
+    /// <summary>True while the session's input runs over TLS (no video; tests).</summary>
+    internal bool InTlsFallback
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _tlsFallback;
+            }
+        }
+    }
+
     /// <summary>The guard of this session (tests).</summary>
     internal MirrorRateController Guard => _guard;
 
@@ -241,18 +253,21 @@ internal sealed class ServerMirror : IDisposable
     }
 
     /// <summary>
-    /// UDP input works again after a fallback (input path: only posts). A late TLS frame read after the phone's UDP
-    /// probe can flip the session back to fallback for a moment; this undoes that, and a request still standing
-    /// streams again (the head is asked again, a new epoch starts).
+    /// UDP input works again after a fallback (input path: only posts). A request still standing streams again (the
+    /// head is asked again, a new epoch starts) unless a TLS frame read since the post put the input back on TLS: then
+    /// the session stays in fallback, and the next accepted UDP datagram restores it again.
     /// </summary>
     public void OnUdpRestored() =>
         ThreadPool.UnsafeQueueUserWorkItem(static mirror => mirror.RestoreUdp(), this, preferLocal: false);
 
-    private void RestoreUdp()
+    /// <summary>The posted half of <see cref="OnUdpRestored"/> (thread pool; tests call it directly).</summary>
+    internal void RestoreUdp()
     {
         lock (_lock)
         {
-            if (_disposed || !_tlsFallback)
+            // Re-check the transport: a TLS frame between the post and now flipped it back, and its OnTlsFallback was a
+            // no-op (still in fallback), so resuming here would stream during fallback.
+            if (_disposed || !_tlsFallback || _input.Transport != InputTransport.Udp)
             {
                 return;
             }

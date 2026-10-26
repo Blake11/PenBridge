@@ -242,8 +242,41 @@ public class MirrorSessionTests
         int configs = rig.ClientConfigs.Mark();
         Volatile.Write(ref drop, false);
         await Wait.Step(rig.H.Time, TimeSpan.FromSeconds(11), TimeSpan.FromMilliseconds(500));
+        await Wait.Until(() => rig.Client.Transport == InputTransport.Udp, "the phone is back on UDP");
+
+        // A TLS keepalive read after the probe may have put the server back in fallback (restore skipped); the next UDP
+        // datagram restores it again.
+        Assert.True(rig.Client.SendState(Pens.Hover(120, 100), []));
         await rig.ClientConfigs.WaitFor(configs, 1, "a new epoch once UDP is back");
         Assert.Equal(2, rig.Requested.Count);
+    }
+
+    [Fact]
+    public async Task A_udp_restore_posted_before_a_tls_frame_does_not_resume_video_in_fallback()
+    {
+        bool drop = false;
+        await using MirrorRig rig = await MirrorRig.CreateAsync(phone: MirrorRig.Phone(input: _ => !Volatile.Read(ref drop)));
+        await rig.StartAsync();
+        ServerMirror mirror = rig.Mirror;
+        SessionInput input = rig.Server.ActiveInput!;
+        VideoSender sender = rig.Sender;
+        Volatile.Write(ref drop, true);
+        Assert.True(rig.Client.SendState(Pens.Hover(100, 100), []));
+        await Wait.Step(rig.H.Time, TimeSpan.FromSeconds(3), TimeSpan.FromMilliseconds(500));
+        Assert.True(rig.Client.SendState(Pens.Hover(110, 100), [])); // over TLS now
+        await Wait.Until(() => input.Transport == InputTransport.Tls && mirror.InTlsFallback, "the server is in fallback");
+        await Wait.Until(() => sender.IsStopped, "the run stopped in fallback");
+        await rig.H.SettleAsync();
+        int requested = rig.Requested.Count;
+        int configs = rig.ClientConfigs.Mark();
+
+        // A UDP restore posted earlier runs only now, after a TLS frame flipped the input back.
+        mirror.RestoreUdp();
+        await rig.H.SettleAsync();
+        Assert.True(mirror.InTlsFallback);
+        Assert.Equal(requested, rig.Requested.Count);
+        Assert.Empty(rig.ClientConfigs.Since(configs));
+        Assert.True(sender.IsStopped);
     }
 
     [Fact]
