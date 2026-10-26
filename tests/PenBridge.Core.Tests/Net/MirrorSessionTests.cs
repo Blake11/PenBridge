@@ -90,24 +90,35 @@ public class MirrorSessionTests
         await rig.ClientStates.WaitFor(states, got => got[^1] == (MirrorState.Streaming, MirrorReason.None), "Streaming after the config");
     }
 
-    [Fact]
-    public async Task The_heads_pause_reaches_the_phone_and_resuming_starts_a_new_epoch()
+    [Theory]
+    [InlineData(MirrorState.Paused, MirrorReason.PenBridgePaused)]
+    [InlineData(MirrorState.Unavailable, MirrorReason.CaptureFailed)]
+    public async Task The_heads_pause_reaches_the_phone_and_resuming_starts_a_new_epoch(MirrorState paused, MirrorReason reason)
     {
         await using MirrorRig rig = await MirrorRig.CreateAsync();
         MirrorStreamConfig first = await rig.StartAsync();
         int states = rig.ClientStates.Mark();
-        rig.Server.SetMirrorState(MirrorState.Paused, MirrorReason.PenBridgePaused);
-        await rig.ClientStates.WaitFor(states, got => got.Contains((MirrorState.Paused, MirrorReason.PenBridgePaused)), "Paused");
+        rig.Server.SetMirrorState(paused, reason);
+        await rig.ClientStates.WaitFor(states, got => got.Contains((paused, reason)), "paused");
         rig.Server.SendVideoFrame(MirrorRig.AccessUnit(3000, 1, true), true, rig.NowCaptureUs);
         await rig.H.SettleAsync();
         Assert.Equal(0, rig.Sender.FramesSent);
         Assert.Empty(rig.Frames.All());
 
         int configs = rig.ClientConfigs.Mark();
+        int raised = rig.ServerConfigs.Mark();
         rig.Server.SetMirrorState(MirrorState.Streaming);
         MirrorStreamConfig second = (await rig.ClientConfigs.WaitFor(configs, 1, "a new epoch on resume"))[0];
         Assert.Equal(first with { Epoch = second.Epoch }, second);
         Assert.NotEqual(first.Epoch, second.Epoch);
+
+        // The head is told again (MirrorConfigChanged), and the new epoch starts with a keyframe: a delta is discarded.
+        Assert.Equal([second], await rig.ServerConfigs.WaitFor(raised, 1, "MirrorConfigChanged on resume"));
+        await rig.WaitReleasedAsync();
+        rig.Server.SendVideoFrame(MirrorRig.AccessUnit(3000, 2, false), false, rig.NowCaptureUs);
+        await rig.SendAsync(MirrorRig.AccessUnit(3000, 3, true), true);
+        ReceivedFrame frame = (await rig.Frames.WaitFor(0, 1, "the new epoch's first frame"))[0];
+        Assert.Equal((second.Epoch, VideoDatagram.FirstFrameNumber, true), (frame.Epoch, frame.Number, frame.Keyframe));
     }
 
     [Fact]
@@ -191,6 +202,28 @@ public class MirrorSessionTests
     }
 
     [Fact]
+    public async Task A_repeated_mirror_start_with_the_same_plan_starts_a_new_epoch_for_the_head()
+    {
+        await using MirrorRig rig = await MirrorRig.CreateAsync();
+        MirrorStreamConfig first = await rig.StartAsync();
+        await rig.SendAsync(MirrorRig.AccessUnit(3000, 1, true), true);
+        await rig.Frames.WaitFor(0, 1, "the first epoch streams");
+        int raised = rig.ServerConfigs.Mark();
+        int frames = rig.Frames.Mark();
+
+        MirrorStreamConfig second = await rig.StartAsync(); // the same request, nothing else changed
+        Assert.Equal(first with { Epoch = second.Epoch }, second);
+        Assert.NotEqual(first.Epoch, second.Epoch);
+        Assert.Equal([second], await rig.ServerConfigs.WaitFor(raised, 1, "MirrorConfigChanged for the repeated start"));
+        await rig.Requested.WaitFor(0, 2, "every MirrorStart is a MirrorRequested");
+
+        rig.Server.SendVideoFrame(MirrorRig.AccessUnit(3000, 2, false), false, rig.NowCaptureUs); // discarded: keyframe first
+        await rig.SendAsync(MirrorRig.AccessUnit(3000, 3, true), true);
+        ReceivedFrame frame = (await rig.Frames.WaitFor(frames, 1, "the new epoch's first frame"))[0];
+        Assert.Equal((second.Epoch, VideoDatagram.FirstFrameNumber, true), (frame.Epoch, frame.Number, frame.Keyframe));
+    }
+
+    [Fact]
     public async Task Bye_stops_the_video()
     {
         await using MirrorRig rig = await MirrorRig.CreateAsync();
@@ -222,6 +255,57 @@ public class MirrorSessionTests
     }
 
     [Fact]
+    public async Task Requests_still_queued_for_the_head_at_a_takeover_end_in_a_stop_and_late_frames_are_dropped()
+    {
+        await using MirrorRig rig = await MirrorRig.CreateAsync(o => MirrorRig.ServerOptions(o, allowTakeover: true));
+        var events = new EventLog<string>();
+        using var gate = new ManualResetEventSlim(false);
+        int blocked = 0;
+        rig.Server.MirrorRequested += (_, _) =>
+        {
+            events.Add("requested");
+            if (Interlocked.Exchange(ref blocked, 1) == 0)
+            {
+                gate.Wait(Wait.Limit); // the head is busy: later events queue behind this one
+            }
+        };
+        rig.Server.MirrorConfigChanged += (_, _) => events.Add("config");
+        rig.Server.MirrorStopped += (_, _) => events.Add("stopped");
+
+        // Stop and ask again while the head still handles the first request: a second request is pending at the takeover.
+        int states = rig.ClientStates.Mark();
+        Assert.True(rig.Client.StartMirror(MirrorRig.Request));
+        await rig.ClientStates.WaitFor(states, got => got.Contains((MirrorState.Streaming, MirrorReason.None)), "Streaming");
+        states = rig.ClientStates.Mark();
+        rig.Client.StopMirror();
+        await rig.ClientStates.WaitFor(states, got => got.Contains((MirrorState.Off, MirrorReason.PhoneStopped)), "Off");
+        states = rig.ClientStates.Mark();
+        Assert.True(rig.Client.StartMirror(MirrorRig.Request));
+        await rig.ClientStates.WaitFor(states, got => got.Contains((MirrorState.Streaming, MirrorReason.None)), "Streaming again");
+        ServerMirror old = rig.Mirror;
+        VideoSender oldSender = rig.Sender;
+
+        PenBridgeClient other = await rig.H.ConnectPairedAsync();
+        await Wait.Until(() => oldSender.IsStopped, "the old run stopped");
+        gate.Set();
+        await events.WaitFor(0, 6, "the old session's events");
+        await rig.H.SettleAsync();
+        Assert.Equal(["requested", "config", "stopped", "requested", "config", "stopped"], events.All());
+        Assert.Equal((MirrorState.Off, MirrorReason.None), rig.Server.MirrorStatus); // the new session asked nothing
+
+        // Late frames from a head that hasn't seen the stop yet are dropped: through the server, the old session, and with no session.
+        byte[] keyframe = MirrorRig.AccessUnit(3000, 1, true);
+        rig.Server.SendVideoFrame(keyframe, true, rig.NowCaptureUs);
+        old.SendVideoFrame(keyframe, true, rig.NowCaptureUs);
+        await other.DisconnectAsync().Bounded();
+        await Wait.Until(() => rig.Server.ActiveConnection is null, "no session");
+        rig.Server.SendVideoFrame(keyframe, true, rig.NowCaptureUs); // every drop is synchronous: nothing to settle
+        Assert.Equal(0, oldSender.FramesSent);
+        Assert.Empty(rig.Frames.All());
+        Assert.Equal(6, events.All().Length);
+    }
+
+    [Fact]
     public async Task Tls_fallback_makes_mirroring_unavailable_until_udp_is_back()
     {
         bool drop = false;
@@ -248,6 +332,7 @@ public class MirrorSessionTests
         // datagram restores it again.
         Assert.True(rig.Client.SendState(Pens.Hover(120, 100), []));
         await rig.ClientConfigs.WaitFor(configs, 1, "a new epoch once UDP is back");
+        await rig.Requested.WaitFor(0, 2, "the head was asked again"); // raised by the event drainer, maybe after the config
         Assert.Equal(2, rig.Requested.Count);
     }
 

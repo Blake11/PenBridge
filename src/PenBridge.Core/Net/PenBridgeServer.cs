@@ -156,7 +156,9 @@ public sealed class PenBridgeServer : IAsyncDisposable
     /// <summary>
     /// Raised with every new epoch: (re)configure the encoder to this codec, size, fps and bitrate, and make its next
     /// access unit a keyframe (a resize gives one anyway; an in-place rate change needs a keyframe request). Core
-    /// discards access units until that keyframe, which becomes the epoch's frame 1.
+    /// discards access units until that keyframe, which becomes the epoch's frame 1. Every accepted MirrorStart starts
+    /// a new epoch, also a repeated one with an unchanged plan, and so does a return to Streaming (after Paused,
+    /// Unavailable or a TLS fallback): never keep sending into an old configuration.
     /// </summary>
     public event EventHandler<MirrorStreamConfig>? MirrorConfigChanged;
 
