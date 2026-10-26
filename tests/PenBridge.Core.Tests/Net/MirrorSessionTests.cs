@@ -456,8 +456,15 @@ public class MirrorSessionTests
 
         // The wake only fires the guard's timer (due now); fake time runs it.
         int configs = rig.ClientConfigs.Mark();
-        rig.H.Time.Advance(TimeSpan.Zero);
-        MirrorStreamConfig stepped = (await rig.ClientConfigs.WaitFor(configs, 1, "the guard stepped the bitrate down"))[0];
+        // The wake arms it after the input lock is released, so it may not be armed yet: advance until it ran.
+        await Wait.Until(
+            () =>
+            {
+                rig.H.Time.Advance(TimeSpan.Zero);
+                return rig.ClientConfigs.Since(configs).Length > 0;
+            },
+            "the guard stepped the bitrate down");
+        MirrorStreamConfig stepped = rig.ClientConfigs.Since(configs)[0];
         Assert.Equal(full.Fps, stepped.Fps);
         Assert.InRange(stepped.BitrateKbps, 1, full.BitrateKbps - 1);
         Assert.NotEqual(full.Epoch, stepped.Epoch);
