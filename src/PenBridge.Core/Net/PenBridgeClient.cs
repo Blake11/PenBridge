@@ -777,6 +777,12 @@ public sealed class PenBridgeClient : IAsyncDisposable
                 c.ProbeTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
                 NetLog.ClientUdpRestored(_log);
                 c.Mirror?.OnTransport(tls: false);
+
+                // One UDP datagram newer than every TLS frame sent so far: a TLS frame the Mac reads after the probe
+                // puts its session back on TLS (and skips its mirroring restore); this one undoes that even if the
+                // phone stays idle afterwards.
+                uint timeUs = CurrentFrameLocked(c, out ReadOnlySpan<PenSample> history);
+                SendDatagramLocked(c, timeUs, c.LastPen, c.LastTouches.AsSpan(0, c.LastTouchCount), history);
             }
 
             c.UdpAcked = true;

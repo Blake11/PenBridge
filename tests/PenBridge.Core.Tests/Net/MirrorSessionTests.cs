@@ -328,12 +328,42 @@ public class MirrorSessionTests
         await Wait.Step(rig.H.Time, TimeSpan.FromSeconds(11), TimeSpan.FromMilliseconds(500));
         await Wait.Until(() => rig.Client.Transport == InputTransport.Udp, "the phone is back on UDP");
 
-        // A TLS keepalive read after the probe may have put the server back in fallback (restore skipped); the next UDP
-        // datagram restores it again.
-        Assert.True(rig.Client.SendState(Pens.Hover(120, 100), []));
+        // No more input: a TLS keepalive the Mac read after the probe would have skipped the restore, so the phone
+        // follows the probe's ack with one UDP datagram on its own.
         await rig.ClientConfigs.WaitFor(configs, 1, "a new epoch once UDP is back");
         await rig.Requested.WaitFor(0, 2, "the head was asked again"); // raised by the event drainer, maybe after the config
         Assert.Equal(2, rig.Requested.Count);
+    }
+
+    [Fact]
+    public async Task An_idle_phone_follows_the_restoring_probe_with_one_udp_datagram()
+    {
+        bool drop = false;
+        int passed = 0;
+        await using MirrorRig rig = await MirrorRig.CreateAsync(phone: MirrorRig.Phone(input: _ =>
+        {
+            if (Volatile.Read(ref drop))
+            {
+                return false;
+            }
+
+            Interlocked.Increment(ref passed);
+            return true;
+        }));
+        await rig.StartAsync();
+        Volatile.Write(ref drop, true);
+        Assert.True(rig.Client.SendState(null, [])); // out of range: no keepalives, only the release repeats
+        await Wait.Step(rig.H.Time, TimeSpan.FromSeconds(3), TimeSpan.FromMilliseconds(500));
+        Assert.Equal(InputTransport.Tls, rig.Client.Transport);
+        await Wait.Until(() => rig.Mirror.InTlsFallback, "the Mac is in fallback");
+
+        int mark = Volatile.Read(ref passed);
+        Volatile.Write(ref drop, false);
+        await Wait.Step(rig.H.Time, TimeSpan.FromSeconds(11), TimeSpan.FromMilliseconds(500));
+        await Wait.Until(() => rig.Client.Transport == InputTransport.Udp, "the phone is back on UDP");
+        // Without new input: the probe, then the datagram after its ack (an ack wait may add more under load).
+        await Wait.Until(() => Volatile.Read(ref passed) >= mark + 2, "the probe and one datagram after its ack");
+        await Wait.Until(() => !rig.Mirror.InTlsFallback, "the Mac left fallback");
     }
 
     [Fact]
