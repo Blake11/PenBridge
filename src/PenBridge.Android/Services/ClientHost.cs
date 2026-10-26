@@ -167,6 +167,9 @@ public sealed class ClientHost : IAsyncDisposable
     internal bool StartMirror(MirrorRequest request) =>
         Volatile.Read(ref _client) is { IsConnected: true } client && client.StartMirror(request);
 
+    /// <summary>Asks the Mac for a keyframe (Core repeats the request until one arrives); no-op when not mirroring. Any thread, cheap.</summary>
+    internal void RequestKeyframe() => Volatile.Read(ref _client)?.RequestKeyframe();
+
     /// <summary>Sends MirrorStop and closes the video socket; no-op when not mirroring. Any thread.</summary>
     internal void StopMirror() => Volatile.Read(ref _client)?.StopMirror();
 

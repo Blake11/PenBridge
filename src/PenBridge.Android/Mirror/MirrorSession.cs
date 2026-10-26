@@ -32,15 +32,11 @@ internal sealed class MirrorSession : IMirrorSink, IMirrorToggle, IDisposable
 {
     private const string Tag = "PenBridge";
 
-    /// <summary>A decoder-side loss asks the Mac for a fresh epoch at most this often.</summary>
-    private static readonly long KeyframeAskTicks = Stopwatch.Frequency;
-
     private readonly Activity _activity;
     private readonly ClientHost _host;
     private readonly MirrorView _view;
     private readonly Handler _ui;
     private readonly PowerManager? _power;
-    private readonly Java.Lang.Runnable _askKeyframe;
     private readonly Action<uint, long> _onRendered;
     private readonly Action _onKeyframeNeeded;
     private readonly Action<string> _onError;
@@ -50,7 +46,6 @@ internal sealed class MirrorSession : IMirrorSink, IMirrorToggle, IDisposable
     private int _noDecoderSession; // the probe found no decoder for this session (shown once, not re-probed)
     private MirrorRequest _request;
     private MirrorCodecs _offeredCodecs; // the previous MirrorStart's codecs, to log a codec the re-probe dropped
-    private long _lastKeyframeAsk;
     private bool _foreground;
     private bool _disposed;
 
@@ -64,7 +59,6 @@ internal sealed class MirrorSession : IMirrorSink, IMirrorToggle, IDisposable
         _view = view;
         _ui = new Handler(Looper.MainLooper!);
         _power = activity.GetSystemService(Context.PowerService) as PowerManager;
-        _askKeyframe = new Java.Lang.Runnable(AskKeyframe);
         _onRendered = OnRendered;
         _onKeyframeNeeded = OnKeyframeNeeded;
         _onError = OnDecoderError;
@@ -133,7 +127,10 @@ internal sealed class MirrorSession : IMirrorSink, IMirrorToggle, IDisposable
                 return;
             }
 
-            _view.Show(video, configureDecoder: false);
+            // An OnMirrorState posted before this epoch may have hidden the view after ConfigureDecoder ran (Hide stops
+            // the decoder), so configure again then.
+            bool wasShown = _view.IsShown;
+            _view.Show(video, configureDecoder: !wasShown);
             _view.SetState(MirrorOverlayState.None);
         });
     }
@@ -186,8 +183,6 @@ internal sealed class MirrorSession : IMirrorSink, IMirrorToggle, IDisposable
             _host.MirrorSink = null;
         }
 
-        _ui.RemoveCallbacks(_askKeyframe);
-        _askKeyframe.Dispose();
         _ui.Dispose();
     }
 
@@ -280,7 +275,6 @@ internal sealed class MirrorSession : IMirrorSink, IMirrorToggle, IDisposable
             _session = 0;
         }
 
-        _ui.RemoveCallbacks(_askKeyframe);
         _view.Hide();
         _view.SetState(MirrorOverlayState.None);
     }
@@ -319,35 +313,14 @@ internal sealed class MirrorSession : IMirrorSink, IMirrorToggle, IDisposable
 
     /// <summary>
     /// Decoder or Feed thread: the decoder lost frames Core delivered (its queue overflowed, or the codec restarted
-    /// without a queued keyframe). Core's KeyframeRequests only cover network loss, so ask the Mac for a new epoch,
-    /// which starts with a keyframe: a repeated MirrorStart (spec: starting again is another MirrorStart), at most
-    /// once per second.
+    /// without a queued keyframe). Core's own keyframe requests only cover network loss, so ask it explicitly; it repeats
+    /// the request until a keyframe arrives.
     /// </summary>
     private void OnKeyframeNeeded()
     {
-        if (!_active)
+        if (_active)
         {
-            return;
-        }
-
-        long now = Stopwatch.GetTimestamp();
-        long last = Interlocked.Read(ref _lastKeyframeAsk);
-        if (last != 0 && now - last < KeyframeAskTicks)
-        {
-            return;
-        }
-
-        if (Interlocked.CompareExchange(ref _lastKeyframeAsk, now, last) == last)
-        {
-            _ui.Post(_askKeyframe);
-        }
-    }
-
-    private void AskKeyframe()
-    {
-        if (!_disposed && _active && _session != 0 && _session == _host.SessionId && _host.StartMirror(_request))
-        {
-            Log.Info(Tag, "Mirror: decoder needs a keyframe, MirrorStart again");
+            _host.RequestKeyframe();
         }
     }
 

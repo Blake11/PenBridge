@@ -593,7 +593,7 @@ internal sealed class MirrorDecoder : IDisposable
             bool ok = Queue(codec, index, slot, length, frame);
             if (!IsCurrent(codec))
             {
-                return; // the codec failed and was released or restarted: that emptied the queue and closed the gate
+                return; // the codec failed and was released or restarted: this codec is no longer current
             }
 
             if (ok)

@@ -42,6 +42,6 @@ internal static class MirrorStatusText
         MirrorReason.NoCommonCodec => "The Mac and this phone have no video codec in common.",
         MirrorReason.CaptureFailed => "The Mac couldn't capture or encode the screen.",
         MirrorReason.PenBridgePaused => "PenBridge is paused on the Mac.",
-        _ => null,
+        _ => "Screen mirroring isn't available right now. Check that it is on in PenBridge on the Mac.",
     };
 }
