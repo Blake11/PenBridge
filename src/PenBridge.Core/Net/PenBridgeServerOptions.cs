@@ -102,9 +102,11 @@ public sealed class PenBridgeServerOptions
     public Action<Socket>? ConfigureVideoSocket { get; init; }
 
     /// <summary>
-    /// Called on every thread Core starts for mirroring (video send, probe receive) when it starts, so the head can
-    /// lower its priority with platform APIs (the Mac's QoS class). Core already sets <see cref="Thread.Priority"/>
-    /// below normal. Must not block; an exception is logged and ignored.
+    /// Called on every dedicated thread Core starts, when it starts, with its role, so the head can set its priority
+    /// with platform APIs (the Mac's QoS class): <see cref="MirrorThreadRole.InputReceive"/> (one per started server:
+    /// UDP input receive → decrypt → sink, the highest priority) and the mirroring threads (video send, probe receive;
+    /// below input). Core already sets <see cref="Thread.Priority"/> above normal for input and below normal for video
+    /// as portable defaults. Must not block; an exception is logged and ignored.
     /// </summary>
     public Action<MirrorThreadRole>? MirrorThreadStarted { get; init; }
 

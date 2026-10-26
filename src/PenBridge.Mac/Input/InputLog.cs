@@ -38,7 +38,4 @@ internal static partial class InputLog
 
     [LoggerMessage(110, LogLevel.Information, "Target: all displays ({Count} active)")]
     public static partial void TargetAllDisplays(ILogger logger, int count);
-
-    [LoggerMessage(111, LogLevel.Debug, "Input thread {ThreadId} raised from {Previous} to user-interactive QoS")]
-    public static partial void InputThreadPromoted(ILogger logger, int threadId, string previous);
 }

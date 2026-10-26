@@ -105,4 +105,7 @@ internal static partial class NetLog
 
     [LoggerMessage(43, LogLevel.Warning, "Could not open the video socket; mirroring is unavailable until it is requested again")]
     public static partial void VideoSocketFailed(ILogger logger, Exception exception);
+
+    [LoggerMessage(44, LogLevel.Warning, "The input receive thread didn't stop within {LimitMs} ms; shutting down without it")]
+    public static partial void InputThreadStopTimeout(ILogger logger, int limitMs);
 }

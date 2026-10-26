@@ -216,4 +216,65 @@ public class NetworkAllocationTests
             i => client.SendState(null, (i & 1) == 0 ? down : up),
             () => client.DatagramsSealed);
     }
+
+    [Fact]
+    public async Task The_input_thread_receives_decrypts_and_injects_without_allocating()
+    {
+        // The server's input thread (#320) reports its own allocation counter after each datagram; same rules as the
+        // send-thread test above: whole warm-up passes, then the minimum over measured passes must be zero.
+        const int WarmupPasses = 3;
+        const int MeasuredPasses = 5;
+        const int PerPass = 20;
+        var sink = new DragCountingSink();
+        await using var h = new NetHarness(o => InputReceiveThreadTests.WithHook(o, hook: null, sink));
+        PenBridgeServer server = h.Server;
+        PenBridgeClient client = await h.ConnectPairedAsync();
+        Assert.True(client.SendState(Pens.Hover(1000, 1000), []));
+        Assert.True(client.SendState(Pens.Contact(1000, 1000), []));
+        int index = 0;
+        long best = long.MaxValue;
+        var passBytes = new List<long>();
+        for (int pass = 0; pass < WarmupPasses + MeasuredPasses && best != 0; pass++)
+        {
+            long drags = sink.Drags;
+            long before = server.InputThreadAllocatedBytes; // quiet: the previous datagram is counted
+            for (int i = 0; i < PerPass; i++, index++)
+            {
+                long handled = server.InputThreadDatagrams;
+                Assert.True(client.SendState(Pens.Contact((ushort)(1000 + (index % 3000)), (ushort)(1000 + (index & 1)), (ushort)(20000 + (index % 9000))), []));
+                await Wait.Until(() => server.InputThreadDatagrams > handled, "the datagram was handled");
+            }
+
+            long bytes = server.InputThreadAllocatedBytes - before;
+            Assert.True(sink.Drags > drags, "the pass reached the sink");
+            if (pass >= WarmupPasses)
+            {
+                passBytes.Add(bytes);
+                best = Math.Min(best, bytes);
+            }
+        }
+
+        Assert.True(best == 0, $"The input thread allocated in every measured pass ({PerPass} datagrams each): {string.Join(", ", passBytes)} bytes.");
+        Assert.Equal(0, server.GetStats().Counters.AuthFailures);
+    }
+
+    /// <summary>Counts Drags without allocating (the sink runs on the measured input thread).</summary>
+    private sealed class DragCountingSink : IInputSink
+    {
+        private long _drags;
+
+        public long Drags => Interlocked.Read(ref _drags);
+
+        public void OnPenEvent(in PenEvent e)
+        {
+            if (e.Kind == PenEventKind.Drag)
+            {
+                Interlocked.Increment(ref _drags);
+            }
+        }
+
+        public void OnGestureEvent(in GestureEvent e)
+        {
+        }
+    }
 }

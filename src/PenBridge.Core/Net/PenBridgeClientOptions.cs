@@ -86,8 +86,9 @@ public sealed class PenBridgeClientOptions
     /// <summary>
     /// Called on every thread Core starts for mirroring (the video receive thread) when it starts, so the head can set
     /// its priority with platform APIs (Android <c>Process.SetThreadPriority</c>: <see cref="Thread.Priority"/>, which
-    /// Core sets below normal, has no effect there). Keep it below the input send path. Must not block; an exception
-    /// is logged and ignored.
+    /// Core sets below normal, has no effect there). Keep it below the input send path. The client never starts a
+    /// <see cref="MirrorThreadRole.InputReceive"/> thread (the phone only sends input; the head's own sampling thread
+    /// calls the send path). Must not block; an exception is logged and ignored.
     /// </summary>
     public Action<MirrorThreadRole>? MirrorThreadStarted { get; init; }
 
