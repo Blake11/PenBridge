@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Print the offset-corrected pen-to-Mac latency (p50/p95/max, sample counts) from the Mac server's latency dump.
+# Print the offset-corrected pen-to-Mac latency (p50/p95/max, sample counts) from the Mac server's latency dump, and
+# with screen mirroring the video capture-to-render latency next to it.
 #
 # Usage: scripts/latency-report.sh [--enable | --disable] [--dump-now] [--file <dump>] [--sim] [--dir <dir>]
 #                                  [--logcat] [--device <serial>]
@@ -21,6 +22,9 @@
 # offset as min(one-way) - minRTT/2 (error within +-minRTT/2, reported per session) with a drift fit, and the dump's
 # "#" lines hold the result. Measured span: phone SendState -> Mac injector returned. The phone's own input
 # dispatch (MotionEvent time -> SendState) is not on the wire and not included.
+# Video (screen mirroring, protocol 1.3): every MirrorReport names the last frame the phone rendered and when (phone
+# clock); the Mac pairs it with that frame's capture time and the same offset estimate. Measured span: capture on
+# the Mac -> the phone's decoder rendered it (video_capture_to_render, one sample per report, 2/s while streaming).
 #
 # S23 run: scripts/latency-report.sh --enable, restart the Mac app, connect the phone, draw for 30 s or more (pings
 # every 2 s feed the offset estimate), disconnect (or --dump-now), then run scripts/latency-report.sh.
@@ -97,6 +101,11 @@ step "Latency: $FILE"
 # Summary lines (after the header and the records/frequency line) are "# <text>".
 grep '^# ' "$FILE" | tail -n +3 | sed 's/^# /    /'
 info "(ms; pen_down = first contact frame of each stroke; offset_error bounds every value per session)"
+if grep -q '^# video_capture_to_render:' "$FILE"; then
+  pen="$(grep '^# contact_to_inject:' "$FILE" | sed -E 's/.*p50_ms=([^ ]+) p95_ms=([^ ]+).*/p50 \1 ms, p95 \2 ms/')"
+  video="$(grep '^# video_capture_to_render:' "$FILE" | sed -E 's/.*p50_ms=([^ ]+) p95_ms=([^ ]+).*/p50 \1 ms, p95 \2 ms/')"
+  info "pen (contact -> inject): ${pen:-n/a}; video (capture -> render): ${video:-n/a}"
+fi
 
 if [[ "$LOGCAT" == 1 ]]; then
   require_adb

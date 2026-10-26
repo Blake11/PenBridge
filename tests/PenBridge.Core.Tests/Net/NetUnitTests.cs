@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using PenBridge.Core.Input;
+using PenBridge.Core.Mirror;
 using PenBridge.Core.Net;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
@@ -77,6 +78,81 @@ public class NetUnitTests
             () => sink.Pen);
         Assert.Equal(0, input.Counters.AuthFailures);
         Assert.InRange(sink.Gestures, 1, long.MaxValue);
+    }
+
+    [Fact]
+    public void Datagrams_feeding_the_mirror_guard_are_allocation_free()
+    {
+        var time = new FakeTime();
+        var sink = new CountingSink();
+        using SessionInput input = CreateInput(sink, time);
+        input.ConfigureSurface(1440, 3088);
+        var guard = new MirrorRateController(time);
+        guard.Start(new MirrorStreamPlan(MirrorCodec.Hevc, 1440, 2880, 60, 12_000, 3_000, 120));
+        long wakes = 0;
+        input.AttachGuard(guard, () => wakes++);
+        SocketAddress source = Peer.Serialize();
+
+        const int PerPass = 200;
+        const int Total = (8 * PerPass) + 1;
+        using var sealer = new InputCipher(Key, SessionId);
+        byte[][] datagrams = new byte[Total][];
+        int[] lengths = new int[Total];
+        ulong sequence = 0;
+        for (int i = 0; i < Total; i++)
+        {
+            datagrams[i] = new byte[InputDatagram.MaxSize];
+            int phase = i % 20;
+            PenSample pen = phase < 12 ? Pens.Contact((ushort)(1000 + i), 1000) : Pens.Hover((ushort)(1000 + i), 1000);
+            sequence += phase == 5 ? 2UL : 1UL; // a lost datagram in contact every pass: the guard's loss signal
+            lengths[i] = Seal(sealer, datagrams[i], sequence, (uint)(i * 4000), pen, []);
+        }
+
+        input.ProcessDatagram(datagrams[0].AsSpan(0, lengths[0]), source);
+
+        Alloc.AssertZero(
+            PerPass,
+            i => input.ProcessDatagram(datagrams[i + 1].AsSpan(0, lengths[i + 1]), source),
+            () => input.Accepted);
+        Assert.Equal(1, wakes); // one degradation started (fake time stands still, so the signal never ends)
+        Assert.True(guard.IsDegraded);
+    }
+
+    [Fact]
+    public void A_lost_input_datagram_in_contact_wakes_the_guard_once_per_degradation()
+    {
+        var time = new FakeTime();
+        using SessionInput input = CreateInput(new CountingSink(), time);
+        input.ConfigureSurface(1440, 3088);
+        var guard = new MirrorRateController(time);
+        guard.Start(new MirrorStreamPlan(MirrorCodec.Hevc, 1440, 2880, 60, 12_000, 3_000, 120));
+        int wakes = 0;
+        input.AttachGuard(guard, () => wakes++);
+        using var sealer = new InputCipher(Key, SessionId);
+        byte[] buffer = new byte[InputDatagram.MaxSize];
+        uint timeUs = 0;
+        void Send(ulong sequence, bool contact)
+        {
+            timeUs += 8000;
+            time.Advance(TimeSpan.FromMilliseconds(8));
+            int length = Seal(sealer, buffer, sequence, timeUs, contact ? Pens.Contact(10, 10) : Pens.Hover(10, 10), []);
+            input.ProcessDatagram(buffer.AsSpan(0, length), Peer.Serialize());
+        }
+
+        Send(1, true);
+        Send(2, true);
+        Assert.Equal(0, wakes);
+        Send(4, true); // 3 was lost
+        Assert.Equal(1, wakes);
+        Send(6, true); // still degraded: no second wake
+        Assert.Equal(1, wakes);
+        time.Advance(MirrorRateController.StepInterval);
+        Send(8, true);
+        Assert.Equal(2, wakes);
+
+        input.AttachGuard(null, null);
+        Send(10, true); // detached: nothing fed
+        Assert.Equal(2, wakes);
     }
 
     [Fact]

@@ -8,6 +8,7 @@ using System.Security.Cryptography.X509Certificates;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using PenBridge.Core.Input;
+using PenBridge.Core.Mirror;
 using PenBridge.Core.Protocol;
 using PenBridge.Core.Security;
 
@@ -62,6 +63,16 @@ public sealed class PenBridgeServer : IAsyncDisposable
     private long _ppsTimestamp;
     private double _pps;
     private int _disposed;
+    private int _qosWarned;
+
+    // Screen mirroring inputs from the head (server-wide), guarded by _gate.
+    private MirrorState _mirrorState = MirrorState.Starting;
+    private MirrorReason _mirrorReason;
+    private MirrorCodecs _mirrorEncoders;
+    private bool _mirrorEncodersSet;
+    private MirrorSource? _mirrorSource;
+    private long _mirrorMaxPixelRate;
+    private MirrorSettingsState _mirrorSettings = MirrorSettingsState.Default;
 
     public PenBridgeServer(PenBridgeServerOptions options)
     {
@@ -87,6 +98,7 @@ public sealed class PenBridgeServer : IAsyncDisposable
         _target = MappingTarget.ForDisplay(options.TargetDisplay, options.TargetRegion);
         _inputSettings = options.InputSettings;
         _serverName = WireString.Truncate(options.ServerName ?? string.Empty);
+        MirrorEvents = new MirrorEvents(this);
         _tlsOptions = new SslServerAuthenticationOptions
         {
             ServerCertificateContext = SslStreamCertificateContext.Create(options.Identity.Certificate, additionalCertificates: null, offline: true),
@@ -125,6 +137,147 @@ public sealed class PenBridgeServer : IAsyncDisposable
     /// <see cref="PhoneSurface"/> for the current value, which may be newer than the one that triggered the call).
     /// </summary>
     public event EventHandler? PhoneSurfaceChanged;
+
+    /// <summary>
+    /// Raised when the phone asks for video (every MirrorStart; needs <see cref="PenBridgeServerOptions.ScreenMirror"/>):
+    /// start capturing the current target. Answer with <see cref="SetMirrorState"/> if the head can't stream (setting
+    /// off, paused, no Screen Recording permission, capture failed); Streaming means it can. Video starts with the
+    /// next <see cref="MirrorConfigChanged"/>. Mirroring events are raised in order on a thread-pool thread, never under
+    /// a server lock; handlers must be quick and may call back into the server.
+    /// </summary>
+    public event EventHandler<MirrorRequest>? MirrorRequested;
+
+    /// <summary>
+    /// Raised when the phone no longer wants video (MirrorStop, Bye, takeover, session end, TLS fallback): stop
+    /// capturing and encoding. <see cref="SendVideoFrame"/> drops frames from now on.
+    /// </summary>
+    public event EventHandler? MirrorStopped;
+
+    /// <summary>
+    /// Raised with every new epoch: (re)configure the encoder to this codec, size, fps and bitrate, and make its next
+    /// access unit a keyframe (a resize gives one anyway; an in-place rate change needs a keyframe request). Core
+    /// discards access units until that keyframe, which becomes the epoch's frame 1. Every accepted MirrorStart starts
+    /// a new epoch, also a repeated one with an unchanged plan, and so does a return to Streaming (after Paused,
+    /// Unavailable or a TLS fallback): never keep sending into an old configuration.
+    /// </summary>
+    public event EventHandler<MirrorStreamConfig>? MirrorConfigChanged;
+
+    /// <summary>The phone lost video: encode the next frame as a keyframe (at most one per 250 ms reaches the head).</summary>
+    public event EventHandler? KeyframeRequested;
+
+    /// <summary>
+    /// The head's mirroring availability (server-wide, kept across sessions): <see cref="MirrorState.Streaming"/> when
+    /// it can capture and encode now, or <see cref="MirrorState.Off"/>, <see cref="MirrorState.Paused"/> or
+    /// <see cref="MirrorState.Unavailable"/> with a reason (SettingOff, PenBridgePaused, PermissionDenied, CaptureFailed),
+    /// or <see cref="MirrorState.Starting"/> (the default: not decided yet). Core composes what the phone sees: it adds
+    /// TlsFallback, NoCommonCodec, SettingOff (MirrorEnabled false in the settings snapshot) and Throttled (the input
+    /// guard) itself, and while Streaming sends the stream configuration. Thread-safe.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">An unknown state, Throttled (Core's own), or a reason with a state that carries none.</exception>
+    public void SetMirrorState(MirrorState state, MirrorReason reason = MirrorReason.None)
+    {
+        if (!MirrorWire.IsKnown(state) || state == MirrorState.Throttled || !MirrorWire.IsKnown(reason)
+            || (reason != MirrorReason.None && !MirrorWire.HasReason(state)))
+        {
+            throw new ArgumentOutOfRangeException(nameof(state), "A known state other than Throttled; a reason only with Off, Paused or Unavailable.");
+        }
+
+        lock (_gate)
+        {
+            _mirrorState = state;
+            _mirrorReason = reason;
+        }
+
+        ReevaluateMirror();
+    }
+
+    /// <summary>
+    /// The Mac's hardware encoders (planner input; HEVC is preferred). Drop HEVC here when its session failed to
+    /// start: the stream falls back to H.264 with a new epoch. Until the first call the stream waits (Starting). Thread-safe.
+    /// </summary>
+    public void SetMirrorEncoders(MirrorCodecs codecs)
+    {
+        lock (_gate)
+        {
+            _mirrorEncoders = codecs;
+            _mirrorEncodersSet = true;
+        }
+
+        ReevaluateMirror();
+    }
+
+    /// <summary>
+    /// The current target's capture source: its size in pixels and its display's refresh rate (All displays: the
+    /// highest; a variable-rate display: its maximum), plus optionally the encoder's measured pixel-rate cap
+    /// (fps × width × height per second; 0 = the default <see cref="MirrorStreamPlanner.DefaultMaxPixelRate"/>). Call
+    /// it for every target change and refresh change; until the first call the stream waits (Starting). Thread-safe.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">A size or rate below 1, or a negative pixel rate.</exception>
+    public void SetMirrorSource(int widthPx, int heightPx, int refreshHz, long maxPixelRate = 0)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(widthPx, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(heightPx, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(refreshHz, 1);
+        ArgumentOutOfRangeException.ThrowIfNegative(maxPixelRate);
+        lock (_gate)
+        {
+            _mirrorSource = new MirrorSource(widthPx, heightPx, refreshHz);
+            _mirrorMaxPixelRate = maxPixelRate;
+        }
+
+        ReevaluateMirror();
+    }
+
+    /// <summary>
+    /// Sends one encoded access unit (Annex-B; a keyframe starts with its parameter sets) to the phone. Thread-safe and
+    /// non-blocking: the bytes are copied and fragmented, sealed and paced on Core's video send thread, below input
+    /// priority. Dropped when no stream runs, before the epoch's first keyframe, and when the frame before it is still
+    /// waiting to go out. <paramref name="captureTimeUs"/>: the capture time in host-monotonic microseconds on the
+    /// <see cref="PenBridgeServerOptions.TimeProvider"/>'s timestamp scale (for <see cref="TimeProvider.System"/>,
+    /// <see cref="System.Diagnostics.Stopwatch.GetTimestamp"/> in µs; on the Mac that is <c>CLOCK_UPTIME_RAW</c>).
+    /// Allocation-free once warm.
+    /// </summary>
+    public void SendVideoFrame(ReadOnlySpan<byte> accessUnit, bool keyframe, long captureTimeUs) =>
+        Volatile.Read(ref _active)?.Mirror?.SendVideoFrame(accessUnit, keyframe, captureTimeUs);
+
+    /// <summary>The mirroring state the active session's phone sees (Off without a session or a request).</summary>
+    public (MirrorState State, MirrorReason Reason) MirrorStatus =>
+        Volatile.Read(ref _active)?.Mirror?.State ?? (MirrorState.Off, MirrorReason.None);
+
+    internal MirrorEvents MirrorEvents { get; }
+
+    /// <summary>The head's mirroring inputs (planner and state).</summary>
+    internal MirrorHostState MirrorHost
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return new MirrorHostState(_mirrorState, _mirrorReason, _mirrorEncoders, _mirrorEncodersSet, _mirrorSource, _mirrorMaxPixelRate, _mirrorSettings);
+            }
+        }
+    }
+
+    internal void RaiseMirrorEvent(MirrorEvents.Kind kind, MirrorRequest request, MirrorStreamConfig config)
+    {
+        switch (kind)
+        {
+            case MirrorEvents.Kind.Requested:
+                Raise(MirrorRequested, request);
+                break;
+            case MirrorEvents.Kind.Stopped:
+                Raise(MirrorStopped);
+                break;
+            case MirrorEvents.Kind.ConfigChanged:
+                Raise(MirrorConfigChanged, config);
+                break;
+            default:
+                Raise(KeyframeRequested);
+                break;
+        }
+    }
+
+    private void ReevaluateMirror() => Volatile.Read(ref _active)?.Mirror?.Reevaluate();
 
     /// <summary>
     /// The active session's phone surface in pixels (from its latest SurfaceInfo), or null before the first
@@ -391,11 +544,20 @@ public sealed class PenBridgeServer : IAsyncDisposable
     public Task SendSettingsSnapshotAsync(IReadOnlyList<SettingEntry> entries)
     {
         var message = new SettingsSnapshotMessage(entries);
+        MirrorSettingsState mirror = MirrorSettingsState.From(message.Entries);
         ServerConnection? target;
+        bool mirrorChanged;
         lock (_gate)
         {
             _settingsSnapshot = message;
             target = _active;
+            mirrorChanged = mirror != _mirrorSettings;
+            _mirrorSettings = mirror;
+        }
+
+        if (mirrorChanged)
+        {
+            target?.Mirror?.Reevaluate();
         }
 
         return target is null ? Task.CompletedTask : target.RequestPush(ServerConnection.PushSnapshot);
@@ -843,6 +1005,7 @@ public sealed class PenBridgeServer : IAsyncDisposable
             int bound = ((IPEndPoint)tcp.LocalEndPoint!).Port;
             udp = CreateSocket(SocketType.Dgram, ProtocolType.Udp);
             udp.Bind(new IPEndPoint(_options.BindAddress, bound));
+            SocketQos.Configure(udp, tos: null, _options.ConfigureInputSocket, _log, ref _qosWarned);
             _tcp = tcp;
             _udp = udp;
             return true;

@@ -67,7 +67,14 @@ public sealed record LatencyReport(
     LatencyStats InjectContact,
     LatencyStats PenDown,
     int UnmeasuredInputs,
-    int NegativeReceive);
+    int NegativeReceive)
+{
+    /// <summary>Screen mirroring: Mac capture → phone render (offset-corrected), one sample per reported frame.</summary>
+    public LatencyStats Video { get; init; } = LatencyStats.Empty;
+
+    /// <summary>Video samples of sessions without a client Ping (no offset estimate).</summary>
+    public int UnmeasuredVideo { get; init; }
+}
 
 /// <summary>
 /// Turns <see cref="LatencyRecorder"/> records into offset-corrected latency statistics, using only what the wire
@@ -135,6 +142,9 @@ public static class LatencyAnalyzer
                 case LatencyRecordKind.Input:
                     s.Inputs.Add(r);
                     break;
+                case LatencyRecordKind.Video:
+                    s.Videos.Add(r);
+                    break;
             }
         }
 
@@ -143,6 +153,8 @@ public static class LatencyAnalyzer
         var inject = new List<double>();
         var contact = new List<double>();
         var down = new List<double>();
+        var video = new List<double>();
+        int unmeasuredVideo = 0;
         int unmeasured = 0;
         int negative = 0;
         foreach (SessionData s in sessions)
@@ -152,6 +164,7 @@ public static class LatencyAnalyzer
             if (s.OneWay.Count == 0)
             {
                 unmeasured += s.Inputs.Count;
+                unmeasuredVideo += s.Videos.Count;
                 clocks.Add(new SessionClock(s.Id, 0, s.RoundTrips, s.Inputs.Count, double.NaN, double.NaN, 0, minRtt, double.NaN));
                 continue;
             }
@@ -197,6 +210,14 @@ public static class LatencyAnalyzer
 
                 wasContact = isContact;
             }
+
+            foreach (LatencyRecord r in s.Videos)
+            {
+                // Rendered on the phone clock (u64, no wrap), mapped with the offset at the report's arrival.
+                double reported = ToUs(r.ServerEnd, origin, timestampFrequency);
+                double rendered = r.ClientUs + line.At(reported) - correction;
+                video.Add(rendered - ToUs(r.Server, origin, timestampFrequency));
+            }
         }
 
         return new LatencyReport(
@@ -206,7 +227,11 @@ public static class LatencyAnalyzer
             LatencyStats.From(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(contact)),
             LatencyStats.From(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(down)),
             unmeasured,
-            negative);
+            negative)
+        {
+            Video = LatencyStats.From(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(video)),
+            UnmeasuredVideo = unmeasuredVideo,
+        };
     }
 
     /// <summary>The earliest server timestamp: server times in a report are microseconds from it.</summary>
@@ -327,6 +352,8 @@ public static class LatencyAnalyzer
         public List<double> OneWay { get; } = [];
 
         public List<LatencyRecord> Inputs { get; } = [];
+
+        public List<LatencyRecord> Videos { get; } = [];
 
         public double MinRtt { get; set; } = double.MaxValue;
 
