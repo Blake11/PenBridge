@@ -7,6 +7,7 @@ using Foundation;
 using Microsoft.Extensions.Logging;
 using PenBridge.Core.Input;
 using PenBridge.Mac.Input;
+using PenBridge.Core.Protocol;
 
 namespace PenBridge.Mac.Mirror;
 

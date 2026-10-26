@@ -3,6 +3,8 @@ using System.Runtime.InteropServices;
 using Foundation;
 using Microsoft.Extensions.Logging;
 using VideoToolbox;
+using PenBridge.Core.Mirror;
+using PenBridge.Core.Protocol;
 
 namespace PenBridge.Mac.Mirror;
 

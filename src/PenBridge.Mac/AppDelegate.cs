@@ -36,6 +36,7 @@ public sealed partial class AppDelegate : NSApplicationDelegate
     private DisplayTargetResolver? _resolver;
     private WindowTarget? _windowTarget;
     private SettingsSync? _settingsSync;
+    private MirrorHost? _mirror;
     private ServerHost? _host;
     private PairingWindowController? _pairing;
     private GlobalHotkey? _hotkey;
@@ -60,7 +61,8 @@ public sealed partial class AppDelegate : NSApplicationDelegate
         _injector = new CGEventTabletInjector(_loggers.CreateLogger<CGEventTabletInjector>());
         _resolver = new DisplayTargetResolver(_settings.TargetDisplay, _loggers.CreateLogger<DisplayTargetResolver>());
         _windowTarget = new WindowTarget(_settings, _resolver, _loggers.CreateLogger<WindowTarget>()); // ADR-0036, not persisted
-        _host = new ServerHost(_injector, SecretStoreFactory.Create(_loggers), _settings, _loggers);
+        _mirror = new MirrorHost(_settings, _resolver, _loggers); // ADR-0038; idle until the phone asks for video
+        _host = new ServerHost(_injector, SecretStoreFactory.Create(_loggers), _settings, _loggers, _mirror);
 
         // Applies the stored settings and target before the server starts, then follows every change (ADR-0030).
         _settingsSync = new SettingsSync(_settings, _resolver, _host, _injector, _windowTarget, _loggers.CreateLogger<SettingsSync>());
@@ -72,8 +74,8 @@ public sealed partial class AppDelegate : NSApplicationDelegate
 
         _regionPicker = new RegionPicker(_settings, _resolver, _windowTarget, () => _host.PhoneSurfaceAspect);
         _regionTint = new RegionTint(_settings, _resolver, _host, _regionPicker, _windowTarget);
-        _settingsWindow = new SettingsWindowController(_settings, _resolver, _host, _injector, _regionPicker, _windowTarget);
-        _statusItem = new StatusItemController(_host, _injector, _resolver, _settings, _pairing, _hotkey, _settingsWindow, _regionPicker, _windowTarget, _loggers.CreateLogger<StatusItemController>());
+        _settingsWindow = new SettingsWindowController(_settings, _resolver, _host, _injector, _regionPicker, _windowTarget, _mirror);
+        _statusItem = new StatusItemController(_host, _injector, _resolver, _settings, _pairing, _hotkey, _settingsWindow, _regionPicker, _windowTarget, _mirror, _loggers.CreateLogger<StatusItemController>());
         Log.Launched(_log, NSBundle.MainBundle.ObjectForInfoDictionary("CFBundleShortVersionString")?.ToString() ?? "?");
 
         PromptAccessibilityOnce();
@@ -174,6 +176,7 @@ public sealed partial class AppDelegate : NSApplicationDelegate
 
             // Bye(Shutdown) to the phone, advert withdrawn, injector released by the server's session teardown.
             await _host!.DisposeAsync().ConfigureAwait(true);
+            _mirror?.Dispose(); // capture stopped (the server detached it)
             _resolver?.Dispose();
             _injector?.Dispose();
             _statusItem?.Dispose();

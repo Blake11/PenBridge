@@ -76,6 +76,13 @@ Needed only for screen mirroring (ADR-0038, opt-in); service `kTCCServiceScreenC
 - Reset: `scripts/mac-run.sh --reset-tcc` (also resets Accessibility) or `tccutil reset ScreenCapture com.blake11.penbridge`.
 - `scripts/device-preflight.sh --mac` reports granted / denied / unknown as a warning only (TCC db when readable).
 
+## Mirroring (ScreenCaptureKit) gotchas
+
+- `SCStreamConfiguration.BackgroundColor` is an assign property (no retain): keep the `CGColor` alive for the process (a static); disposing it makes SCK copy a dead colour (crash loop, 100 % CPU, capture never starts).
+- Excluding our own app needs SCK to list it, and `SCShareableContent` lists an app only while it owns a window; a menu-bar app often has none. `MirrorHost` keeps an invisible, never-ordered-in anchor window while mirroring is on; without it the Settings window or region tint shows in the stream.
+- Don't dispose an exported `NSObject` callback target (stream output/delegate) before its dispatch queue has drained; a late callback hits a freed managed object.
+- The Debug dump hook (`MirrorDumpHook`) reads its keys from the environment, then from user defaults: `open` (scripts/mac-run.sh) drops env vars, so use `defaults write com.blake11.penbridge PenBridgeMirrorDump /tmp/m.hevc` (also `PenBridgeMirrorCodec`, `PenBridgeMirrorTarget`) and `defaults delete` them after.
+
 ## Verifying tablet input
 - No phone: `tools/PenBridge.SimClient` streams scripted strokes to the server.
 - **Krita** is the reference: pressure brush; Settings ▸ Configure Krita ▸ Tablet settings has a pressure tester. Expect width varying with pressure; tilt affects tilt-aware brushes.
