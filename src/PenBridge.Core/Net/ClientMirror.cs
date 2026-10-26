@@ -680,7 +680,11 @@ internal sealed class ClientMirror : IDisposable
         }
     }
 
-    private void SendProbe(byte epoch)
+    /// <summary>Probes sent so far (tests).</summary>
+    internal long ProbesSent => Interlocked.Read(ref _probesSent);
+
+    /// <summary>Seals and sends one Probe of <paramref name="epoch"/> (the timer's thread; tests call it directly).</summary>
+    internal void SendProbe(byte epoch)
     {
         SocketAddress? target = Volatile.Read(ref _source);
         Socket? socket;

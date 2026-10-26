@@ -70,6 +70,7 @@ internal sealed class VideoSender : IDisposable
     private long _fragmentsSent;
     private long _fragmentsInEpoch;
     private long _endpointChanges;
+    private long _sendThreadAllocated;
 
     public VideoSender(ServerMirror owner, PenBridgeServerOptions options, ILogger log, ref int qosWarned)
     {
@@ -117,6 +118,13 @@ internal sealed class VideoSender : IDisposable
 
     /// <summary>True once the run stopped (tests).</summary>
     internal bool IsStopped => _stopped;
+
+    /// <summary>
+    /// The send thread's allocated-bytes counter, taken as each frame completes, before <see cref="FramesSent"/> counts
+    /// it (tests: once the sender is quiet, the difference between two readings is what the send loop allocated for the
+    /// frames in between).
+    /// </summary>
+    internal long SendThreadAllocatedBytes => Interlocked.Read(ref _sendThreadAllocated);
 
     /// <summary>The pinned endpoint, or null before the first authenticated Probe (tests).</summary>
     internal SocketAddress? Target => Volatile.Read(ref _target);
@@ -388,6 +396,7 @@ internal sealed class VideoSender : IDisposable
 
             if (complete)
             {
+                Interlocked.Exchange(ref _sendThreadAllocated, GC.GetAllocatedBytesForCurrentThread());
                 Interlocked.Increment(ref _framesSent);
             }
         }
