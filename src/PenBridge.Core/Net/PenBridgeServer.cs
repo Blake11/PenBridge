@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Security;
@@ -52,6 +53,13 @@ public sealed class PenBridgeServer : IAsyncDisposable
     private readonly TaskCompletionSource _udpDone = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private long _inputThreadAllocated;
     private long _inputThreadDatagrams;
+    private long _inputThreadWakes;
+    private int _wakesToDrop; // tests: simulate lost wake datagrams
+
+    /// <summary>How often <see cref="DisposeAsync"/> re-sends the input thread's wake datagram, and for how long.</summary>
+    internal static readonly TimeSpan InputWakeRetryInterval = TimeSpan.FromMilliseconds(200);
+
+    internal static readonly TimeSpan InputStopLimit = TimeSpan.FromSeconds(2);
     private ServerConnection? _active;
     private SessionInput? _activeInput;
     private SessionInput? _inputOwner; // the last published input; guarded by _inputLock
@@ -428,7 +436,8 @@ public sealed class PenBridgeServer : IAsyncDisposable
         Port = ((IPEndPoint)_tcp.LocalEndPoint!).Port;
         NetLog.Listening(_log, Port);
         _acceptLoop = AcceptLoopAsync();
-        VideoSockets.PrepareForReceiveThread(_udp!);
+        // No receive timeout: the input thread lives as long as the server, and an idle server must not wake. Dispose
+        // retries the wake datagram instead (see StopInputThreadAsync).
         _udpThread = MirrorThreads.Start("PenBridge input receive", MirrorThreadRole.InputReceive, _options.MirrorThreadStarted, _log, UdpReceiveLoop);
     }
 
@@ -438,8 +447,14 @@ public sealed class PenBridgeServer : IAsyncDisposable
     /// <summary>Datagrams the input thread handled, counted after <see cref="InputThreadAllocatedBytes"/> (tests).</summary>
     internal long InputThreadDatagrams => Interlocked.Read(ref _inputThreadDatagrams);
 
-    /// <summary>The input socket's receive timeout, the stop backstop (tests).</summary>
+    /// <summary>The input socket's receive timeout (tests: 0, an idle server never wakes).</summary>
     internal int InputSocketReceiveTimeoutMs => _udp?.ReceiveTimeout ?? -1;
+
+    /// <summary>Times the input thread's blocking receive returned or threw (tests: idle wakes).</summary>
+    internal long InputThreadWakes => Interlocked.Read(ref _inputThreadWakes);
+
+    /// <summary>Tests: the next <paramref name="count"/> wake datagrams of a stop aren't sent (lost).</summary>
+    internal void DropInputWakes(int count) => Volatile.Write(ref _wakesToDrop, count);
 
     /// <summary>Completes once the input thread left and disposed the UDP socket (tests).</summary>
     internal Task InputThreadExited => _udpDone.Task;
@@ -707,11 +722,7 @@ public sealed class PenBridgeServer : IAsyncDisposable
         }
         else
         {
-            // The input thread owns the socket: flag it, wake its blocking receive, and wait until it disposed it (the
-            // receive timeout ends it within a second if the wake datagram is lost).
-            _udpStopping = true;
-            VideoSockets.Wake(_udp!);
-            await _udpDone.Task.ConfigureAwait(false);
+            await StopInputThreadAsync().ConfigureAwait(false);
         }
 
         if (_acceptLoop is not null)
@@ -1139,6 +1150,40 @@ public sealed class PenBridgeServer : IAsyncDisposable
     }
 
     /// <summary>
+    /// The input thread owns the socket and blocks without a timeout: flag it, then wake its receive with a datagram to
+    /// itself, re-sent every <see cref="InputWakeRetryInterval"/> until it left or <see cref="InputStopLimit"/> passed.
+    /// After that, log and go on (a stuck thread must not hang Quit; it still disposes the socket if it ever returns).
+    /// Real time on purpose: shutdown must finish whatever the injected clock does.
+    /// </summary>
+    private async Task StopInputThreadAsync()
+    {
+        _udpStopping = true;
+        long start = Stopwatch.GetTimestamp();
+        while (true)
+        {
+            if (Interlocked.Decrement(ref _wakesToDrop) < 0)
+            {
+                Volatile.Write(ref _wakesToDrop, 0);
+                VideoSockets.Wake(_udp!);
+            }
+
+            try
+            {
+                await _udpDone.Task.WaitAsync(InputWakeRetryInterval).ConfigureAwait(false);
+                return;
+            }
+            catch (TimeoutException)
+            {
+                if (Stopwatch.GetElapsedTime(start) >= InputStopLimit)
+                {
+                    NetLog.InputThreadStopTimeout(_log, (int)InputStopLimit.TotalMilliseconds);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// The input thread's body: blocking receive on the UDP socket it owns, then the active session's datagram path
     /// (pinning, stale/budget checks, decrypt, tracker, sink) on this same thread. Allocation-free per datagram.
     /// </summary>
@@ -1159,8 +1204,8 @@ public sealed class PenBridgeServer : IAsyncDisposable
                 }
                 catch (SocketException ex)
                 {
-                    // The receive timeout (the stop backstop) is routine; anything else is worth a warning.
-                    if (!_udpStopping && ex.SocketErrorCode is not (SocketError.TimedOut or SocketError.WouldBlock))
+                    Interlocked.Increment(ref _inputThreadWakes);
+                    if (!_udpStopping)
                     {
                         NetLog.UdpReceiveError(_log, ex.SocketErrorCode);
                     }
@@ -1168,6 +1213,7 @@ public sealed class PenBridgeServer : IAsyncDisposable
                     continue;
                 }
 
+                Interlocked.Increment(ref _inputThreadWakes);
                 if (_udpStopping)
                 {
                     break; // the wake datagram (or one that raced it): shutting down

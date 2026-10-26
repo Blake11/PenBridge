@@ -201,10 +201,14 @@ internal static class SocketQos
 /// </summary>
 internal static class VideoSockets
 {
-    /// <summary>How long a receive blocks before it rechecks its stop flag (a backstop for a lost wake datagram).</summary>
+    /// <summary>
+    /// How long a video receive blocks before it rechecks its stop flag (a backstop for a lost wake datagram). Video
+    /// threads live for one mirroring run only; the server's lifetime input thread has no timeout (an idle server
+    /// never wakes) and its stopper retries the wake instead.
+    /// </summary>
     public const int ReceiveTimeoutMs = 1000;
 
-    /// <summary>A bound UDP socket with the receive backstop.</summary>
+    /// <summary>A bound video UDP socket with the receive backstop.</summary>
     public static void PrepareForReceiveThread(Socket socket) => socket.ReceiveTimeout = ReceiveTimeoutMs;
 
     /// <summary>Sends one byte to the socket's own port, so its blocked receive returns and sees the stop flag.</summary>

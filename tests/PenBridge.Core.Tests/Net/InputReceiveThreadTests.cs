@@ -111,11 +111,47 @@ public class InputReceiveThreadTests
     }
 
     [Fact]
-    public async Task The_input_socket_receives_with_the_stop_backstop()
+    public async Task An_idle_server_input_thread_never_wakes()
     {
-        // A lost wake datagram must not leave dispose waiting forever: the blocking receive times out and rechecks.
+        // The input thread lives as long as the server: no receive timeout, so an idle Mac gets no periodic wake-ups.
         await using var h = new NetHarness();
-        Assert.Equal(VideoSockets.ReceiveTimeoutMs, h.Server.InputSocketReceiveTimeoutMs);
+        Assert.Equal(0, h.Server.InputSocketReceiveTimeoutMs);
+
+        // A negative check needs a quiet span: longer than the video threads' 1 s backstop, which it must not have.
+        await Task.Delay(TimeSpan.FromMilliseconds(1500), TestContext.Current.CancellationToken);
+        Assert.Equal(0, h.Server.InputThreadWakes);
+        Assert.False(h.Server.InputThreadExited.IsCompleted);
+    }
+
+    [Fact]
+    public async Task Dispose_re_sends_a_lost_wake_datagram()
+    {
+        await using var h = new NetHarness();
+        h.Server.DropInputWakes(2); // the first two wakes are "lost"
+
+        await h.Server.DisposeAsync().AsTask().Bounded();
+        Assert.True(h.Server.InputThreadExited.IsCompletedSuccessfully, "a retried wake ended the thread");
+        Assert.Equal(1, h.Server.InputThreadWakes);
+    }
+
+    [Fact]
+    public async Task Dispose_gives_up_on_a_stuck_input_thread_instead_of_hanging()
+    {
+        await using var h = new NetHarness();
+        int port = h.Port;
+        h.Server.DropInputWakes(int.MaxValue); // every wake is "lost": the thread stays blocked
+
+        await h.Server.DisposeAsync().AsTask().Bounded(); // returns after the stop limit
+        Assert.False(h.Server.InputThreadExited.IsCompleted);
+
+        // Whenever its receive returns, the thread still sees the stop flag and disposes its socket.
+        using (var poke = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp))
+        {
+            poke.SendTo([0], new IPEndPoint(IPAddress.Loopback, port));
+        }
+
+        await h.Server.InputThreadExited.Bounded();
+        AssertUdpPortFree(port);
     }
 
     private static void AssertUdpPortFree(int port)
