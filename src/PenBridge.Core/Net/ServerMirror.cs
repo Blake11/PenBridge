@@ -87,6 +87,7 @@ internal sealed class ServerMirror : IDisposable
     private long _lastKeyframeAt;
     private bool _haveKeyframeAt;
     private bool _keyframePending;
+    private bool _resumeKeyframe; // the last honoured keyframe is a resume's: requests in its window are answered by it
     private bool _fastPing;
     private uint _lastLatencyFrame;
     private byte _lastLatencyEpoch;
@@ -101,6 +102,7 @@ internal sealed class ServerMirror : IDisposable
     private long _stale;
     private long _rateLimited;
     private long _reportsDropped;
+    private long _reportsReceived;
 
     public ServerMirror(
         ServerConnection connection,
@@ -167,6 +169,9 @@ internal sealed class ServerMirror : IDisposable
 
     /// <summary>The guard of this session (tests).</summary>
     internal MirrorRateController Guard => _guard;
+
+    /// <summary>MirrorReports received, dropped ones too (tests).</summary>
+    internal long ReportsReceived => Interlocked.Read(ref _reportsReceived);
 
     /// <summary>The video sender of the current run, or null (tests).</summary>
     internal VideoSender? Sender => Volatile.Read(ref _sender);
@@ -317,7 +322,12 @@ internal sealed class ServerMirror : IDisposable
         }
     }
 
-    /// <summary>KeyframeRequest: at most one honoured per <see cref="KeyframeInterval"/>, later ones folded; other epochs ignored.</summary>
+    /// <summary>
+    /// KeyframeRequest: at most one honoured per <see cref="KeyframeInterval"/>, later ones folded; other epochs ignored,
+    /// and so is every request while the guard pauses the video (no epoch streams). One within the window of a resume's
+    /// keyframe is dropped, not folded: the phone sent it before that keyframe reached it (it repeats the request if
+    /// the keyframe was lost).
+    /// </summary>
     public void OnKeyframeRequest(in KeyframeRequestMessage message)
     {
         lock (_lock)
@@ -333,7 +343,7 @@ internal sealed class ServerMirror : IDisposable
             {
                 HonourKeyframeLocked(now);
             }
-            else if (!_keyframePending)
+            else if (!_keyframePending && !_resumeKeyframe)
             {
                 _keyframePending = true;
                 _keyframeTimer.Change(KeyframeInterval - since, Timeout.InfiniteTimeSpan);
@@ -341,9 +351,13 @@ internal sealed class ServerMirror : IDisposable
         }
     }
 
-    /// <summary>MirrorReport: at most <see cref="ReportsPerSecond"/> per second; feeds the guard and the latency log.</summary>
+    /// <summary>
+    /// MirrorReport: at most <see cref="ReportsPerSecond"/> per second; feeds the guard and the latency log. A report
+    /// of the epoch a guard pause holds only sets the guard's loss baseline (see <see cref="ResumeEpochLocked"/>).
+    /// </summary>
     public void OnMirrorReport(in MirrorReportMessage report)
     {
+        Interlocked.Increment(ref _reportsReceived);
         if (!_reports.TryTake())
         {
             Interlocked.Increment(ref _reportsDropped);
@@ -352,7 +366,18 @@ internal sealed class ServerMirror : IDisposable
 
         lock (_lock)
         {
-            if (_disposed || _config is not { } config || report.Epoch != config.Epoch || _sender is not { } sender)
+            if (_disposed || _sender is not { } sender)
+            {
+                return;
+            }
+
+            if (_config is null && _pausedConfig is { } held)
+            {
+                _guard.RecordMirrorReport(report, held.Epoch, (ulong)sender.FragmentsInEpoch);
+                return;
+            }
+
+            if (_config is not { } config || report.Epoch != config.Epoch)
             {
                 return;
             }
@@ -679,12 +704,15 @@ internal sealed class ServerMirror : IDisposable
         _keyframePending = false;
         _keyframeTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         _epochTimer.Change(VideoDatagram.EpochProbeWait, Timeout.InfiniteTimeSpan);
-        _server.MirrorEvents.ConfigChanged(config);
-        NetLog.MirrorConfig(_log, config.Epoch, config.Codec, config.WidthPx, config.HeightPx, config.Fps, config.BitrateKbps);
         if (level.Fps != config.Fps || level.BitrateKbps != config.BitrateKbps)
         {
-            RaiseRateLocked(); // the guard holds the stream below the plan: the head starts the epoch at that rate
+            // The guard holds the stream below the plan: the head gets the epoch's rate before its configuration, so
+            // the epoch's first frames (the keyframe) already go out at that rate.
+            RaiseRateLocked();
         }
+
+        _server.MirrorEvents.ConfigChanged(config);
+        NetLog.MirrorConfig(_log, config.Epoch, config.Codec, config.WidthPx, config.HeightPx, config.Fps, config.BitrateKbps);
 
         _ = _connection.RequestPush(ServerConnection.PushMirror);
         return true;
@@ -727,12 +755,16 @@ internal sealed class ServerMirror : IDisposable
 
     /// <summary>
     /// The guard resumed and the plan is the held epoch's: the same epoch goes on (no MirrorConfig, so the phone keeps
-    /// its decoder) at the guard's rate, from a forced keyframe that takes the next frame number.
+    /// its decoder) at the guard's rate, from a forced keyframe that takes the next frame number. The pause cut a frame
+    /// and dropped numbered ones, which the phone counts as lost when that keyframe arrives: the guard's loss baseline
+    /// is re-taken (the reports during the pause were recorded, the ones up to the keyframe don't signal), so that
+    /// count doesn't read as fresh loss and step the stream straight back down.
     /// </summary>
     private void ResumeEpochLocked(MirrorStreamConfig held, MirrorGuardLevel level)
     {
         _config = held;
         _pausedConfig = null;
+        _guard.RebaselineReports();
         VideoSender sender = _sender!;
         sender.Resume();
         ApplyRateLocked(level);
@@ -744,6 +776,7 @@ internal sealed class ServerMirror : IDisposable
         _keyframePending = false;
         _keyframeTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         HonourKeyframeLocked(_time.GetTimestamp());
+        _resumeKeyframe = true;
     }
 
     /// <summary>No video flows: the epoch ends (frames are dropped); with <paramref name="disposeSender"/> the run's socket and threads stop too.</summary>
@@ -813,6 +846,7 @@ internal sealed class ServerMirror : IDisposable
 
     private void HonourKeyframeLocked(long now)
     {
+        _resumeKeyframe = false;
         _lastKeyframeAt = now;
         _haveKeyframeAt = true;
         _server.MirrorEvents.Keyframe();
