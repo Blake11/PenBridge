@@ -133,7 +133,8 @@ public sealed class MirrorRateController
     private uint _reportLost;
     private ulong _reportSent;
     private uint _reportFrames;
-    private int _reportQuiet; // RebaselineReports: this many more reports only set the baseline
+    private int _reportQuiet; // RebaselineReports: this many more reports of _quietEpoch only set the baseline
+    private byte _quietEpoch;
 
     // Input thread only (OnInputDatagram), except _gapAt, which is published.
     private readonly long _stepTicks;
@@ -382,19 +383,20 @@ public sealed class MirrorRateController
         TakeReport(report, currentEpoch, fragmentsSentInEpoch, signal: false);
 
     /// <summary>
-    /// The video resumes within its epoch after a pause: the phone counts the frame the pause cut and the numbered
+    /// The video of <paramref name="epoch"/> resumes after a pause: the phone counts the frame the pause cut and the numbered
     /// frames it dropped unsent as lost once the resume keyframe arrives. So the reports from now on only record their
     /// counters (no loss signal) up to and including the first that shows a frame completed since the previous report
     /// (the resume keyframe: the cut frames are counted with it), and at most <see cref="ResumeQuietReports"/> of them
     /// (a lost resume keyframe doesn't hide real loss for long). Counted in reports, not time: reports come late exactly
     /// when the network struggles. Feed the paused epoch's reports to <see cref="RecordMirrorReport"/> so the baseline
-    /// is current.
+    /// is current. A report of another epoch ends the quiet reports (a new epoch counts from its MirrorConfig).
     /// </summary>
-    public void RebaselineReports()
+    public void RebaselineReports(byte epoch)
     {
         lock (_lock)
         {
             _reportQuiet = ResumeQuietReports;
+            _quietEpoch = epoch;
         }
     }
 
@@ -418,6 +420,11 @@ public sealed class MirrorRateController
             _reportLost = report.FragmentsLost;
             _reportSent = fragmentsSentInEpoch;
             _reportFrames = report.FramesComplete;
+            if (_reportQuiet > 0 && currentEpoch != _quietEpoch)
+            {
+                _reportQuiet = 0; // a new epoch: nothing of the pause to keep out
+            }
+
             if (signal && _reportQuiet > 0)
             {
                 signal = false;

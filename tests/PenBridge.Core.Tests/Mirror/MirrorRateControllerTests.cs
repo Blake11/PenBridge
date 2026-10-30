@@ -434,7 +434,7 @@ public class MirrorRateControllerTests
     {
         _guard.OnMirrorReport(Report(frames: 10, lost: 0), currentEpoch: 1, fragmentsSentInEpoch: 100);
         _guard.RecordMirrorReport(Report(frames: 11, lost: 20), currentEpoch: 1, fragmentsSentInEpoch: 110); // paused
-        _guard.RebaselineReports(); // resume
+        _guard.RebaselineReports(epoch: 1); // resume
 
         _time.Advance(TimeSpan.FromMilliseconds(100));
         _guard.OnMirrorReport(Report(frames: 11, lost: 20), currentEpoch: 1, fragmentsSentInEpoch: 120);
@@ -451,7 +451,7 @@ public class MirrorRateControllerTests
     public void A_rebaseline_stays_quiet_for_at_most_three_reports()
     {
         _guard.OnMirrorReport(Report(frames: 10, lost: 0), currentEpoch: 1, fragmentsSentInEpoch: 100);
-        _guard.RebaselineReports();
+        _guard.RebaselineReports(epoch: 1);
         for (int i = 1; i <= MirrorRateController.ResumeQuietReports; i++)
         {
             _time.Advance(TimeSpan.FromSeconds(1)); // late reports: counted, not timed
@@ -463,10 +463,22 @@ public class MirrorRateControllerTests
         Assert.True(_guard.IsDegraded); // the quiet reports are used up
 
         _guard.Start(Plan);
-        _guard.RebaselineReports();
+        _guard.RebaselineReports(epoch: 1);
         _guard.Stop();
         _guard.Start(Plan); // a new stream drops the quiet reports
         _time.Advance(TimeSpan.FromSeconds(5));
+        _guard.OnMirrorReport(Report(frames: 1, lost: 0, epoch: 2), currentEpoch: 2, fragmentsSentInEpoch: 100);
+        _guard.OnMirrorReport(Report(frames: 1, lost: 10, epoch: 2), currentEpoch: 2, fragmentsSentInEpoch: 200);
+        Assert.True(_guard.IsDegraded);
+    }
+
+    [Fact]
+    public void A_new_epoch_ends_the_quiet_reports()
+    {
+        _guard.OnMirrorReport(Report(frames: 10, lost: 0), currentEpoch: 1, fragmentsSentInEpoch: 100);
+        _guard.RebaselineReports(epoch: 1);
+
+        // A MirrorStart right after the resume: the new epoch's first reports count from its MirrorConfig at once.
         _guard.OnMirrorReport(Report(frames: 1, lost: 0, epoch: 2), currentEpoch: 2, fragmentsSentInEpoch: 100);
         _guard.OnMirrorReport(Report(frames: 1, lost: 10, epoch: 2), currentEpoch: 2, fragmentsSentInEpoch: 200);
         Assert.True(_guard.IsDegraded);

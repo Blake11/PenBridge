@@ -103,6 +103,7 @@ internal sealed class ServerMirror : IDisposable
     private long _rateLimited;
     private long _reportsDropped;
     private long _reportsReceived;
+    private long _mirrorStarts; // under _lock
 
     public ServerMirror(
         ServerConnection connection,
@@ -170,6 +171,18 @@ internal sealed class ServerMirror : IDisposable
     /// <summary>The guard of this session (tests).</summary>
     internal MirrorRateController Guard => _guard;
 
+    /// <summary>MirrorStarts accepted by this session (tests).</summary>
+    internal long MirrorStartsReceived
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _mirrorStarts;
+            }
+        }
+    }
+
     /// <summary>MirrorReports received, dropped ones too (tests).</summary>
     internal long ReportsReceived => Interlocked.Read(ref _reportsReceived);
 
@@ -211,6 +224,7 @@ internal sealed class ServerMirror : IDisposable
                 return;
             }
 
+            _mirrorStarts++;
             _request = MirrorRequest.FromMessage(message);
             _started = true;
             _tlsFallback = _input.Transport == InputTransport.Tls;
@@ -764,7 +778,7 @@ internal sealed class ServerMirror : IDisposable
     {
         _config = held;
         _pausedConfig = null;
-        _guard.RebaselineReports();
+        _guard.RebaselineReports(held.Epoch);
         VideoSender sender = _sender!;
         sender.Resume();
         ApplyRateLocked(level);
