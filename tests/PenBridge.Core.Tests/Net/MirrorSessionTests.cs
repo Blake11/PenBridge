@@ -466,7 +466,14 @@ public class MirrorSessionTests
         await Wait.Until(() => input.Accepted > accepted, "input still flows after the failure");
         await rig.H.SettleAsync();
         Assert.True(rig.Client.IsConnected);
-        Assert.Equal(1, rig.Requested.Count); // the failed run never asked the Mac
+
+        // The failed run never asked the Mac: it ends where the phone's MirrorStop left it, every request balanced by a
+        // stop. Not an exact count: a UDP datagram the Mac's receive thread takes after the fallback's TLS frame (same
+        // timeUs on fake time, so not stale) restores UDP on the Mac before the phone's MirrorStop is read, which
+        // repeats the request (Requested, then Stopped) without the phone asking.
+        await Wait.Until(() => rig.Server.MirrorStatus == (MirrorState.Off, MirrorReason.PhoneStopped), "the Mac stays stopped");
+        await Wait.Until(() => rig.Requested.Count == rig.Stopped.Count, "every request is matched by a stop");
+        Assert.InRange(rig.Requested.Count, 1, 2);
     }
 
     [Fact]
