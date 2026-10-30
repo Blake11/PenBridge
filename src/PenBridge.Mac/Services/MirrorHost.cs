@@ -54,6 +54,9 @@ public enum MirrorHostStatus
 /// Core gave a configuration (MirrorConfigChanged). One dedicated worker thread (user-initiated QoS, alive only while it has work) reconciles the controller with that
 /// wanted state (latest wins), so the events never block. Each new epoch is applied (a new size or codec makes a new
 /// encoder; rate changes apply in place) and then a keyframe is requested, so the epoch's first frame is a keyframe.
+/// The input guard's rate for the current epoch (MirrorRateChanged) overrides the configuration's fps and bitrate and
+/// is applied in place (encoder bitrate and expected frame rate, capture frame interval) with no keyframe and without
+/// closing the frame gate.
 /// Frames reach the server only while the applied configuration is the current one: an old-epoch keyframe still in the
 /// encoder can't become the new epoch's frame 1. An HEVC encoder failure drops HEVC from the encoders (Core falls back
 /// to H.264 with a new epoch) until a request at least 30 s later. A repeated MirrorStart (the phone recovering from a
@@ -99,6 +102,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
     private bool _awaitingConfig; // a MirrorStart is answered by a new epoch's configuration that hasn't arrived yet
     private bool _available;
     private MirrorStreamConfig? _config;
+    private MirrorRateChange? _rate; // the guard's rate; applies only while its epoch is _config's
     private MirrorTarget? _target;
     private bool _dirty;
     private bool _working;
@@ -244,6 +248,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
         server.MirrorRequested += OnMirrorRequested;
         server.MirrorStopped += OnMirrorStopped;
         server.MirrorConfigChanged += OnMirrorConfigChanged;
+        server.MirrorRateChanged += OnMirrorRateChanged;
         server.KeyframeRequested += OnKeyframeRequested;
         if (hardware is not null)
         {
@@ -266,6 +271,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
         server.MirrorRequested -= OnMirrorRequested;
         server.MirrorStopped -= OnMirrorStopped;
         server.MirrorConfigChanged -= OnMirrorConfigChanged;
+        server.MirrorRateChanged -= OnMirrorRateChanged;
         server.KeyframeRequested -= OnKeyframeRequested;
         lock (_lock)
         {
@@ -394,11 +400,28 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
             }
 
             _config = config;
+            _rate = null; // a guard rate for this epoch follows right after, in order
             _awaitingConfig = false;
             Volatile.Write(ref _send, 0); // until this epoch's encoder settings are applied
         }
 
         Log.ConfigChanged(_log, config.Epoch, config.Codec.ToString(), config.WidthPx, config.HeightPx, config.Fps, config.BitrateKbps);
+        Kick();
+    }
+
+    private void OnMirrorRateChanged(object? sender, MirrorRateChange rate)
+    {
+        lock (_lock)
+        {
+            if (!ReferenceEquals(sender, _server))
+            {
+                return;
+            }
+
+            _rate = rate; // the frame gate stays open: same epoch, applied in place
+        }
+
+        Log.RateChanged(_log, rate.Epoch, rate.Fps, rate.BitrateKbps);
         Kick();
     }
 
@@ -441,6 +464,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
         {
             bool run;
             MirrorStreamConfig config;
+            MirrorRateChange? rate;
             MirrorTarget? target;
             lock (_lock)
             {
@@ -452,6 +476,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
 
                 _dirty = false;
                 config = _config.GetValueOrDefault();
+                rate = _rate;
                 target = _target;
                 run = !_stopped && _server is not null && _requested && _available && _config is not null && target is not null;
             }
@@ -461,7 +486,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
             {
                 if (run)
                 {
-                    Run(config, target!);
+                    Run(config, rate, target!);
                 }
                 else
                 {
@@ -486,9 +511,11 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
         }
     }
 
-    private void Run(MirrorStreamConfig config, MirrorTarget target)
+    private void Run(MirrorStreamConfig config, MirrorRateChange? rate, MirrorTarget target)
     {
-        var settings = new MirrorStreamSettings(config.WidthPx, config.HeightPx, config.Fps, config.BitrateKbps, config.Codec);
+        // The epoch runs at the guard's rate when Core sent one for it, else at the configuration's (planned) rate.
+        (int fps, int bitrateKbps) = rate is { } r && r.Epoch == config.Epoch ? (r.Fps, r.BitrateKbps) : (config.Fps, config.BitrateKbps);
+        var settings = new MirrorStreamSettings(config.WidthPx, config.HeightPx, fps, bitrateKbps, config.Codec);
         Volatile.Write(ref _codec, (int)settings.Codec);
         bool started = false;
         if (!_controller.IsRunning)
@@ -888,5 +915,8 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
 
         [LoggerMessage(939, LogLevel.Information, "Asking for the Screen Recording permission")]
         public static partial void PermissionPrompt(ILogger logger);
+
+        [LoggerMessage(940, LogLevel.Debug, "Mirror epoch {Epoch} rate: {Fps} fps, {BitrateKbps} kbps")]
+        public static partial void RateChanged(ILogger logger, byte epoch, int fps, int bitrateKbps);
     }
 }

@@ -12,7 +12,7 @@ namespace PenBridge.Mac.Mirror;
 /// <summary>
 /// Capture + hardware encode of the mirror stream (ADR-0038, spec "Heads → Mac"): ScreenCaptureKit streams of the
 /// target into a VideoToolbox encoder, Annex-B access units out to an <see cref="IMirrorFrameSink"/>. The head wires it
-/// to Core's server events (MirrorRequested → <see cref="StartAsync"/>, MirrorConfigChanged → <see cref="ReconfigureAsync"/>,
+/// to Core's server events (MirrorRequested → <see cref="StartAsync"/>, MirrorConfigChanged and MirrorRateChanged → <see cref="ReconfigureAsync"/>,
 /// KeyframeRequested → <see cref="RequestKeyframe"/>, MirrorStopped → <see cref="StopAsync"/>) and the sink to
 /// <c>SendVideoFrame</c>.
 /// </summary>

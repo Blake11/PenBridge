@@ -7,8 +7,9 @@ namespace PenBridge.SimClient;
 
 /// <summary>
 /// The in-process server's stand-in for the Mac's capture and encoder: it reports a source and both codecs, and while
-/// the phone mirrors it feeds <see cref="PenBridgeServer.SendVideoFrame"/> at the epoch's fps with fake Annex-B access
-/// units sized to the epoch's bitrate (a keyframe at each epoch start and on request, three times a delta frame).
+/// the phone mirrors it feeds <see cref="PenBridgeServer.SendVideoFrame"/> at the running fps with fake Annex-B access
+/// units sized to the running bitrate (the epoch's, or the input guard's <see cref="PenBridgeServer.MirrorRateChanged"/>;
+/// a keyframe at each epoch start and on request, three times a delta frame).
 /// Not decodable video: it exercises the network path (fragmenting, pacing, loss, KeyframeRequests, MirrorReports).
 /// </summary>
 internal sealed class SyntheticEncoder : IDisposable
@@ -40,6 +41,7 @@ internal sealed class SyntheticEncoder : IDisposable
         _timer = TimeProvider.System.CreateTimer(TickCallback, this, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         server.MirrorRequested += (_, r) => Console.WriteLine($"[server] mirror requested: codecs {r.Codecs}, max {r.MaxWidthPx}x{r.MaxHeightPx} @ {r.MaxFps}");
         server.MirrorConfigChanged += (_, c) => OnConfig(c);
+        server.MirrorRateChanged += (_, r) => OnRate(r);
         server.MirrorStopped += (_, _) => OnStopped();
         server.KeyframeRequested += (_, _) => OnKeyframeRequested();
         server.SetMirrorEncoders(MirrorCodecs.H264 | MirrorCodecs.Hevc);
@@ -71,6 +73,22 @@ internal sealed class SyntheticEncoder : IDisposable
             _config = config;
             _keyframeDue = true;
             TimeSpan interval = TimeSpan.FromSeconds(1.0 / config.Fps);
+            _timer.Change(interval, interval);
+        }
+    }
+
+    private void OnRate(MirrorRateChange rate)
+    {
+        Console.WriteLine($"[server] mirror rate: epoch {rate.Epoch}, {rate.Fps} fps, {rate.BitrateKbps} kbps");
+        lock (_lock)
+        {
+            if (_config is not { } config || config.Epoch != rate.Epoch)
+            {
+                return;
+            }
+
+            _config = config with { Fps = rate.Fps, BitrateKbps = rate.BitrateKbps }; // in place: no keyframe
+            TimeSpan interval = TimeSpan.FromSeconds(1.0 / rate.Fps);
             _timer.Change(interval, interval);
         }
     }
