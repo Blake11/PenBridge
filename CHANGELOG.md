@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.4.0](https://github.com/Blake11/PenBridge/compare/v1.3.2...v1.4.0) (2026-10-30)
+
+
+### Features
+
+* **android:** decode the mirror stream in hardware under the pad ([#317](https://github.com/Blake11/PenBridge/issues/317)) ([58a12f1](https://github.com/Blake11/PenBridge/commit/58a12f1651cd68f1d26072145541b1faddf49fa1))
+* **android:** show the mac's screen under the pad and follow the session ([#324](https://github.com/Blake11/PenBridge/issues/324)) ([0116355](https://github.com/Blake11/PenBridge/commit/0116355dd9388991624d3e685fe5893f84466a01))
+* **mac:** capture the mirror target and encode it in hardware ([#315](https://github.com/Blake11/PenBridge/issues/315)) ([15ea3cc](https://github.com/Blake11/PenBridge/commit/15ea3cc78449eb1a759f6cfc260245569cced514))
+* **mac:** mirror the mapped target to the phone with settings and a menu toggle ([#323](https://github.com/Blake11/PenBridge/issues/323)) ([0782aeb](https://github.com/Blake11/PenBridge/commit/0782aeb9ab35d666bebd4bd2d4de01a12650922e))
+* **net:** receive pen input on a dedicated thread the host can prioritise ([#325](https://github.com/Blake11/PenBridge/issues/325)) ([eeca69f](https://github.com/Blake11/PenBridge/commit/eeca69fa239d051775226967be74c04d029d1313))
+* **net:** stream screen mirroring video with input always first ([#322](https://github.com/Blake11/PenBridge/issues/322)) ([a041a30](https://github.com/Blake11/PenBridge/commit/a041a30bbc6605d983ee9f5e52fd70b346d46562))
+* **protocol:** add screen mirroring protocol 1.3 and the core mirror logic ([#316](https://github.com/Blake11/PenBridge/issues/316)) ([c02f8ad](https://github.com/Blake11/PenBridge/commit/c02f8ad8821142c6e2d4dea5142257fd86c20833))
+
+
+### Bug Fixes
+
+* **net:** apply mirroring guard steps live and pause only on sustained trouble ([#328](https://github.com/Blake11/PenBridge/issues/328)) ([84f6742](https://github.com/Blake11/PenBridge/commit/84f6742bb892e1a229737eed534f8dd9d062e28d))
+
+
+### Documentation
+
+* add ADR-0038 screen mirroring and its protocol 1.3 spec ([#307](https://github.com/Blake11/PenBridge/issues/307)) ([24ab316](https://github.com/Blake11/PenBridge/commit/24ab316876515160f5f6ec29f5cc892e10a891ed)), closes [#16](https://github.com/Blake11/PenBridge/issues/16)
+* add the client clock and thread hooks to the mirroring core api ([#312](https://github.com/Blake11/PenBridge/issues/312)) ([fdf341e](https://github.com/Blake11/PenBridge/commit/fdf341e2c653908db6be59b44188106eefee89fc)), closes [#16](https://github.com/Blake11/PenBridge/issues/16)
+* explain the dev and release accessibility grant clash in mac-build-run ([#318](https://github.com/Blake11/PenBridge/issues/318)) ([bae7a37](https://github.com/Blake11/PenBridge/commit/bae7a379eb967daf7a9f8ec2db374a114a0edda1))
+* let the mirroring frame rate follow the refresh rates ([#310](https://github.com/Blake11/PenBridge/issues/310)) ([68505c5](https://github.com/Blake11/PenBridge/commit/68505c5905697202765dfb89217816c65c6e1b6b))
+
 ## [1.3.2](https://github.com/Blake11/PenBridge/compare/v1.3.1...v1.3.2) (2026-10-23)
 
 
