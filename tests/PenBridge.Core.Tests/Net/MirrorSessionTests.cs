@@ -470,7 +470,7 @@ public class MirrorSessionTests
     }
 
     [Fact]
-    public async Task An_input_loss_during_contact_wakes_the_guard_and_steps_the_video_down()
+    public async Task An_input_loss_during_contact_wakes_the_guard_and_steps_the_rate_down_in_the_same_epoch()
     {
         int dropNext = 0;
         await using MirrorRig rig = await MirrorRig.CreateAsync(phone: MirrorRig.Phone(input: _ => Interlocked.Exchange(ref dropNext, 0) == 0));
@@ -492,18 +492,106 @@ public class MirrorSessionTests
 
         // The wake only fires the guard's timer (due now); fake time runs it.
         int configs = rig.ClientConfigs.Mark();
+        int raised = rig.ServerConfigs.Mark();
+        int rates = rig.ServerRates.Mark();
         // The wake arms it after the input lock is released, so it may not be armed yet: advance until it ran.
         await Wait.Until(
             () =>
             {
                 rig.H.Time.Advance(TimeSpan.Zero);
-                return rig.ClientConfigs.Since(configs).Length > 0;
+                return rig.ServerRates.Since(rates).Length > 0;
             },
             "the guard stepped the bitrate down");
-        MirrorStreamConfig stepped = rig.ClientConfigs.Since(configs)[0];
+        MirrorRateChange stepped = rig.ServerRates.Since(rates)[0];
+        Assert.Equal(full.Epoch, stepped.Epoch);
         Assert.Equal(full.Fps, stepped.Fps);
         Assert.InRange(stepped.BitrateKbps, 1, full.BitrateKbps - 1);
-        Assert.NotEqual(full.Epoch, stepped.Epoch);
+
+        // A live change: the epoch and the phone's configuration stay, the pacing follows.
+        await rig.H.SettleAsync();
+        Assert.Equal(full, rig.Mirror.Config);
+        Assert.Empty(rig.ClientConfigs.Since(configs));
+        Assert.Empty(rig.ServerConfigs.Since(raised));
+        Assert.Equal((stepped.BitrateKbps, stepped.Fps), rig.Sender.PacingRate);
+    }
+
+    [Fact]
+    public async Task A_guard_pause_holds_the_epoch_and_the_resume_continues_it_from_a_keyframe()
+    {
+        // No server pings: on fake time their RTT reads 0 (healthy), which would end the degradation the test drives.
+        await using MirrorRig rig = await MirrorRig.CreateAsync(o => MirrorRig.ServerOptions(o, pingInterval: Timeout.InfiniteTimeSpan));
+        MirrorStreamConfig config = await rig.StartAsync();
+        await rig.SendAsync(MirrorRig.AccessUnit(3000, 1, true), true);
+        await rig.Frames.WaitFor(0, 1, "frame 1");
+        int configs = rig.ClientConfigs.Mark();
+        int raised = rig.ServerConfigs.Mark();
+        int rates = rig.ServerRates.Mark();
+        int states = rig.ClientStates.Mark();
+
+        rig.Mirror.OnRtt(TimeSpan.FromMilliseconds(10));
+        for (int i = 0; i < 200 && rig.Server.MirrorStatus.State != MirrorState.Throttled; i++)
+        {
+            rig.Mirror.OnRtt(TimeSpan.FromMilliseconds(30)); // stays degraded
+            await Wait.Step(rig.H.Time, TimeSpan.FromMilliseconds(100));
+        }
+
+        Assert.Equal((MirrorState.Throttled, MirrorReason.None), rig.Server.MirrorStatus);
+        await rig.ClientStates.WaitFor(states, got => got.Contains((MirrorState.Throttled, MirrorReason.None)), "the phone sees Throttled");
+        MirrorRateChange[] steps = rig.ServerRates.Since(rates);
+        Assert.NotEmpty(steps);
+        Assert.All(steps, step => Assert.Equal(config.Epoch, step.Epoch)); // every step in the running epoch
+        Assert.Equal(new MirrorGuardLevel(steps[^1].BitrateKbps, steps[^1].Fps, true), rig.Mirror.Guard.Level); // paused at the bottom
+        Assert.Empty(rig.ServerConfigs.Since(raised));
+        long sent = rig.Sender.FramesSent;
+        rig.Server.SendVideoFrame(MirrorRig.AccessUnit(3000, 2, true), true, rig.NowCaptureUs);
+        await rig.H.SettleAsync();
+        Assert.Equal(sent, rig.Sender.FramesSent); // paused: nothing goes out
+
+        // Healthy for 2 s: the same epoch resumes with a forced keyframe, no MirrorConfig.
+        int keyframes = rig.Keyframes.Mark();
+        states = rig.ClientStates.Mark();
+        rig.Mirror.OnRtt(TimeSpan.FromMilliseconds(10));
+        await Wait.Step(rig.H.Time, MirrorRateController.HealthyBeforeRecovery);
+        await rig.Keyframes.WaitFor(keyframes, 1, "the resume asks the head for a keyframe");
+        await rig.ClientStates.WaitFor(states, got => got.Contains((MirrorState.Streaming, MirrorReason.None)), "the phone sees Streaming");
+        Assert.Equal(config, rig.Mirror.Config);
+        Assert.Equal(new MirrorGuardLevel(steps[^1].BitrateKbps, steps[^1].Fps, false), rig.Mirror.Guard.Level); // at the floor
+
+        rig.Server.SendVideoFrame(MirrorRig.AccessUnit(3000, 3, false), false, rig.NowCaptureUs); // before the keyframe: discarded
+        await rig.SendAsync(MirrorRig.AccessUnit(3000, 4, true), true);
+        ReceivedFrame frame = (await rig.Frames.WaitFor(1, 1, "the resumed frame"))[0];
+        Assert.Equal((config.Epoch, VideoDatagram.FirstFrameNumber + 1, true), (frame.Epoch, frame.Number, frame.Keyframe));
+        await rig.H.SettleAsync();
+        Assert.Empty(rig.ClientConfigs.Since(configs));
+        Assert.Empty(rig.ServerConfigs.Since(raised));
+    }
+
+    [Fact]
+    public async Task An_epoch_that_starts_below_the_plan_carries_the_plan_and_the_head_gets_the_rate_right_after()
+    {
+        await using MirrorRig rig = await MirrorRig.CreateAsync(o => MirrorRig.ServerOptions(o, pingInterval: Timeout.InfiniteTimeSpan));
+        var order = new EventLog<string>();
+        rig.Server.MirrorConfigChanged += (_, c) => order.Add($"config {c.Epoch}");
+        rig.Server.MirrorRateChanged += (_, r) => order.Add($"rate {r.Epoch}");
+        MirrorStreamConfig full = await rig.StartAsync();
+        int rates = rig.ServerRates.Mark();
+        rig.Mirror.OnRtt(TimeSpan.FromMilliseconds(10));
+        rig.Mirror.OnRtt(TimeSpan.FromMilliseconds(30));
+        rig.Mirror.OnRtt(TimeSpan.FromMilliseconds(30)); // degraded: one step at once
+        MirrorRateChange stepped = (await rig.ServerRates.WaitFor(rates, 1, "a step"))[0];
+
+        // A repeated MirrorStart starts a new epoch while the guard holds the stream below the plan.
+        int configs = rig.ClientConfigs.Mark();
+        int raised = rig.ServerConfigs.Mark();
+        rates = rig.ServerRates.Mark();
+        int marks = order.Mark();
+        Assert.True(rig.Client.StartMirror(MirrorRig.Request));
+        MirrorStreamConfig next = (await rig.ClientConfigs.WaitFor(configs, 1, "the new epoch"))[0];
+        Assert.Equal(full with { Epoch = next.Epoch }, next); // the planned fps and bitrate, not the guard's
+        Assert.Equal([next], await rig.ServerConfigs.WaitFor(raised, 1, "the head's config"));
+        Assert.Equal([stepped with { Epoch = next.Epoch }], await rig.ServerRates.WaitFor(rates, 1, "the head's rate"));
+        Assert.Equal([$"config {next.Epoch}", $"rate {next.Epoch}"], await order.WaitFor(marks, 2, "both head events, config first"));
+        Assert.Equal((stepped.BitrateKbps, stepped.Fps), rig.Sender.PacingRate);
     }
 
     [Fact]

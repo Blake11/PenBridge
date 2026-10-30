@@ -39,8 +39,9 @@ public sealed record MirrorPlanInputs
 }
 
 /// <summary>
-/// The planner's result before the input guard: the stream at full quality plus the guard's bitrate floor. Apply a
-/// <see cref="MirrorGuardLevel"/> with <see cref="ToConfig"/>.
+/// The planner's result before the input guard: the stream at full quality plus the guard's bitrate floor.
+/// <see cref="ToConfig"/> gives an epoch's configuration (the planned values); the guard's level only changes the rate
+/// the epoch runs at.
 /// </summary>
 /// <param name="Codec">The chosen codec.</param>
 /// <param name="WidthPx">Stream width, even.</param>
@@ -54,9 +55,9 @@ public sealed record MirrorPlanInputs
 /// </param>
 public readonly record struct MirrorStreamPlan(MirrorCodec Codec, int WidthPx, int HeightPx, int Fps, int TargetBitrateKbps, int FloorBitrateKbps, int PhoneMaxFps = 0)
 {
-    /// <summary>The configuration for one epoch with the guard's bitrate and fps.</summary>
-    public MirrorStreamConfig ToConfig(byte epoch, MirrorGuardLevel level) =>
-        new(epoch, Codec, WidthPx, HeightPx, level.Fps, level.BitrateKbps);
+    /// <summary>The configuration for one epoch: the planned fps and the target bitrate.</summary>
+    public MirrorStreamConfig ToConfig(byte epoch) =>
+        new(epoch, Codec, WidthPx, HeightPx, Fps, TargetBitrateKbps);
 }
 
 /// <summary>

@@ -108,4 +108,7 @@ internal static partial class NetLog
 
     [LoggerMessage(44, LogLevel.Warning, "The input receive thread didn't stop within {LimitMs} ms; shutting down without it")]
     public static partial void InputThreadStopTimeout(ILogger logger, int limitMs);
+
+    [LoggerMessage(45, LogLevel.Information, "Mirroring epoch {Epoch} runs at {Fps} fps, {BitrateKbps} kbps (input guard)")]
+    public static partial void MirrorRate(ILogger logger, byte epoch, int fps, int bitrateKbps);
 }

@@ -17,8 +17,12 @@ namespace PenBridge.Core.Net;
 /// Unavailable/TlsFallback; MirrorEnabled off in the settings snapshot → Off/SettingOff; otherwise the head's
 /// availability (<see cref="PenBridgeServer.SetMirrorState"/>), and once it is Streaming the plan: Starting while an
 /// input is missing (SurfaceInfo, source, encoders), Unavailable/NoCommonCodec when no codec fits, Throttled while the
-/// guard pauses, else Streaming with a MirrorConfig. Every change that alters the configuration (or a new MirrorStart,
-/// or a restart after a pause) starts a new epoch.</para>
+/// guard pauses, else Streaming with a MirrorConfig. Every change that alters the configuration (codec, size, planned
+/// fps or target bitrate; or a new MirrorStart, or a return to Streaming from another state) starts a new epoch.</para>
+/// <para><b>Guard.</b> The input guard's steps never start an epoch: the MirrorConfig keeps the planned fps and
+/// bitrate, and the running rate goes to the head (<see cref="PenBridgeServer.MirrorRateChanged"/>) and the sender's
+/// pacing. A guard pause (Throttled) holds the epoch; the resume continues it with a forced keyframe (the next frame
+/// number, no MirrorConfig) when nothing else changed meanwhile, else a new epoch starts.</para>
 /// <para><b>Keys.</b> <c>K_vs</c> and <c>K_vc</c> live for the session: each direction has one sequence for the whole
 /// session, so a MirrorStop only stops the socket and threads, and the keys are discarded with the session
 /// (<see cref="Dispose"/>). Sealing and opening run under their own locks, so a send thread of an ended run can never
@@ -69,6 +73,8 @@ internal sealed class ServerMirror : IDisposable
     private NormalizedRect _area = NormalizedRect.Full;
     private MirrorStreamPlan? _plan;
     private MirrorStreamConfig? _config; // the epoch being streamed; null while no video flows
+    private MirrorStreamConfig? _pausedConfig; // the epoch held by a guard pause (resumable), else null
+    private MirrorRateChange _rate; // the rate the current epoch runs at (head and pacing)
     private byte _epoch;
     private bool _guardRunning;
     private VideoSender? _sender;
@@ -547,22 +553,32 @@ internal sealed class ServerMirror : IDisposable
 
             _plan = plan;
             MirrorGuardLevel level = _guard.Level;
+            MirrorStreamConfig wanted = plan.ToConfig(0);
+            if (newEpoch)
+            {
+                _pausedConfig = null; // a MirrorStart (or a return from fallback): the phone starts over too
+            }
+
             if (level.Paused)
             {
-                StopVideoLocked(disposeSender: false);
+                PauseVideoLocked();
                 state = MirrorState.Throttled;
+            }
+            else if (!newEpoch && _config is null && _pausedConfig is { } held && held with { Epoch = 0 } == wanted && _sender is not null)
+            {
+                ResumeEpochLocked(held, level);
+            }
+            else if (newEpoch || _config is not { } current || current with { Epoch = 0 } != wanted)
+            {
+                if (!BeginEpochLocked(wanted, level))
+                {
+                    state = MirrorState.Unavailable;
+                    reason = MirrorReason.CaptureFailed;
+                }
             }
             else
             {
-                MirrorStreamConfig wanted = plan.ToConfig(0, level);
-                if (newEpoch || _config is not { } current || current with { Epoch = 0 } != wanted)
-                {
-                    if (!BeginEpochLocked(wanted))
-                    {
-                        state = MirrorState.Unavailable;
-                        reason = MirrorReason.CaptureFailed;
-                    }
-                }
+                ApplyRateLocked(level);
             }
 
             ArmGuardLocked();
@@ -624,8 +640,11 @@ internal sealed class ServerMirror : IDisposable
             : (MirrorState.Unavailable, failure);
     }
 
-    /// <summary>Starts a new epoch with <paramref name="wanted"/>: the run's socket and threads if needed, the MirrorConfig, the head event, the probe wait.</summary>
-    private bool BeginEpochLocked(MirrorStreamConfig wanted)
+    /// <summary>
+    /// Starts a new epoch with <paramref name="wanted"/> (planned values) running at the guard's <paramref name="level"/>:
+    /// the run's socket and threads if needed, the MirrorConfig, the head events, the probe wait.
+    /// </summary>
+    private bool BeginEpochLocked(MirrorStreamConfig wanted, MirrorGuardLevel level)
     {
         if (_sender is null)
         {
@@ -644,7 +663,9 @@ internal sealed class ServerMirror : IDisposable
         _epoch = unchecked((byte)(_epoch + 1));
         MirrorStreamConfig config = wanted with { Epoch = _epoch };
         _config = config;
-        _sender!.BeginEpoch(config);
+        _pausedConfig = null;
+        _rate = new MirrorRateChange(config.Epoch, level.Fps, level.BitrateKbps);
+        _sender!.BeginEpoch(config, level.BitrateKbps, level.Fps);
         _configOut = config.ToMessage((ushort)_sender.Port);
         _haveKeyframeAt = false;
         _keyframePending = false;
@@ -652,14 +673,76 @@ internal sealed class ServerMirror : IDisposable
         _epochTimer.Change(VideoDatagram.EpochProbeWait, Timeout.InfiniteTimeSpan);
         _server.MirrorEvents.ConfigChanged(config);
         NetLog.MirrorConfig(_log, config.Epoch, config.Codec, config.WidthPx, config.HeightPx, config.Fps, config.BitrateKbps);
+        if (level.Fps != config.Fps || level.BitrateKbps != config.BitrateKbps)
+        {
+            RaiseRateLocked(); // the guard holds the stream below the plan: the head starts the epoch at that rate
+        }
+
         _ = _connection.RequestPush(ServerConnection.PushMirror);
         return true;
+    }
+
+    /// <summary>A guard step within the epoch: the new rate to the sender's pacing and the head; nothing to the phone.</summary>
+    private void ApplyRateLocked(MirrorGuardLevel level)
+    {
+        if (_config is not { } config || _sender is not { } sender)
+        {
+            return;
+        }
+
+        var rate = new MirrorRateChange(config.Epoch, level.Fps, level.BitrateKbps);
+        if (rate == _rate)
+        {
+            return;
+        }
+
+        _rate = rate;
+        sender.SetRate(rate.BitrateKbps, rate.Fps);
+        RaiseRateLocked();
+    }
+
+    private void RaiseRateLocked()
+    {
+        _server.MirrorEvents.RateChanged(_rate);
+        NetLog.MirrorRate(_log, _rate.Epoch, _rate.Fps, _rate.BitrateKbps);
+    }
+
+    /// <summary>The guard paused: no video, but the epoch is held so the resume can continue it.</summary>
+    private void PauseVideoLocked()
+    {
+        if (_config is { } config)
+        {
+            StopVideoLocked(disposeSender: false);
+            _pausedConfig = config;
+        }
+    }
+
+    /// <summary>
+    /// The guard resumed and the plan is the held epoch's: the same epoch goes on (no MirrorConfig, so the phone keeps
+    /// its decoder) at the guard's rate, from a forced keyframe that takes the next frame number.
+    /// </summary>
+    private void ResumeEpochLocked(MirrorStreamConfig held, MirrorGuardLevel level)
+    {
+        _config = held;
+        _pausedConfig = null;
+        VideoSender sender = _sender!;
+        sender.Resume();
+        ApplyRateLocked(level);
+        if (!sender.IsReleased)
+        {
+            _epochTimer.Change(VideoDatagram.EpochProbeWait, Timeout.InfiniteTimeSpan); // paused before its Probe came
+        }
+
+        _keyframePending = false;
+        _keyframeTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        HonourKeyframeLocked(_time.GetTimestamp());
     }
 
     /// <summary>No video flows: the epoch ends (frames are dropped); with <paramref name="disposeSender"/> the run's socket and threads stop too.</summary>
     private void StopVideoLocked(bool disposeSender)
     {
         _config = null;
+        _pausedConfig = null;
         _configOut = null;
         _keyframePending = false;
         _keyframeTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
@@ -840,16 +923,19 @@ internal sealed class MirrorEvents(PenBridgeServer server)
         Requested,
         Stopped,
         ConfigChanged,
+        RateChanged,
         Keyframe,
     }
 
-    public void Requested(MirrorRequest request) => Enqueue(new Item(Kind.Requested, request, default));
+    public void Requested(MirrorRequest request) => Enqueue(new Item(Kind.Requested, request, default, default));
 
-    public void Stopped() => Enqueue(new Item(Kind.Stopped, default, default));
+    public void Stopped() => Enqueue(new Item(Kind.Stopped, default, default, default));
 
-    public void ConfigChanged(MirrorStreamConfig config) => Enqueue(new Item(Kind.ConfigChanged, default, config));
+    public void ConfigChanged(MirrorStreamConfig config) => Enqueue(new Item(Kind.ConfigChanged, default, config, default));
 
-    public void Keyframe() => Enqueue(new Item(Kind.Keyframe, default, default));
+    public void RateChanged(MirrorRateChange rate) => Enqueue(new Item(Kind.RateChanged, default, default, rate));
+
+    public void Keyframe() => Enqueue(new Item(Kind.Keyframe, default, default, default));
 
     private void Enqueue(Item item)
     {
@@ -881,11 +967,11 @@ internal sealed class MirrorEvents(PenBridgeServer server)
                 }
             }
 
-            server.RaiseMirrorEvent(item.What, item.Request, item.Config);
+            server.RaiseMirrorEvent(item.What, item.Request, item.Config, item.Rate);
         }
     }
 
-    private readonly record struct Item(Kind What, MirrorRequest Request, MirrorStreamConfig Config);
+    private readonly record struct Item(Kind What, MirrorRequest Request, MirrorStreamConfig Config, MirrorRateChange Rate);
 }
 
 /// <summary>The head's mirroring inputs, server-wide (<see cref="PenBridgeServer.SetMirrorState"/> and friends).</summary>

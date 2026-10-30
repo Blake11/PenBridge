@@ -327,10 +327,13 @@ internal sealed class ClientMirror : IDisposable
         SendProbe(config.Epoch);
     }
 
-    /// <summary>Read loop: a MirrorState. Anything but Streaming ends the epoch here (the Mac starts a new one to resume).</summary>
+    /// <summary>
+    /// Read loop: a MirrorState. Anything but Streaming and Throttled ends the epoch here (the Mac starts a new one to
+    /// resume). Throttled (the input guard paused the video) keeps it: the Mac may resume the same epoch with a keyframe.
+    /// </summary>
     public void OnState(MirrorState state, MirrorReason reason)
     {
-        if (state != MirrorState.Streaming)
+        if (state is not (MirrorState.Streaming or MirrorState.Throttled))
         {
             lock (_lock)
             {

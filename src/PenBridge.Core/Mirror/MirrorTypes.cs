@@ -56,7 +56,8 @@ public readonly record struct MirrorSource(int WidthPx, int HeightPx, int Refres
 /// <summary>
 /// One stream configuration: what a MirrorConfig carries without the Mac's video port. The server raises it in
 /// <c>MirrorConfigChanged</c> (the head reconfigures its encoder), the client in <c>MirrorConfigReceived</c> (the head
-/// reconfigures its decoder).
+/// reconfigures its decoder). Fps and bitrate are the epoch's planned values; the input guard runs the epoch at a lower
+/// rate without a new configuration (<see cref="MirrorRateChange"/>).
 /// </summary>
 /// <param name="Epoch">Stream generation, mod 256.</param>
 /// <param name="Codec">Codec of the stream.</param>
@@ -84,6 +85,15 @@ public readonly record struct MirrorStreamConfig(byte Epoch, MirrorCodec Codec, 
         return new MirrorConfigMessage(Epoch, Codec, (ushort)WidthPx, (ushort)HeightPx, (byte)Fps, (uint)BitrateKbps, videoUdpPort);
     }
 }
+
+/// <summary>
+/// The rate the Mac's encoder and capture run the current epoch at (the server's <c>MirrorRateChanged</c>): the input
+/// guard's bitrate and fps, applied in place (no new epoch, no keyframe, nothing sent to the phone).
+/// </summary>
+/// <param name="Epoch">The epoch it applies to; ignore it for another epoch.</param>
+/// <param name="Fps">Frame rate: capture interval and the encoder's expected frame rate.</param>
+/// <param name="BitrateKbps">Average encoder bitrate.</param>
+public readonly record struct MirrorRateChange(byte Epoch, int Fps, int BitrateKbps);
 
 /// <summary>Where the input guard (<see cref="MirrorRateController"/>) holds the stream right now.</summary>
 /// <param name="BitrateKbps">Current bitrate, between the plan's floor and target.</param>

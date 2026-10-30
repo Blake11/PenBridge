@@ -31,6 +31,8 @@ internal sealed class MirrorRig : IAsyncDisposable
 
     public EventLog<MirrorStreamConfig> ServerConfigs { get; } = new();
 
+    public EventLog<MirrorRateChange> ServerRates { get; } = new();
+
     public EventLog<int> Keyframes { get; } = new();
 
     public EventLog<MirrorStreamConfig> ClientConfigs { get; } = new();
@@ -50,7 +52,8 @@ internal sealed class MirrorRig : IAsyncDisposable
         DatagramFilter? videoFilter = null,
         LatencyRecorder? latency = null,
         bool allowTakeover = false,
-        bool remoteSettings = false) => new()
+        bool remoteSettings = false,
+        TimeSpan? pingInterval = null) => new()
         {
             Identity = o.Identity,
             Registry = o.Registry,
@@ -65,6 +68,7 @@ internal sealed class MirrorRig : IAsyncDisposable
             LatencyRecorder = latency,
             AllowTakeover = allowTakeover,
             RemoteSettings = remoteSettings,
+            PingInterval = pingInterval ?? o.PingInterval,
         };
 
     /// <summary>A phone with optional input and Probe filters and a video socket hook.</summary>
@@ -97,6 +101,7 @@ internal sealed class MirrorRig : IAsyncDisposable
         s.MirrorRequested += (_, r) => rig.Requested.Add(r);
         s.MirrorStopped += (_, _) => rig.Stopped.Add(0);
         s.MirrorConfigChanged += (_, c) => rig.ServerConfigs.Add(c);
+        s.MirrorRateChanged += (_, r) => rig.ServerRates.Add(r);
         s.KeyframeRequested += (_, _) => rig.Keyframes.Add(0);
         if (ready)
         {
