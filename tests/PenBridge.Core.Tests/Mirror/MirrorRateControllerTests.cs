@@ -47,7 +47,7 @@ public class MirrorRateControllerTests
     }
 
     [Fact]
-    public void The_ladder_steps_bitrate_then_fps_then_pauses_once_per_500_ms()
+    public void The_ladder_steps_bitrate_then_fps_once_per_500_ms_then_pauses_after_2_s_at_the_bottom()
     {
         Degrade();
         MirrorGuardLevel[] expected =
@@ -57,22 +57,121 @@ public class MirrorRateControllerTests
             new(6860, 120, false),
             new(5000, 120, false), // down to the floor
             new(5000, 60, false),  // fps halves
-            new(5000, 30, false),
-            new(5000, 30, true),   // then the video pauses
+            new(5000, 30, false),  // the bottom
         ];
         for (int i = 0; i < expected.Length; i++)
         {
             Assert.True(_guard.Update(), $"step {i}");
             Assert.Equal(expected[i], _guard.Level);
             Assert.False(_guard.Update()); // one step per interval
-            Assert.Equal(i == expected.Length - 1 ? null : TimeSpan.FromMilliseconds(500), _guard.NextUpdateIn);
-            _time.Advance(TimeSpan.FromMilliseconds(499));
-            Assert.False(_guard.Update());
-            _time.Advance(TimeSpan.FromMilliseconds(1));
+            Assert.Equal(i == expected.Length - 1 ? MirrorRateController.SustainedBeforePause : TimeSpan.FromMilliseconds(500), _guard.NextUpdateIn);
+            if (i < expected.Length - 1)
+            {
+                _time.Advance(TimeSpan.FromMilliseconds(499));
+                Assert.False(_guard.Update());
+                _time.Advance(TimeSpan.FromMilliseconds(1));
+            }
         }
 
-        Assert.False(_guard.Update()); // paused: nothing further
+        // The bottom gets 2 s of unbroken degradation before the video pauses.
+        _time.Advance(TimeSpan.FromMilliseconds(1999));
+        Assert.False(_guard.Update());
+        Assert.Equal(new MirrorGuardLevel(5000, 30, false), _guard.Level);
+        _time.Advance(TimeSpan.FromMilliseconds(1));
+        Assert.True(_guard.Update());
         Assert.Equal(new MirrorGuardLevel(5000, 30, true), _guard.Level);
+        Assert.Null(_guard.NextUpdateIn);
+        Assert.False(_guard.Update()); // paused: nothing further
+    }
+
+    [Fact]
+    public void A_single_blip_at_the_bottom_does_not_pause()
+    {
+        // The device-round case: a small target whose plan already sits at the floor and 30 fps.
+        _guard.Start(Plan with { Fps = 30, TargetBitrateKbps = 2000, FloorBitrateKbps = 2000 });
+        _time.Advance(TimeSpan.FromSeconds(5));
+        _guard.OnVideoLoss(10, 100);
+        Assert.True(_guard.IsDegraded);
+        Assert.False(_guard.Update()); // nothing left but the pause, and it isn't due
+        Assert.Equal(new MirrorGuardLevel(2000, 30, false), _guard.Level);
+        Assert.Equal(MirrorRateController.SustainedBeforePause, _guard.NextUpdateIn); // when the pause would be due
+
+        _time.Advance(TimeSpan.FromMilliseconds(500));
+        Assert.False(_guard.IsDegraded);
+        Assert.False(_guard.Update());
+        Assert.Null(_guard.NextUpdateIn); // at the plan and healthy
+        _time.Advance(TimeSpan.FromSeconds(5));
+        Assert.False(_guard.Update());
+        Assert.Equal(new MirrorGuardLevel(2000, 30, false), _guard.Level);
+    }
+
+    [Fact]
+    public void Blips_with_healthy_breaks_never_pause()
+    {
+        _guard.Start(Plan with { Fps = 30, TargetBitrateKbps = 2000, FloorBitrateKbps = 2000 });
+        for (int i = 0; i < 20; i++)
+        {
+            _guard.OnVideoLoss(10, 100); // 500 ms degraded, then 100 ms healthy
+            _time.Advance(TimeSpan.FromMilliseconds(300));
+            Assert.False(_guard.Update());
+            _time.Advance(TimeSpan.FromMilliseconds(300));
+            Assert.False(_guard.Update());
+        }
+
+        Assert.False(_guard.Level.Paused);
+    }
+
+    [Fact]
+    public void Two_seconds_of_unbroken_degradation_at_the_bottom_pause()
+    {
+        _guard.Start(Plan with { Fps = 30, TargetBitrateKbps = 2000, FloorBitrateKbps = 2000 });
+        _time.Advance(TimeSpan.FromSeconds(5));
+        for (int i = 0; i < 5; i++)
+        {
+            _guard.OnVideoLoss(10, 100); // each signal overlaps the next: no healthy moment
+            Assert.False(_guard.Update());
+            _time.Advance(TimeSpan.FromMilliseconds(400));
+        }
+
+        // 2000 ms after the first signal.
+        _guard.OnVideoLoss(10, 100);
+        Assert.Equal(TimeSpan.Zero, _guard.NextUpdateIn);
+        Assert.True(_guard.Update());
+        Assert.Equal(new MirrorGuardLevel(2000, 30, true), _guard.Level);
+    }
+
+    [Fact]
+    public void Recovery_from_a_pause_starts_at_the_floor_and_lowest_fps()
+    {
+        PauseAtTheBottom();
+        // A retarget during the pause keeps the bitrate's fraction (25 % of 30000) and the halvings (240 → 60).
+        _guard.Retarget(Plan with { Fps = 240, TargetBitrateKbps = 30000, FloorBitrateKbps = 3000 });
+        Assert.Equal(new MirrorGuardLevel(7500, 60, true), _guard.Level);
+
+        Rtt(10); // healthy again
+        _time.Advance(MirrorRateController.HealthyBeforeRecovery);
+        Assert.True(_guard.Update());
+        Assert.Equal(new MirrorGuardLevel(3000, 30, false), _guard.Level); // the new plan's bottom
+        _time.Advance(MirrorRateController.RecoveryInterval);
+        Assert.True(_guard.Update());
+        Assert.Equal(new MirrorGuardLevel(3000, 60, false), _guard.Level); // then climbs as before
+    }
+
+    [Fact]
+    public void After_a_resume_the_bottom_gets_2_s_again()
+    {
+        PauseAtTheBottom();
+        Rtt(10);
+        _time.Advance(MirrorRateController.HealthyBeforeRecovery);
+        Assert.True(_guard.Update());
+        Assert.False(_guard.Level.Paused);
+
+        Degrade();
+        Assert.False(_guard.Update());
+        Assert.Equal(MirrorRateController.SustainedBeforePause, _guard.NextUpdateIn);
+        _time.Advance(MirrorRateController.SustainedBeforePause);
+        Assert.True(_guard.Update());
+        Assert.True(_guard.Level.Paused);
     }
 
     [Fact]
@@ -321,13 +420,7 @@ public class MirrorRateControllerTests
     [Fact]
     public void Paused_while_the_rtt_stays_high_waits_for_a_sample()
     {
-        Degrade();
-        while (!_guard.Level.Paused)
-        {
-            Assert.True(_guard.Update());
-            _time.Advance(TimeSpan.FromMilliseconds(500));
-        }
-
+        PauseAtTheBottom();
         Assert.Null(_guard.NextUpdateIn);
         _time.Advance(TimeSpan.FromSeconds(30));
         Assert.False(_guard.Update());
@@ -350,7 +443,7 @@ public class MirrorRateControllerTests
             _time.Advance(TimeSpan.FromMilliseconds(500));
         }
 
-        Assert.True(_guard.Update());
+        AdvanceToSustainedPause();
         Assert.Equal(new MirrorGuardLevel(5000, halvings.Length > 0 ? halvings[^1] : fps, true), _guard.Level);
     }
 
@@ -370,7 +463,7 @@ public class MirrorRateControllerTests
             _time.Advance(TimeSpan.FromMilliseconds(500));
         }
 
-        Assert.True(_guard.Update());
+        AdvanceToSustainedPause();
         Assert.True(_guard.Level.Paused);
     }
 
@@ -420,6 +513,32 @@ public class MirrorRateControllerTests
     }
 
     private void Degrade() => Rtt(10, 30, 30);
+
+    /// <summary>At the bottom of the ladder and still degraded: no step until the pause is due, then the pause.</summary>
+    private void AdvanceToSustainedPause()
+    {
+        Assert.False(_guard.Update());
+        TimeSpan? due = _guard.NextUpdateIn;
+        Assert.NotNull(due);
+        Assert.InRange(due.Value, TimeSpan.FromTicks(1), MirrorRateController.SustainedBeforePause);
+        _time.Advance(due.Value - TimeSpan.FromMilliseconds(1));
+        Assert.False(_guard.Update());
+        _time.Advance(TimeSpan.FromMilliseconds(1));
+        Assert.True(_guard.Update());
+    }
+
+    /// <summary>Degrades from the full plan (120 fps, 20000 → floor 5000) until the video pauses.</summary>
+    private void PauseAtTheBottom()
+    {
+        Degrade();
+        for (int i = 0; i < 100 && !_guard.Level.Paused; i++)
+        {
+            _guard.Update();
+            _time.Advance(TimeSpan.FromMilliseconds(100));
+        }
+
+        Assert.Equal(new MirrorGuardLevel(5000, 30, true), _guard.Level);
+    }
 
     private void Rtt(params int[] ms)
     {

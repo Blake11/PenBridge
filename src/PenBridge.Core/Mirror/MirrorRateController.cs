@@ -14,12 +14,15 @@ namespace PenBridge.Core.Mirror;
 /// degraded for <see cref="StepInterval"/>.</para>
 /// <para><b>Ladder</b>, one step per <see cref="StepInterval"/> while degraded: bitrate × 0.7 down to the plan's floor,
 /// then the fps halves (120 → 60 → 30, never below 30 by halving; snapped down to a divisor of the phone's refresh,
-/// 90 → 45 → 30), then the video pauses
-/// (<see cref="MirrorGuardLevel.Paused"/>, MirrorState Throttled). <b>Recovery</b>: after <see cref="HealthyBeforeRecovery"/>
-/// healthy, one step up per <see cref="RecoveryInterval"/>: unpause, then the fps back to the plan, then bitrate × 1.15
-/// up to the target.</para>
+/// 90 → 45 → 30). At that bottom the video pauses (<see cref="MirrorGuardLevel.Paused"/>, MirrorState Throttled) only
+/// once the guard has been degraded without a break for <see cref="SustainedBeforePause"/>, counted from the later of the
+/// start of the degradation and the last level change (the bottom gets that long to prove too much), so one blip never
+/// pauses. <b>Recovery</b>: after <see cref="HealthyBeforeRecovery"/> healthy, one step up per
+/// <see cref="RecoveryInterval"/>: unpause at the bottom (the floor bitrate and the lowest fps), then the fps back to the
+/// plan, then bitrate × 1.15 up to the target.</para>
 /// <para><b>Driving it.</b> Feed the signals, then call <see cref="Update"/>; it returns true when <see cref="Level"/>
-/// changed (send a new MirrorConfig, or Throttled when paused). Nothing runs on its own: after each call arm a one-shot
+/// changed (apply the new bitrate and fps to the running stream, no new epoch; or Throttled when paused, or resume when
+/// unpaused). Nothing runs on its own: after each call arm a one-shot
 /// timer for <see cref="NextUpdateIn"/> (null = nothing pending) so recovery happens without new input. Input datagrams
 /// are the exception: call <see cref="OnInputDatagram"/> for every one, and only when it returns true (a new input
 /// degradation) wake the guard off the input thread (e.g. fire its timer now); the armed timer carries the later steps.
@@ -50,6 +53,9 @@ public sealed class MirrorRateController
 
     /// <summary>Healthy this long before the first step up.</summary>
     public static readonly TimeSpan HealthyBeforeRecovery = TimeSpan.FromSeconds(2);
+
+    /// <summary>At the bottom of the ladder, degraded without a break this long before the video pauses.</summary>
+    public static readonly TimeSpan SustainedBeforePause = TimeSpan.FromSeconds(2);
 
     /// <summary>One step up per this interval while healthy.</summary>
     public static readonly TimeSpan RecoveryInterval = TimeSpan.FromSeconds(1);
@@ -92,6 +98,8 @@ public sealed class MirrorRateController
     private long _lastDownAt = Never;
     private long _lastUpAt = Never;
     private long _consumedGapAt = Never;
+    private long _degradedSince = Never; // start of the current degradation without a break
+    private long _levelAt = Never; // the last change of the level (step, start, retarget)
 
     // Plan and position.
     private bool _active;
@@ -182,6 +190,7 @@ public sealed class MirrorRateController
             _paused = false;
             _active = true;
             _haveReport = false;
+            _levelAt = _time.GetTimestamp();
         }
     }
 
@@ -194,6 +203,7 @@ public sealed class MirrorRateController
     {
         lock (_lock)
         {
+            long now = _time.GetTimestamp();
             if (!_active)
             {
                 SetPlan(plan);
@@ -201,15 +211,22 @@ public sealed class MirrorRateController
                 _halvings = 0;
                 _paused = false;
                 _active = true;
+                _levelAt = now;
                 return;
             }
 
+            MirrorGuardLevel before = CurrentLevel();
             double fraction = _target > 0 ? (double)_bitrate / _target : 1;
             SetPlan(plan);
             _bitrate = Math.Clamp((int)Math.Round(_target * fraction), _floor, _target);
             while (_halvings > 0 && HalvedFps(_halvings) == HalvedFps(_halvings - 1))
             {
                 _halvings--;
+            }
+
+            if (CurrentLevel() != before)
+            {
+                _levelAt = now;
             }
         }
     }
@@ -235,13 +252,19 @@ public sealed class MirrorRateController
         lock (_lock)
         {
             long now = _time.GetTimestamp();
+            FoldInputGap();
             long ticks = ToTicks(rtt);
             AddRtt(now, ticks);
             long baseline = Baseline(now) ?? ticks;
             if (ticks > baseline + ToTicks(RttMargin))
             {
-                if (++_highRtt >= HighRttSamples)
+                if (++_highRtt >= HighRttSamples && !_rttDegraded)
                 {
+                    if (now >= _signalUntil)
+                    {
+                        _degradedSince = now; // healthy until now: a new degradation starts
+                    }
+
                     _rttDegraded = true;
                 }
             }
@@ -317,6 +340,7 @@ public sealed class MirrorRateController
 
         lock (_lock)
         {
+            FoldInputGap();
             Signal(_time.GetTimestamp());
         }
     }
@@ -370,9 +394,10 @@ public sealed class MirrorRateController
                     return false;
                 }
 
-                if (StepDown())
+                if (StepDown(now))
                 {
                     _lastDownAt = now;
+                    _levelAt = now;
                     return true;
                 }
 
@@ -388,6 +413,7 @@ public sealed class MirrorRateController
             if (StepUp())
             {
                 _lastUpAt = now;
+                _levelAt = now;
                 return true;
             }
 
@@ -418,6 +444,10 @@ public sealed class MirrorRateController
                     if (CanStepDown())
                     {
                         due = _lastDownAt == Never ? now : Math.Max(now, _lastDownAt + ToTicks(StepInterval));
+                        if (OnlyPauseLeft())
+                        {
+                            due = Math.Max(due.Value, PauseDue());
+                        }
                     }
 
                     if (!_rttDegraded && IsBelowPlan())
@@ -473,9 +503,25 @@ public sealed class MirrorRateController
 
     private bool CanStepDown() => _bitrate > _floor || HalvedFps(_halvings) > MinHalvedFps || !_paused;
 
+    private bool OnlyPauseLeft() => _bitrate <= _floor && HalvedFps(_halvings) <= MinHalvedFps && !_paused;
+
+    private long PauseDue() => Math.Max(_degradedSince, _levelAt) + ToTicks(SustainedBeforePause);
+
+    // The fewest halvings that reach the lowest fps (where halving stops changing it).
+    private int BottomHalvings()
+    {
+        int halvings = 0;
+        while (halvings < 8 && HalvedFps(halvings + 1) < HalvedFps(halvings))
+        {
+            halvings++;
+        }
+
+        return halvings;
+    }
+
     private bool IsBelowPlan() => _paused || _halvings > 0 || _bitrate < _target;
 
-    private bool StepDown()
+    private bool StepDown(long now)
     {
         if (_bitrate > _floor)
         {
@@ -489,7 +535,7 @@ public sealed class MirrorRateController
             return true;
         }
 
-        if (!_paused)
+        if (!_paused && now >= PauseDue())
         {
             _paused = true;
             return true;
@@ -502,7 +548,10 @@ public sealed class MirrorRateController
     {
         if (_paused)
         {
+            // Resume at the bottom: the floor and the lowest fps (a retarget during the pause may have moved them).
             _paused = false;
+            _bitrate = _floor;
+            _halvings = BottomHalvings();
             return true;
         }
 
@@ -525,7 +574,15 @@ public sealed class MirrorRateController
 
     private long HealthyFrom() => Math.Max(_signalUntil, _rttClearedAt);
 
-    private void Signal(long at) => _signalUntil = Math.Max(_signalUntil, at + ToTicks(StepInterval));
+    private void Signal(long at)
+    {
+        if (!_rttDegraded && at >= _signalUntil)
+        {
+            _degradedSince = at; // healthy until then: a new degradation starts
+        }
+
+        _signalUntil = Math.Max(_signalUntil, at + ToTicks(StepInterval));
+    }
 
     private void FoldInputGap()
     {
