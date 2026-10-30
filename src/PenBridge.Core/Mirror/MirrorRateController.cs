@@ -10,8 +10,9 @@ namespace PenBridge.Core.Mirror;
 /// <para><b>Signals.</b> Degraded when the Ping RTT exceeds the baseline (minimum over the last 10 s) by more than 8 ms
 /// in 2 consecutive samples (until a sample is healthy again), when an input datagram during contact arrives more than
 /// 30 ms later than the phone's own spacing says or input datagrams around a contact were lost (a sequence gap,
-/// <see cref="OnInputDatagram"/>), or when a MirrorReport shows more than 2 % fragment loss; the last two keep the guard
-/// degraded for <see cref="StepInterval"/>.</para>
+/// <see cref="OnInputDatagram"/>), or when a MirrorReport shows more than 2 % fragment loss. An input signal keeps the guard
+/// degraded for <see cref="StepInterval"/>, a loss signal for <see cref="VideoLossSignal"/> (two report intervals, so
+/// sustained loss reported with jitter stays one unbroken degradation).</para>
 /// <para><b>Ladder</b>, one step per <see cref="StepInterval"/> while degraded: bitrate × 0.7 down to the plan's floor,
 /// then the fps halves (120 → 60 → 30, never below 30 by halving; snapped down to a divisor of the phone's refresh,
 /// 90 → 45 → 30). At that bottom the video pauses (<see cref="MirrorGuardLevel.Paused"/>, MirrorState Throttled) only
@@ -48,8 +49,23 @@ public sealed class MirrorRateController
     /// <summary>Fragment loss above this fraction over one report is degraded.</summary>
     public const double LossThreshold = 0.02;
 
-    /// <summary>One step down per this interval while degraded; also how long a gap or loss signal lasts.</summary>
+    /// <summary>One step down per this interval while degraded; also how long an input signal (gap or loss) lasts.</summary>
     public static readonly TimeSpan StepInterval = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>The phone sends a MirrorReport this often while streaming (spec "MirrorReport"; the phone's client uses it).</summary>
+    public static readonly TimeSpan ReportInterval = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>
+    /// How long a video-loss signal lasts: two <see cref="ReportInterval"/>s, so a report that comes late still overlaps
+    /// the previous report's signal and sustained loss reads as one unbroken degradation (it can reach the pause).
+    /// </summary>
+    public static readonly TimeSpan VideoLossSignal = 2 * ReportInterval;
+
+    /// <summary>
+    /// After <see cref="RebaselineReports"/>, at most this many reports only record their counters when none shows the
+    /// resume keyframe (it was lost): one may have left the phone before the resume and one before the keyframe came.
+    /// </summary>
+    public const int ResumeQuietReports = 3;
 
     /// <summary>Healthy this long before the first step up.</summary>
     public static readonly TimeSpan HealthyBeforeRecovery = TimeSpan.FromSeconds(2);
@@ -116,6 +132,8 @@ public sealed class MirrorRateController
     private byte _reportEpoch;
     private uint _reportLost;
     private ulong _reportSent;
+    private uint _reportFrames;
+    private int _reportQuiet; // RebaselineReports: this many more reports only set the baseline
 
     // Input thread only (OnInputDatagram), except _gapAt, which is published.
     private readonly long _stepTicks;
@@ -190,6 +208,7 @@ public sealed class MirrorRateController
             _paused = false;
             _active = true;
             _haveReport = false;
+            _reportQuiet = 0;
             _levelAt = _time.GetTimestamp();
         }
     }
@@ -238,6 +257,7 @@ public sealed class MirrorRateController
         {
             _active = false;
             _haveReport = false;
+            _reportQuiet = 0;
         }
     }
 
@@ -330,7 +350,7 @@ public sealed class MirrorRateController
         return started;
     }
 
-    /// <summary>Fragment loss over one report: <paramref name="lost"/> of <paramref name="sent"/> fragments. More than 2 % is a degraded signal.</summary>
+    /// <summary>Fragment loss over one report: <paramref name="lost"/> of <paramref name="sent"/> fragments. More than 2 % is a degraded signal for <see cref="VideoLossSignal"/>.</summary>
     public void OnVideoLoss(uint lost, uint sent)
     {
         if (sent == 0 || lost <= sent * LossThreshold)
@@ -341,16 +361,44 @@ public sealed class MirrorRateController
         lock (_lock)
         {
             FoldInputGap();
-            Signal(_time.GetTimestamp());
+            Signal(_time.GetTimestamp(), VideoLossSignal);
         }
     }
 
     /// <summary>
     /// A MirrorReport for the current epoch, with the fragments the Mac sent in that epoch so far: computes the loss
     /// since the previous report of the epoch (counters wrap) and feeds <see cref="OnVideoLoss"/>. Reports of another
-    /// epoch are ignored; the first report of an epoch counts from its MirrorConfig.
+    /// epoch are ignored; the first report of an epoch counts from its MirrorConfig. After
+    /// <see cref="RebaselineReports"/> the next few only record their counters.
     /// </summary>
-    public void OnMirrorReport(in MirrorReportMessage report, byte currentEpoch, ulong fragmentsSentInEpoch)
+    public void OnMirrorReport(in MirrorReportMessage report, byte currentEpoch, ulong fragmentsSentInEpoch) =>
+        TakeReport(report, currentEpoch, fragmentsSentInEpoch, signal: true);
+
+    /// <summary>
+    /// A MirrorReport of an epoch whose video is paused (Throttled, held for a resume): records its counters as the
+    /// baseline for the next report and never signals (the pause itself cut frames the phone counts as lost).
+    /// </summary>
+    public void RecordMirrorReport(in MirrorReportMessage report, byte currentEpoch, ulong fragmentsSentInEpoch) =>
+        TakeReport(report, currentEpoch, fragmentsSentInEpoch, signal: false);
+
+    /// <summary>
+    /// The video resumes within its epoch after a pause: the phone counts the frame the pause cut and the numbered
+    /// frames it dropped unsent as lost once the resume keyframe arrives. So the reports from now on only record their
+    /// counters (no loss signal) up to and including the first that shows a frame completed since the previous report
+    /// (the resume keyframe: the cut frames are counted with it), and at most <see cref="ResumeQuietReports"/> of them
+    /// (a lost resume keyframe doesn't hide real loss for long). Counted in reports, not time: reports come late exactly
+    /// when the network struggles. Feed the paused epoch's reports to <see cref="RecordMirrorReport"/> so the baseline
+    /// is current.
+    /// </summary>
+    public void RebaselineReports()
+    {
+        lock (_lock)
+        {
+            _reportQuiet = ResumeQuietReports;
+        }
+    }
+
+    private void TakeReport(in MirrorReportMessage report, byte currentEpoch, ulong fragmentsSentInEpoch, bool signal)
     {
         if (report.Epoch != currentEpoch)
         {
@@ -364,13 +412,23 @@ public sealed class MirrorRateController
             bool same = _haveReport && _reportEpoch == currentEpoch;
             lost = same ? unchecked(report.FragmentsLost - _reportLost) : report.FragmentsLost;
             sent = same ? fragmentsSentInEpoch - Math.Min(_reportSent, fragmentsSentInEpoch) : fragmentsSentInEpoch;
+            bool framesMoved = same && report.FramesComplete != _reportFrames;
             _haveReport = true;
             _reportEpoch = currentEpoch;
             _reportLost = report.FragmentsLost;
             _reportSent = fragmentsSentInEpoch;
+            _reportFrames = report.FramesComplete;
+            if (signal && _reportQuiet > 0)
+            {
+                signal = false;
+                _reportQuiet = framesMoved ? 0 : _reportQuiet - 1; // the resume keyframe arrived: the next report counts
+            }
         }
 
-        OnVideoLoss(lost, (uint)Math.Min(sent, uint.MaxValue));
+        if (signal)
+        {
+            OnVideoLoss(lost, (uint)Math.Min(sent, uint.MaxValue));
+        }
     }
 
     /// <summary>
@@ -574,14 +632,14 @@ public sealed class MirrorRateController
 
     private long HealthyFrom() => Math.Max(_signalUntil, _rttClearedAt);
 
-    private void Signal(long at)
+    private void Signal(long at, TimeSpan lasts)
     {
         if (!_rttDegraded && at >= _signalUntil)
         {
             _degradedSince = at; // healthy until then: a new degradation starts
         }
 
-        _signalUntil = Math.Max(_signalUntil, at + ToTicks(StepInterval));
+        _signalUntil = Math.Max(_signalUntil, at + ToTicks(lasts));
     }
 
     private void FoldInputGap()
@@ -590,7 +648,7 @@ public sealed class MirrorRateController
         if (gapAt != _consumedGapAt)
         {
             _consumedGapAt = gapAt;
-            Signal(gapAt);
+            Signal(gapAt, StepInterval);
         }
     }
 

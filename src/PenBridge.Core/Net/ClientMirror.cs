@@ -27,8 +27,8 @@ internal sealed class ClientMirror : IDisposable
     /// <summary>Probes repeat this often while streaming.</summary>
     public static readonly TimeSpan ProbeInterval = TimeSpan.FromSeconds(1);
 
-    /// <summary>MirrorReports go out this often while streaming.</summary>
-    public static readonly TimeSpan ReportInterval = TimeSpan.FromMilliseconds(500);
+    /// <summary>MirrorReports go out this often while streaming (the Mac's input guard sizes its loss signal by it).</summary>
+    public static readonly TimeSpan ReportInterval = MirrorRateController.ReportInterval;
 
     private const int WriteStartStop = 1;
     private const int WriteKeyframe = 2;

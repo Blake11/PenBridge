@@ -96,7 +96,7 @@ public class MirrorRateControllerTests
         Assert.Equal(new MirrorGuardLevel(2000, 30, false), _guard.Level);
         Assert.Equal(MirrorRateController.SustainedBeforePause, _guard.NextUpdateIn); // when the pause would be due
 
-        _time.Advance(TimeSpan.FromMilliseconds(500));
+        _time.Advance(MirrorRateController.VideoLossSignal);
         Assert.False(_guard.IsDegraded);
         Assert.False(_guard.Update());
         Assert.Null(_guard.NextUpdateIn); // at the plan and healthy
@@ -111,10 +111,10 @@ public class MirrorRateControllerTests
         _guard.Start(Plan with { Fps = 30, TargetBitrateKbps = 2000, FloorBitrateKbps = 2000 });
         for (int i = 0; i < 20; i++)
         {
-            _guard.OnVideoLoss(10, 100); // 500 ms degraded, then 100 ms healthy
-            _time.Advance(TimeSpan.FromMilliseconds(300));
+            _guard.OnVideoLoss(10, 100); // 1 s degraded, then 200 ms healthy
+            _time.Advance(TimeSpan.FromMilliseconds(600));
             Assert.False(_guard.Update());
-            _time.Advance(TimeSpan.FromMilliseconds(300));
+            _time.Advance(TimeSpan.FromMilliseconds(600));
             Assert.False(_guard.Update());
         }
 
@@ -138,6 +138,50 @@ public class MirrorRateControllerTests
         Assert.Equal(TimeSpan.Zero, _guard.NextUpdateIn);
         Assert.True(_guard.Update());
         Assert.Equal(new MirrorGuardLevel(2000, 30, true), _guard.Level);
+    }
+
+    [Fact]
+    public void A_loss_signal_lasts_two_report_intervals()
+    {
+        Assert.Equal(2 * MirrorRateController.ReportInterval, MirrorRateController.VideoLossSignal);
+        Assert.Equal(MirrorRateController.ReportInterval, PenBridge.Core.Net.ClientMirror.ReportInterval);
+        _guard.OnVideoLoss(10, 100);
+        _time.Advance(MirrorRateController.VideoLossSignal - TimeSpan.FromMilliseconds(1));
+        Assert.True(_guard.IsDegraded);
+        _time.Advance(TimeSpan.FromMilliseconds(1));
+        Assert.False(_guard.IsDegraded);
+    }
+
+    [Fact]
+    public void Sustained_loss_reported_with_jitter_reaches_the_pause()
+    {
+        // Reports about every 500 ms, some late: each loss signal still overlaps the next, so the degradation never
+        // breaks; the ladder runs down (6 steps, 500 ms apart) and the bottom's 2 s pass.
+        int[] gapsMs = [450, 650, 520, 610, 480, 640, 500, 560, 470, 630, 540, 600];
+        var reportAt = new List<int> { 0 };
+        foreach (int gap in gapsMs)
+        {
+            reportAt.Add(reportAt[^1] + gap);
+        }
+
+        int next = 0;
+        bool paused = false;
+        for (int ms = 0; ms <= reportAt[^1] && !paused; ms += 10)
+        {
+            if (next < reportAt.Count && ms >= reportAt[next])
+            {
+                _guard.OnVideoLoss(10, 100);
+                next++;
+            }
+
+            Assert.True(_guard.IsDegraded, $"degraded at {ms} ms");
+            _guard.Update();
+            paused = _guard.Level.Paused;
+            _time.Advance(TimeSpan.FromMilliseconds(10));
+        }
+
+        Assert.True(paused);
+        Assert.Equal(new MirrorGuardLevel(5000, 30, true), _guard.Level);
     }
 
     [Fact]
@@ -373,6 +417,62 @@ public class MirrorRateControllerTests
 
         static MirrorReportMessage Report(byte epoch, uint lost) => new(epoch, 10, 0, lost, 9, 0);
     }
+
+    [Fact]
+    public void Recorded_reports_set_the_baseline_without_signalling()
+    {
+        _guard.OnMirrorReport(Report(frames: 10, lost: 0), currentEpoch: 1, fragmentsSentInEpoch: 100);
+        _guard.RecordMirrorReport(Report(frames: 11, lost: 50), currentEpoch: 1, fragmentsSentInEpoch: 110); // the pause cut a frame
+        Assert.False(_guard.IsDegraded);
+        _guard.RecordMirrorReport(Report(frames: 11, lost: 50), currentEpoch: 0, fragmentsSentInEpoch: 110); // another epoch: ignored
+        _guard.OnMirrorReport(Report(frames: 20, lost: 51), currentEpoch: 1, fragmentsSentInEpoch: 210);
+        Assert.False(_guard.IsDegraded); // 1 of 100 since the recorded report
+    }
+
+    [Fact]
+    public void After_a_rebaseline_reports_are_quiet_until_the_resume_keyframe_shows()
+    {
+        _guard.OnMirrorReport(Report(frames: 10, lost: 0), currentEpoch: 1, fragmentsSentInEpoch: 100);
+        _guard.RecordMirrorReport(Report(frames: 11, lost: 20), currentEpoch: 1, fragmentsSentInEpoch: 110); // paused
+        _guard.RebaselineReports(); // resume
+
+        _time.Advance(TimeSpan.FromMilliseconds(100));
+        _guard.OnMirrorReport(Report(frames: 11, lost: 20), currentEpoch: 1, fragmentsSentInEpoch: 120);
+        Assert.False(_guard.IsDegraded); // before the keyframe: nothing new
+        _time.Advance(TimeSpan.FromMilliseconds(500));
+        _guard.OnMirrorReport(Report(frames: 12, lost: 60), currentEpoch: 1, fragmentsSentInEpoch: 200);
+        Assert.False(_guard.IsDegraded); // the keyframe, with the frames the pause dropped counted as lost: quiet
+        _time.Advance(TimeSpan.FromMilliseconds(100));
+        _guard.OnMirrorReport(Report(frames: 20, lost: 70), currentEpoch: 1, fragmentsSentInEpoch: 300);
+        Assert.True(_guard.IsDegraded); // real loss after it counts again (10 of 100)
+    }
+
+    [Fact]
+    public void A_rebaseline_stays_quiet_for_at_most_three_reports()
+    {
+        _guard.OnMirrorReport(Report(frames: 10, lost: 0), currentEpoch: 1, fragmentsSentInEpoch: 100);
+        _guard.RebaselineReports();
+        for (int i = 1; i <= MirrorRateController.ResumeQuietReports; i++)
+        {
+            _time.Advance(TimeSpan.FromSeconds(1)); // late reports: counted, not timed
+            _guard.OnMirrorReport(Report(frames: 10, lost: (uint)(10 * i)), currentEpoch: 1, fragmentsSentInEpoch: (ulong)(100 + (100 * i)));
+            Assert.False(_guard.IsDegraded); // the resume keyframe never came: still quiet
+        }
+
+        _guard.OnMirrorReport(Report(frames: 10, lost: 40), currentEpoch: 1, fragmentsSentInEpoch: 500);
+        Assert.True(_guard.IsDegraded); // the quiet reports are used up
+
+        _guard.Start(Plan);
+        _guard.RebaselineReports();
+        _guard.Stop();
+        _guard.Start(Plan); // a new stream drops the quiet reports
+        _time.Advance(TimeSpan.FromSeconds(5));
+        _guard.OnMirrorReport(Report(frames: 1, lost: 0, epoch: 2), currentEpoch: 2, fragmentsSentInEpoch: 100);
+        _guard.OnMirrorReport(Report(frames: 1, lost: 10, epoch: 2), currentEpoch: 2, fragmentsSentInEpoch: 200);
+        Assert.True(_guard.IsDegraded);
+    }
+
+    private static MirrorReportMessage Report(uint frames, uint lost, byte epoch = 1) => new(epoch, frames, 0, lost, 0, 0);
 
     [Fact]
     public void The_rtt_baseline_is_the_minimum_over_10_s()
