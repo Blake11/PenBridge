@@ -561,7 +561,15 @@ internal sealed class ServerMirror : IDisposable
 
             if (level.Paused)
             {
-                PauseVideoLocked();
+                if (newEpoch)
+                {
+                    StopVideoLocked(disposeSender: false); // nothing to hold: the phone starts over
+                }
+                else
+                {
+                    PauseVideoLocked();
+                }
+
                 state = MirrorState.Throttled;
             }
             else if (!newEpoch && _config is null && _pausedConfig is { } held && held with { Epoch = 0 } == wanted && _sender is not null)
