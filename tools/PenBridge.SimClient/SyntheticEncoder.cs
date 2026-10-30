@@ -7,8 +7,9 @@ namespace PenBridge.SimClient;
 
 /// <summary>
 /// The in-process server's stand-in for the Mac's capture and encoder: it reports a source and both codecs, and while
-/// the phone mirrors it feeds <see cref="PenBridgeServer.SendVideoFrame"/> at the epoch's fps with fake Annex-B access
-/// units sized to the epoch's bitrate (a keyframe at each epoch start and on request, three times a delta frame).
+/// the phone mirrors it feeds <see cref="PenBridgeServer.SendVideoFrame"/> at the running fps with fake Annex-B access
+/// units sized to the running bitrate (the epoch's, or the input guard's <see cref="PenBridgeServer.MirrorRateChanged"/>;
+/// a keyframe at each epoch start and on request, three times a delta frame).
 /// Not decodable video: it exercises the network path (fragmenting, pacing, loss, KeyframeRequests, MirrorReports).
 /// </summary>
 internal sealed class SyntheticEncoder : IDisposable
@@ -27,6 +28,7 @@ internal sealed class SyntheticEncoder : IDisposable
     private readonly ITimer _timer;
     private readonly byte[] _buffer = new byte[VideoDatagram.MaxFrameLength];
     private MirrorStreamConfig? _config;
+    private MirrorRateChange? _nextRate; // came before its epoch's configuration (the epoch starts below the plan)
     private bool _keyframeDue;
     private int _seed;
     private long _framesSubmitted;
@@ -40,6 +42,7 @@ internal sealed class SyntheticEncoder : IDisposable
         _timer = TimeProvider.System.CreateTimer(TickCallback, this, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         server.MirrorRequested += (_, r) => Console.WriteLine($"[server] mirror requested: codecs {r.Codecs}, max {r.MaxWidthPx}x{r.MaxHeightPx} @ {r.MaxFps}");
         server.MirrorConfigChanged += (_, c) => OnConfig(c);
+        server.MirrorRateChanged += (_, r) => OnRate(r);
         server.MirrorStopped += (_, _) => OnStopped();
         server.KeyframeRequested += (_, _) => OnKeyframeRequested();
         server.SetMirrorEncoders(MirrorCodecs.H264 | MirrorCodecs.Hevc);
@@ -68,9 +71,32 @@ internal sealed class SyntheticEncoder : IDisposable
         Console.WriteLine($"[server] mirror config: epoch {config.Epoch}, {config.Codec} {config.WidthPx}x{config.HeightPx} @ {config.Fps} fps, {config.BitrateKbps} kbps");
         lock (_lock)
         {
+            if (_nextRate is { } rate && rate.Epoch == config.Epoch)
+            {
+                config = config with { Fps = rate.Fps, BitrateKbps = rate.BitrateKbps }; // the epoch starts at the guard's rate
+            }
+
+            _nextRate = null;
             _config = config;
             _keyframeDue = true;
             TimeSpan interval = TimeSpan.FromSeconds(1.0 / config.Fps);
+            _timer.Change(interval, interval);
+        }
+    }
+
+    private void OnRate(MirrorRateChange rate)
+    {
+        Console.WriteLine($"[server] mirror rate: epoch {rate.Epoch}, {rate.Fps} fps, {rate.BitrateKbps} kbps");
+        lock (_lock)
+        {
+            if (_config is not { } config || config.Epoch != rate.Epoch)
+            {
+                _nextRate = rate; // its epoch's configuration follows
+                return;
+            }
+
+            _config = config with { Fps = rate.Fps, BitrateKbps = rate.BitrateKbps }; // in place: no keyframe
+            TimeSpan interval = TimeSpan.FromSeconds(1.0 / rate.Fps);
             _timer.Change(interval, interval);
         }
     }
@@ -81,6 +107,7 @@ internal sealed class SyntheticEncoder : IDisposable
         lock (_lock)
         {
             _config = null;
+            _nextRate = null;
             _timer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         }
     }

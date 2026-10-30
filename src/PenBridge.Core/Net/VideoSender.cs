@@ -17,12 +17,15 @@ namespace PenBridge.Core.Net;
 /// belong to the previous configuration and are discarded unnumbered; that keyframe is frame 1, and every later access
 /// unit takes the next number, also one dropped unsent, so the phone sees the gap and waits for a keyframe. In steady
 /// state one frame may wait behind the one on the wire (a keyframe takes up to one interval, so the next frame arrives
-/// as it finishes); a frame that finds another one still waiting is dropped.</para>
+/// as it finishes); a frame that finds another one still waiting is dropped. After a guard pause the same epoch resumes
+/// (<see cref="Resume"/>): access units before the next keyframe are discarded unnumbered again, and that keyframe takes
+/// the next number, so the phone's reassembler goes on without a new configuration.</para>
 /// <para><b>Epoch start.</b> Frame 1 and its followers (up to <see cref="QueueCapacity"/>) are held until the epoch is
 /// released: by an authenticated Probe of the epoch or by the <see cref="VideoDatagram.EpochProbeWait"/> timer, and
 /// only once an endpoint is pinned (before the first Probe nothing is sent). The backlog then goes out paced, each frame
 /// within its window, so it drains faster than frames arrive; new frames queue behind it until it is gone.</para>
-/// <para><b>Pacing</b> uses the real clock (<see cref="TimeProvider.System"/>): it is about wire timing, not protocol
+/// <para><b>Pacing</b> follows the running rate (<see cref="SetRate"/>, the input guard's), not the epoch's planned one,
+/// and uses the real clock (<see cref="TimeProvider.System"/>): it is about wire timing, not protocol
 /// deadlines. A wait shorter than 1 ms is skipped (the pacer catches up within its slack).</para>
 /// <para>Allocation-free per frame and per fragment once the pool is warm; the endpoint copy on a re-pin allocates.</para>
 /// </remarks>
@@ -62,6 +65,7 @@ internal sealed class VideoSender : IDisposable
     private int _bitrateKbps;
     private int _fps;
     private bool _pacerDirty;
+    private bool _awaitKeyframe; // resumed after a pause: the next keyframe continues the epoch's numbering
 
     private SocketAddress? _target; // pinned endpoint; written under _lock, read by the send thread
     private volatile bool _stopped;
@@ -129,6 +133,18 @@ internal sealed class VideoSender : IDisposable
     /// <summary>The pinned endpoint, or null before the first authenticated Probe (tests).</summary>
     internal SocketAddress? Target => Volatile.Read(ref _target);
 
+    /// <summary>The bitrate and fps the send thread paces at from the next frame (tests).</summary>
+    internal (int BitrateKbps, int Fps) PacingRate
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return (_bitrateKbps, _fps);
+            }
+        }
+    }
+
     /// <summary>True once the current epoch may go out (its Probe or the wait passed) (tests).</summary>
     internal bool IsReleased
     {
@@ -141,8 +157,11 @@ internal sealed class VideoSender : IDisposable
         }
     }
 
-    /// <summary>Starts an epoch: drops queued frames of the previous one and waits for the epoch's first keyframe.</summary>
-    public void BeginEpoch(MirrorStreamConfig config)
+    /// <summary>
+    /// Starts an epoch: drops queued frames of the previous one and waits for the epoch's first keyframe. Paces at
+    /// <paramref name="bitrateKbps"/> and <paramref name="fps"/> (the guard's rate, at most the configuration's).
+    /// </summary>
+    public void BeginEpoch(MirrorStreamConfig config, int bitrateKbps, int fps)
     {
         lock (_lock)
         {
@@ -150,11 +169,12 @@ internal sealed class VideoSender : IDisposable
             _generation++;
             _accepting = true;
             _epochStarted = false;
+            _awaitKeyframe = false;
             _lastNumber = 0;
             _released = false;
             _backlog = false;
-            _bitrateKbps = config.BitrateKbps;
-            _fps = config.Fps;
+            _bitrateKbps = bitrateKbps;
+            _fps = fps;
             _pacerDirty = true;
             Interlocked.Exchange(ref _fragmentsInEpoch, 0);
             DropQueuedLocked();
@@ -163,7 +183,38 @@ internal sealed class VideoSender : IDisposable
         _wake.Set();
     }
 
-    /// <summary>No video until the next epoch (paused, throttled, head not streaming): queued frames are dropped.</summary>
+    /// <summary>The input guard changed the running rate: pacing follows from the next frame (same epoch).</summary>
+    public void SetRate(int bitrateKbps, int fps)
+    {
+        lock (_lock)
+        {
+            _bitrateKbps = bitrateKbps;
+            _fps = fps;
+            _pacerDirty = true;
+        }
+    }
+
+    /// <summary>
+    /// The current epoch goes on after a guard pause (<see cref="Deactivate"/>): frames are accepted again from the next
+    /// keyframe, which takes the epoch's next frame number. No-op once stopped or while accepting.
+    /// </summary>
+    public void Resume()
+    {
+        lock (_lock)
+        {
+            if (_stopped || _accepting)
+            {
+                return;
+            }
+
+            _accepting = true;
+            _awaitKeyframe = true;
+        }
+
+        _wake.Set();
+    }
+
+    /// <summary>No video until the next epoch or <see cref="Resume"/> (paused, throttled, head not streaming): queued frames are dropped.</summary>
     public void Deactivate()
     {
         lock (_lock)
@@ -232,10 +283,11 @@ internal sealed class VideoSender : IDisposable
         bool queued = false;
         lock (_lock)
         {
-            if (_accepting && !_stopped && (_epochStarted || keyframe))
+            if (_accepting && !_stopped && ((_epochStarted && !_awaitKeyframe) || keyframe))
             {
                 uint number = _epochStarted ? unchecked(_lastNumber + 1) : VideoDatagram.FirstFrameNumber;
                 _epochStarted = true;
+                _awaitKeyframe = false;
                 _lastNumber = number;
                 int slot = (int)(number % CaptureRing);
                 _captureEpoch[slot] = _epoch;

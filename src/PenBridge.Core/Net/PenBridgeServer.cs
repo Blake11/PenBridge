@@ -172,9 +172,22 @@ public sealed class PenBridgeServer : IAsyncDisposable
     /// access unit a keyframe (a resize gives one anyway; an in-place rate change needs a keyframe request). Core
     /// discards access units until that keyframe, which becomes the epoch's frame 1. Every accepted MirrorStart starts
     /// a new epoch, also a repeated one with an unchanged plan, and so does a return to Streaming (after Paused,
-    /// Unavailable or a TLS fallback): never keep sending into an old configuration.
+    /// Unavailable or a TLS fallback): never keep sending into an old configuration. Fps and bitrate are the epoch's
+    /// planned values: when the input guard holds the stream lower, <see cref="MirrorRateChanged"/> for this epoch comes
+    /// just before it (the only time a rate precedes its epoch's configuration), so keep a rate for an epoch you don't
+    /// have yet and start that epoch at it; the latest MirrorRateChanged for an epoch overrides its configuration's rate.
     /// </summary>
     public event EventHandler<MirrorStreamConfig>? MirrorConfigChanged;
+
+    /// <summary>
+    /// Raised when the input guard changes the rate of the current epoch (a step down or up, a resume after Throttled):
+    /// apply the fps and bitrate to the running capture and encoder in place, with no keyframe and no new epoch (the
+    /// phone isn't told). Also raised right before the <see cref="MirrorConfigChanged"/> of an epoch that starts below
+    /// the plan, for that new epoch: hold it until that configuration arrives and start the epoch at it. A rate for any
+    /// other epoch is stale: ignore it. Core's send pacing already follows it. Raised in order with the other mirroring
+    /// events.
+    /// </summary>
+    public event EventHandler<MirrorRateChange>? MirrorRateChanged;
 
     /// <summary>The phone lost video: encode the next frame as a keyframe (at most one per 250 ms reaches the head).</summary>
     public event EventHandler? KeyframeRequested;
@@ -272,7 +285,7 @@ public sealed class PenBridgeServer : IAsyncDisposable
         }
     }
 
-    internal void RaiseMirrorEvent(MirrorEvents.Kind kind, MirrorRequest request, MirrorStreamConfig config)
+    internal void RaiseMirrorEvent(MirrorEvents.Kind kind, MirrorRequest request, MirrorStreamConfig config, MirrorRateChange rate)
     {
         switch (kind)
         {
@@ -284,6 +297,9 @@ public sealed class PenBridgeServer : IAsyncDisposable
                 break;
             case MirrorEvents.Kind.ConfigChanged:
                 Raise(MirrorConfigChanged, config);
+                break;
+            case MirrorEvents.Kind.RateChanged:
+                Raise(MirrorRateChanged, rate);
                 break;
             default:
                 Raise(KeyframeRequested);

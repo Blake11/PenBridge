@@ -27,8 +27,8 @@ internal sealed class ClientMirror : IDisposable
     /// <summary>Probes repeat this often while streaming.</summary>
     public static readonly TimeSpan ProbeInterval = TimeSpan.FromSeconds(1);
 
-    /// <summary>MirrorReports go out this often while streaming.</summary>
-    public static readonly TimeSpan ReportInterval = TimeSpan.FromMilliseconds(500);
+    /// <summary>MirrorReports go out this often while streaming (the Mac's input guard sizes its loss signal by it).</summary>
+    public static readonly TimeSpan ReportInterval = MirrorRateController.ReportInterval;
 
     private const int WriteStartStop = 1;
     private const int WriteKeyframe = 2;
@@ -327,10 +327,13 @@ internal sealed class ClientMirror : IDisposable
         SendProbe(config.Epoch);
     }
 
-    /// <summary>Read loop: a MirrorState. Anything but Streaming ends the epoch here (the Mac starts a new one to resume).</summary>
+    /// <summary>
+    /// Read loop: a MirrorState. Anything but Streaming and Throttled ends the epoch here (the Mac starts a new one to
+    /// resume). Throttled (the input guard paused the video) keeps it: the Mac may resume the same epoch with a keyframe.
+    /// </summary>
     public void OnState(MirrorState state, MirrorReason reason)
     {
-        if (state != MirrorState.Streaming)
+        if (state is not (MirrorState.Streaming or MirrorState.Throttled))
         {
             lock (_lock)
             {

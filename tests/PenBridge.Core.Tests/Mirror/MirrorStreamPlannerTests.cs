@@ -171,10 +171,10 @@ public class MirrorStreamPlannerTests
     }
 
     [Fact]
-    public void Plan_applies_a_guard_level()
+    public void An_epoch_config_carries_the_planned_fps_and_target_bitrate()
     {
         var plan = new MirrorStreamPlan(MirrorCodec.Hevc, 2228, 1440, 120, 23342, 5835);
-        Assert.Equal(new MirrorStreamConfig(9, MirrorCodec.Hevc, 2228, 1440, 60, 8000), plan.ToConfig(9, new MirrorGuardLevel(8000, 60, false)));
+        Assert.Equal(new MirrorStreamConfig(9, MirrorCodec.Hevc, 2228, 1440, 120, 23342), plan.ToConfig(9));
     }
 
     [Theory]
