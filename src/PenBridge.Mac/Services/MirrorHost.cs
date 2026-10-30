@@ -56,7 +56,8 @@ public enum MirrorHostStatus
 /// encoder; rate changes apply in place) and then a keyframe is requested, so the epoch's first frame is a keyframe.
 /// The input guard's rate for the current epoch (MirrorRateChanged) overrides the configuration's fps and bitrate and
 /// is applied in place (encoder bitrate and expected frame rate, capture frame interval) with no keyframe and without
-/// closing the frame gate.
+/// closing the frame gate. A rate for an epoch that starts below the plan comes just before that epoch's configuration:
+/// it is held and the epoch starts at it, so its keyframe never goes out at the planned rate.
 /// Frames reach the server only while the applied configuration is the current one: an old-epoch keyframe still in the
 /// encoder can't become the new epoch's frame 1. An HEVC encoder failure drops HEVC from the encoders (Core falls back
 /// to H.264 with a new epoch) until a request at least 30 s later. A repeated MirrorStart (the phone recovering from a
@@ -103,6 +104,7 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
     private bool _available;
     private MirrorStreamConfig? _config;
     private MirrorRateChange? _rate; // the guard's rate; applies only while its epoch is _config's
+    private MirrorRateChange? _nextRate; // a rate that came before its epoch's configuration (the epoch starts below plan)
     private MirrorTarget? _target;
     private bool _dirty;
     private bool _working;
@@ -238,6 +240,8 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
             _requested = false;
             _awaitingConfig = false;
             _config = null;
+            _rate = null;
+            _nextRate = null;
             hardware = _hardware;
             if (hardware is { } known)
             {
@@ -284,6 +288,8 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
             _requested = false;
             _awaitingConfig = false;
             _config = null;
+            _rate = null;
+            _nextRate = null;
             Volatile.Write(ref _send, 0);
         }
 
@@ -383,6 +389,8 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
             _requested = false;
             _awaitingConfig = false;
             _config = null;
+            _rate = null;
+            _nextRate = null;
             Volatile.Write(ref _send, 0);
         }
 
@@ -400,7 +408,9 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
             }
 
             _config = config;
-            _rate = null; // a guard rate for this epoch follows right after, in order
+            // A rate for this epoch, if any, came just before it; any other is stale (Run checks the epoch too).
+            _rate = _nextRate is { } next && next.Epoch == config.Epoch ? next : null;
+            _nextRate = null;
             _awaitingConfig = false;
             Volatile.Write(ref _send, 0); // until this epoch's encoder settings are applied
         }
@@ -415,6 +425,12 @@ public sealed partial class MirrorHost : IMirrorFrameSink, IDisposable
         {
             if (!ReferenceEquals(sender, _server))
             {
+                return;
+            }
+
+            if (_config is not { } config || config.Epoch != rate.Epoch)
+            {
+                _nextRate = rate; // its epoch's configuration follows: applied with it
                 return;
             }
 

@@ -28,6 +28,7 @@ internal sealed class SyntheticEncoder : IDisposable
     private readonly ITimer _timer;
     private readonly byte[] _buffer = new byte[VideoDatagram.MaxFrameLength];
     private MirrorStreamConfig? _config;
+    private MirrorRateChange? _nextRate; // came before its epoch's configuration (the epoch starts below the plan)
     private bool _keyframeDue;
     private int _seed;
     private long _framesSubmitted;
@@ -70,6 +71,12 @@ internal sealed class SyntheticEncoder : IDisposable
         Console.WriteLine($"[server] mirror config: epoch {config.Epoch}, {config.Codec} {config.WidthPx}x{config.HeightPx} @ {config.Fps} fps, {config.BitrateKbps} kbps");
         lock (_lock)
         {
+            if (_nextRate is { } rate && rate.Epoch == config.Epoch)
+            {
+                config = config with { Fps = rate.Fps, BitrateKbps = rate.BitrateKbps }; // the epoch starts at the guard's rate
+            }
+
+            _nextRate = null;
             _config = config;
             _keyframeDue = true;
             TimeSpan interval = TimeSpan.FromSeconds(1.0 / config.Fps);
@@ -84,6 +91,7 @@ internal sealed class SyntheticEncoder : IDisposable
         {
             if (_config is not { } config || config.Epoch != rate.Epoch)
             {
+                _nextRate = rate; // its epoch's configuration follows
                 return;
             }
 
@@ -99,6 +107,7 @@ internal sealed class SyntheticEncoder : IDisposable
         lock (_lock)
         {
             _config = null;
+            _nextRate = null;
             _timer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         }
     }
